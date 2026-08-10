@@ -1,0 +1,33 @@
+# Venturelyx :: worker tier. Joins the existing venturelyx network.
+#   docker compose -f infra/docker-compose.data.yml -f infra/docker-compose.workers.yml \
+#                  --env-file infra/.env up -d
+
+name: venturelyx
+
+networks:
+  venturelyx:
+    external: true
+    name: venturelyx
+
+services:
+  seo-worker:
+    build:
+      context: ../workers/seo
+    image: venturelyx/seo-worker:latest
+    container_name: vx-seo-worker
+    restart: unless-stopped
+    networks: [venturelyx]
+    environment:
+      # Connects as the APP role, so RLS applies to the worker exactly as it
+      # does to the API. Never the superuser.
+      DB_DSN: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      LOG_LEVEL: INFO
+      POLL_SECONDS: 10
+      WORKER_ID: seo-worker-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }

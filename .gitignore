@@ -1,10 +1,23 @@
+# secrets — never commit
 infra/.env
 infra/*.env
+secrets/
+*.pem
+*.key
+
+# data
 backups/
 artifacts/
-secrets/
 *.dump
 *.dump.sha256
 *.log
+
+# build
 node_modules/
+dist/
+.next/
+__pycache__/
+*.pyc
+.venv/
+
 .DS_Store

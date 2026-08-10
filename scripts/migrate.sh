@@ -95,13 +95,13 @@ for f in "$MIGDIR"/*.sql; do
   fi
 
   echo "  apply  $b"
-  start=$(( $(date +%s%N) / 1000000 ))
+  start=$(date +%s%3N)
   if ! docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" "$CONTAINER" \
         psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"; then
     echo "FATAL: $b failed. Nothing recorded; fix and re-run."
     exit 1
   fi
-  dur=$(( $(date +%s%N) / 1000000 - start ))
+  dur=$(( $(date +%s%3N) - start ))
   psql_run -q -c "INSERT INTO schema_migrations (filename,checksum,duration_ms)
                   VALUES ('$b','$sum',$dur);"
   echo "         ok (${dur}ms)"
