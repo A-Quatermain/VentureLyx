@@ -1,0 +1,10 @@
+infra/.env
+infra/*.env
+backups/
+artifacts/
+secrets/
+*.dump
+*.dump.sha256
+*.log
+node_modules/
+.DS_Store
