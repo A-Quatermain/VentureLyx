@@ -23,6 +23,18 @@ OUT="$BACKUP_DIR/venturelyx_${STAMP}.dump"
 
 echo "[$(date -u +%FT%TZ)] backup starting -> $(basename "$OUT")"
 
+# Cron runs at 03:15, which collides with unattended-upgrades and Docker
+# restarts. Wait for Postgres to accept connections rather than producing an
+# empty dump that verification then throws away.
+for i in $(seq 1 30); do
+  if docker exec "$CONTAINER" pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+    break
+  fi
+  [ "$i" = "1" ] && echo "[$(date -u +%FT%TZ)] waiting for postgres..."
+  [ "$i" = "30" ] && { echo "[$(date -u +%FT%TZ)] FATAL: postgres not ready after 5 minutes"; exit 1; }
+  sleep 10
+done
+
 # -Fc = custom format: compressed, and pg_restore can do selective restores
 # Dump and verify INSIDE the container via the /backups bind mount.
 # Piping through /dev/stdin fails: pg_restore needs a seekable file for
