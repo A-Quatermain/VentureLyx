@@ -24,14 +24,18 @@ OUT="$BACKUP_DIR/venturelyx_${STAMP}.dump"
 echo "[$(date -u +%FT%TZ)] backup starting -> $(basename "$OUT")"
 
 # -Fc = custom format: compressed, and pg_restore can do selective restores
+# Dump and verify INSIDE the container via the /backups bind mount.
+# Piping through /dev/stdin fails: pg_restore needs a seekable file for
+# custom-format archives, and a pipe is not seekable.
+NAME="$(basename "$OUT")"
 docker exec -e PGPASSWORD="$POSTGRES_PASSWORD" "$CONTAINER" \
   pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc --no-owner --no-acl \
-  > "$OUT"
+  -f "/backups/$NAME"
 
-# A dump that cannot be listed is not a backup.
-if ! docker exec -i "$CONTAINER" pg_restore --list /dev/stdin < "$OUT" >/dev/null 2>&1; then
-  echo "[$(date -u +%FT%TZ)] FATAL: dump failed verification, removing"
-  rm -f "$OUT"
+if ! docker exec "$CONTAINER" pg_restore --list "/backups/$NAME" >/dev/null 2>&1; then
+  echo "[$(date -u +%FT%TZ)] FATAL: dump failed verification:"
+  docker exec "$CONTAINER" pg_restore --list "/backups/$NAME" 2>&1 | head -5
+  docker exec "$CONTAINER" rm -f "/backups/$NAME"
   exit 1
 fi
 
