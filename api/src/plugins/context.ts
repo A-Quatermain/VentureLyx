@@ -96,6 +96,19 @@ export default fp(async function contextPlugin(app: FastifyInstance) {
   });
 
   app.setErrorHandler((err: unknown, req: FastifyRequest, reply: FastifyReply) => {
+    // Zod throws on bad input. Without this it falls through to the 500
+    // branch and the user sees "something went wrong on our side" for what is
+    // actually their typo, while the log fills with stack traces.
+    if ((err as { name?: string }).name === 'ZodError') {
+      const issues = (err as { issues?: Array<{ path: (string|number)[]; message: string }> }).issues ?? [];
+      const first = issues[0];
+      return reply.status(400).send({
+        error: first ? `${first.path.join('.')}: ${first.message}` : 'Check the details you entered',
+        code: 'invalid_input',
+        fields: issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
+      });
+    }
+
     const e = err as HttpError & { message?: string };
     const status = e.statusCode ?? 500;
     if (status >= 500) {

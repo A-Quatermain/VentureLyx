@@ -101,7 +101,7 @@ def _norm(url: str) -> str:
     """
     url, _ = urldefrag(url)
     parts = urlparse(url)
-    path = parts.path
+    path = parts.path or "/"   # https://x.test and https://x.test/ are one page
     for idx in INDEX_FILES:
         if path.endswith("/" + idx):
             path = path[: -len(idx)]
