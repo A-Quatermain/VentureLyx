@@ -113,13 +113,14 @@ export default async function authRoutes(app: FastifyInstance) {
     config: { rateLimit: { max: 10, timeWindow: '5 minutes' } },
   }, async (req) => {
     const { code } = z.object({ code: z.string().min(6).max(10) }).parse(req.body);
-    if (!req.session) throw new HttpError(401, 'Sign in first', 'not_authenticated');
-    if (req.session.mfa_satisfied) return { ok: true };
+    const sess = req.session;
+    if (!sess) throw new HttpError(401, 'Sign in first', 'not_authenticated');
+    if (sess.mfa_satisfied) return { ok: true };
 
     const row = await withPlatform((q) =>
       q.one<{ totp_secret_enc: Buffer | null; email: string }>(
         `SELECT totp_secret_enc, email FROM users WHERE id = $1`,
-        [req.session!.user_id],
+        [sess.user_id],
       ),
     );
     if (!row?.totp_secret_enc) throw new HttpError(400, 'Two-factor is not set up', 'no_mfa');
@@ -130,9 +131,9 @@ export default async function authRoutes(app: FastifyInstance) {
     }
 
     await withPlatform(async (q) => {
-      await q.exec(`UPDATE sessions SET mfa_satisfied = true WHERE id = $1`, [req.session!.id]);
+      await q.exec(`UPDATE sessions SET mfa_satisfied = true WHERE id = $1`, [sess.id]);
       await audit(q, {
-        orgId: req.session!.org_id, actorUser: req.session!.user_id,
+        orgId: sess.org_id, actorUser: sess.user_id,
         action: 'auth.mfa_verified', ip: req.ip,
       });
     });
@@ -141,7 +142,8 @@ export default async function authRoutes(app: FastifyInstance) {
 
   // ---- who am I ---------------------------------------------------------
   app.get('/auth/me', async (req) => {
-    if (!req.session) return { authenticated: false };
+    const sess = req.session;
+    if (!sess) return { authenticated: false };
 
     const orgs = await withPlatform((q) =>
       q.rows<{ id: string; name: string; slug: string; role: string; modules: unknown }>(
@@ -149,20 +151,20 @@ export default async function authRoutes(app: FastifyInstance) {
            FROM memberships m JOIN organizations o ON o.id = m.org_id
           WHERE m.user_id = $1 AND o.deleted_at IS NULL
           ORDER BY o.name`,
-        [req.session.user_id],
+        [sess.user_id],
       ),
     );
 
     return {
       authenticated: true,
-      mfaSatisfied: req.session.mfa_satisfied,
+      mfaSatisfied: sess.mfa_satisfied,
       user: {
-        id: req.session.user_id,
-        email: req.session.email,
-        name: req.session.full_name,
-        isStaff: req.session.is_platform_staff,
+        id: sess.user_id,
+        email: sess.email,
+        name: sess.full_name,
+        isStaff: sess.is_platform_staff,
       },
-      currentOrgId: req.session.org_id,
+      currentOrgId: sess.org_id,
       role: req.role,
       organizations: orgs,
     };
@@ -170,23 +172,23 @@ export default async function authRoutes(app: FastifyInstance) {
 
   // ---- switch business --------------------------------------------------
   app.post('/auth/org', async (req) => {
-    req.requireAuth();
+    const sess = req.requireAuth();
     const { orgId } = z.object({ orgId: z.string().uuid() }).parse(req.body);
 
     const allowed = await withPlatform((q) =>
       q.one(
         `SELECT 1 FROM memberships WHERE user_id = $1 AND org_id = $2`,
-        [req.session!.user_id, orgId],
+        [sess.user_id, orgId],
       ),
     );
-    if (!allowed && !req.session!.is_platform_staff) {
+    if (!allowed && !sess.is_platform_staff) {
       throw new HttpError(403, 'You do not have access to that business', 'forbidden');
     }
 
     await withPlatform(async (q) => {
-      await q.exec(`UPDATE sessions SET org_id = $2 WHERE id = $1`, [req.session!.id, orgId]);
+      await q.exec(`UPDATE sessions SET org_id = $2 WHERE id = $1`, [sess.id, orgId]);
       await audit(q, {
-        orgId, actorUser: req.session!.user_id, action: 'auth.switch_org',
+        orgId, actorUser: sess.user_id, action: 'auth.switch_org',
         staffMode: !allowed, ip: req.ip,
       });
     });
@@ -195,9 +197,10 @@ export default async function authRoutes(app: FastifyInstance) {
 
   // ---- sign out ---------------------------------------------------------
   app.post('/auth/logout', async (req, reply) => {
-    if (req.session) {
+    const sess = req.session;
+    if (sess) {
       await withPlatform((q) =>
-        q.exec(`UPDATE sessions SET revoked_at = now() WHERE id = $1`, [req.session!.id]),
+        q.exec(`UPDATE sessions SET revoked_at = now() WHERE id = $1`, [sess.id]),
       );
     }
     reply.clearCookie(SESSION_COOKIE, { path: '/' });
@@ -206,39 +209,39 @@ export default async function authRoutes(app: FastifyInstance) {
 
   // ---- enrol 2FA --------------------------------------------------------
   app.post('/auth/mfa/setup', async (req) => {
-    req.requireAuth();
+    const sess = req.requireAuth();
     const secret = newTotpSecret();
-    const uri = makeTotp(secret, req.session!.email).toString();
+    const uri = makeTotp(secret, sess.email).toString();
 
     await withPlatform((q) =>
       q.exec(
         `UPDATE users SET totp_secret_enc = $2 WHERE id = $1 AND totp_enabled_at IS NULL`,
-        [req.session!.user_id, Buffer.from(secret, 'utf8')],
+        [sess.user_id, Buffer.from(secret, 'utf8')],
       ),
     );
     return { secret, otpauthUri: uri };
   });
 
   app.post('/auth/mfa/confirm', async (req) => {
-    req.requireAuth();
+    const sess = req.requireAuth();
     const { code } = z.object({ code: z.string().min(6).max(10) }).parse(req.body);
 
     const row = await withPlatform((q) =>
       q.one<{ totp_secret_enc: Buffer | null }>(
-        `SELECT totp_secret_enc FROM users WHERE id = $1`, [req.session!.user_id],
+        `SELECT totp_secret_enc FROM users WHERE id = $1`, [sess.user_id],
       ),
     );
     if (!row?.totp_secret_enc) throw new HttpError(400, 'Start setup first', 'no_pending_mfa');
 
     const secret = row.totp_secret_enc.toString('utf8');
-    if (!verifyTotp(secret, req.session!.email, code)) {
+    if (!verifyTotp(secret, sess.email, code)) {
       throw new HttpError(400, 'That code is not right. Try the next one.', 'bad_code');
     }
 
     await withPlatform(async (q) => {
-      await q.exec(`UPDATE users SET totp_enabled_at = now() WHERE id = $1`, [req.session!.user_id]);
+      await q.exec(`UPDATE users SET totp_enabled_at = now() WHERE id = $1`, [sess.user_id]);
       await audit(q, {
-        orgId: req.session!.org_id, actorUser: req.session!.user_id,
+        orgId: sess.org_id, actorUser: sess.user_id,
         action: 'auth.mfa_enabled', ip: req.ip,
       });
     });
@@ -247,7 +250,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
   // ---- change password --------------------------------------------------
   app.post('/auth/password', async (req) => {
-    req.requireAuth();
+    const sess = req.requireAuth();
     const body = z.object({
       current: z.string().min(1),
       next: z.string().min(12, 'Use at least 12 characters').max(200),
@@ -255,7 +258,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
     const row = await withPlatform((q) =>
       q.one<{ password_hash: string | null }>(
-        `SELECT password_hash FROM users WHERE id = $1`, [req.session!.user_id],
+        `SELECT password_hash FROM users WHERE id = $1`, [sess.user_id],
       ),
     );
     if (!(await verifyPassword(row?.password_hash ?? null, body.current))) {
@@ -265,14 +268,14 @@ export default async function authRoutes(app: FastifyInstance) {
     const hashed = await hashPassword(body.next);
     await withPlatform(async (q) => {
       await q.exec(`UPDATE users SET password_hash = $2 WHERE id = $1`,
-        [req.session!.user_id, hashed]);
+        [sess.user_id, hashed]);
       // Every other session for this user dies.
       await q.exec(
         `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL`,
-        [req.session!.user_id, req.session!.id],
+        [sess.user_id, sess.id],
       );
       await audit(q, {
-        orgId: req.session!.org_id, actorUser: req.session!.user_id,
+        orgId: sess.org_id, actorUser: sess.user_id,
         action: 'auth.password_changed', ip: req.ip,
       });
     });

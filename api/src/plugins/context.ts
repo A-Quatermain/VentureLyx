@@ -18,8 +18,9 @@ declare module 'fastify' {
     role: Role | null;
     /** Run a query inside this request's tenant context. */
     db<T>(fn: (q: Querier) => Promise<T>): Promise<T>;
-    /** 401 unless signed in and MFA satisfied. */
-    requireAuth(): asserts this is FastifyRequest & { session: SessionRow };
+    /** 401 unless signed in and MFA satisfied. Returns the session so callers
+     *  get a non-null reference that survives awaits. */
+    requireAuth(): SessionRow;
     /** 401/403 unless signed in with an org and at least `needed`. */
     requireRole(needed: Role): void;
   }
@@ -78,11 +79,12 @@ export default fp(async function contextPlugin(app: FastifyInstance) {
     return withTenant(this.ctx, fn);
   });
 
-  app.decorateRequest('requireAuth', function (this: FastifyRequest) {
+  app.decorateRequest('requireAuth', function (this: FastifyRequest): SessionRow {
     if (!this.session) throw new HttpError(401, 'Sign in to continue', 'not_authenticated');
     if (!this.session.mfa_satisfied) {
       throw new HttpError(401, 'Two-factor verification required', 'mfa_required');
     }
+    return this.session;
   });
 
   app.decorateRequest('requireRole', function (this: FastifyRequest, needed: Role) {
@@ -93,8 +95,9 @@ export default fp(async function contextPlugin(app: FastifyInstance) {
     }
   });
 
-  app.setErrorHandler((err, req: FastifyRequest, reply: FastifyReply) => {
-    const status = (err as HttpError).statusCode ?? 500;
+  app.setErrorHandler((err: unknown, req: FastifyRequest, reply: FastifyReply) => {
+    const e = err as HttpError & { message?: string };
+    const status = e.statusCode ?? 500;
     if (status >= 500) {
       req.log.error({ err, url: req.url }, 'request failed');
       return reply.status(500).send({
@@ -103,8 +106,8 @@ export default fp(async function contextPlugin(app: FastifyInstance) {
       });
     }
     return reply.status(status).send({
-      error: err.message,
-      code: (err as HttpError).code ?? 'error',
+      error: e.message ?? 'Request failed',
+      code: e.code ?? 'error',
     });
   });
 });
