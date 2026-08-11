@@ -42,6 +42,15 @@ BEGIN
     -- Move any rows that reference the orphan org to the surviving org. Only
     -- seo_sites is populated today, but move the whole graph defensively so a
     -- later-seeded row cannot strand.
+    -- Demote first: a partial unique index allows only one primary site per
+    -- org, so reparenting a second primary would collide.
+    UPDATE seo_sites SET is_primary = false WHERE org_id = orphan_org;
+    -- Demote first: a partial unique index allows only one primary site per
+    -- org, so reparenting a second primary would collide.
+    UPDATE seo_sites SET is_primary = false WHERE org_id = orphan_org;
+    -- Demote first: a partial unique index permits only one primary site per
+    -- org, so reparenting a second primary collides before we can demote it.
+    UPDATE seo_sites SET is_primary = false WHERE org_id = orphan_org;
     UPDATE seo_sites            SET org_id = target_org WHERE org_id = orphan_org;
     UPDATE seo_crawls           SET org_id = target_org WHERE org_id = orphan_org;
     UPDATE seo_pages            SET org_id = target_org WHERE org_id = orphan_org;
@@ -71,6 +80,15 @@ BEGIN
   SELECT id INTO orphan_org FROM organizations WHERE slug = 'testguard';
 
   IF target_org IS NOT NULL AND orphan_org IS NOT NULL THEN
+    -- Demote first: a partial unique index allows only one primary site per
+    -- org, so reparenting a second primary would collide.
+    UPDATE seo_sites SET is_primary = false WHERE org_id = orphan_org;
+    -- Demote first: a partial unique index allows only one primary site per
+    -- org, so reparenting a second primary would collide.
+    UPDATE seo_sites SET is_primary = false WHERE org_id = orphan_org;
+    -- Demote first: a partial unique index permits only one primary site per
+    -- org, so reparenting a second primary collides before we can demote it.
+    UPDATE seo_sites SET is_primary = false WHERE org_id = orphan_org;
     UPDATE seo_sites            SET org_id = target_org WHERE org_id = orphan_org;
     UPDATE seo_crawls           SET org_id = target_org WHERE org_id = orphan_org;
     UPDATE seo_pages            SET org_id = target_org WHERE org_id = orphan_org;
