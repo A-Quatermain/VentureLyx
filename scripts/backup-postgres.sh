@@ -41,7 +41,11 @@ fi
 
 SIZE=$(du -h "$OUT" | cut -f1)
 sha256sum "$OUT" > "$OUT.sha256"
-chmod 600 "$OUT" "$OUT.sha256"
+# pg_dump writes as the postgres uid inside the container, so the dump lands
+# owned by 999:999 on the host and an unprivileged user cannot chmod it.
+# Set its mode from inside the container; the sha256 file is ours already.
+docker exec "$CONTAINER" chmod 600 "/backups/$NAME" 2>/dev/null || true
+chmod 600 "$OUT.sha256" 2>/dev/null || true
 echo "[$(date -u +%FT%TZ)] ok — $SIZE, verified"
 
 # retention
