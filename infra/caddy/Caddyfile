@@ -1,0 +1,34 @@
+# Venturelyx :: internal reverse proxy.
+# TLS terminates at Cloudflare; cloudflared connects to this on :8080.
+# Nothing here is exposed to the LAN.
+
+{
+	admin off
+	auto_https off
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:8080 {
+	log {
+		output stdout
+		format console
+	}
+
+	@api host api.venturelyx.com
+	handle @api {
+		reverse_proxy api:3000
+	}
+
+	@app host app.venturelyx.com
+	handle @app {
+		reverse_proxy web:3000
+	}
+
+	# Anything else reaching the tunnel gets a flat refusal rather than a
+	# confusing default page.
+	handle {
+		respond "Not found" 404
+	}
+}
