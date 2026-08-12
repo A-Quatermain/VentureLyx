@@ -19,5 +19,7 @@ dist/
 __pycache__/
 *.pyc
 .venv/
+next-env.d.ts
+*.tsbuildinfo
 
 .DS_Store
