@@ -2,10 +2,7 @@
 // the API is already configured for this origin, credentials included, no
 // proxy layer. Never call Postgres from here; there is no DATABASE_URL in
 // this app on purpose.
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE;
-if (!API_BASE) {
-  throw new Error('NEXT_PUBLIC_API_BASE is not set');
-}
+import { API_BASE } from './config';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public code?: string) {
