@@ -71,7 +71,13 @@ export function OrgSwitcher({
         {current ? (
           <>
             <HealthDot health={current.health} />
-            {current.name}
+            <span className="flex flex-col items-start leading-tight">
+              <span>{current.name}</span>
+              <span className="text-[11px] font-normal text-ink-3">
+                {current.siteCount} site{current.siteCount === 1 ? '' : 's'}
+                {current.health != null ? ` · ${current.health}/100` : ''}
+              </span>
+            </span>
           </>
         ) : (
           'Choose a business…'

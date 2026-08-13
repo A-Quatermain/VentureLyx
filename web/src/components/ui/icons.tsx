@@ -38,6 +38,33 @@ export function IconStar(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function IconTrendUp(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M2.5 13.5 8 8l3 3 4.5-4.5" />
+      <path d="M12 6h3.5v3.5" />
+    </svg>
+  );
+}
+
+export function IconMail(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="2" y="4" width="14" height="10" rx="1.5" />
+      <path d="m2.5 5 6.5 5 6.5-5" />
+    </svg>
+  );
+}
+
+export function IconClock(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="9" cy="9" r="6.5" />
+      <path d="M9 5.5V9l2.5 1.5" />
+    </svg>
+  );
+}
+
 export function IconUsers(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>
