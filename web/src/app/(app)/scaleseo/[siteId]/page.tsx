@@ -49,7 +49,7 @@ export default function ScaleSeoHealthPage({
       </div>
 
       <Card>
-        {score.health !== null ? (
+        {score && score.health !== null ? (
           <div className="flex flex-wrap items-center gap-5">
             <Ring score={score.health} />
             <div className="min-w-[180px] flex-1 space-y-2">
@@ -62,7 +62,7 @@ export default function ScaleSeoHealthPage({
         ) : (
           <p className="text-sm text-ink-2">No score yet — waiting on the first crawl.</p>
         )}
-        {score.computed_at && (
+        {score?.computed_at && (
           <p className="mt-3 text-xs text-ink-3">
             Checked {new Date(score.computed_at).toLocaleString()}
           </p>
@@ -71,8 +71,8 @@ export default function ScaleSeoHealthPage({
 
       <StatStrip
         stats={[
-          { label: 'Pages checked', value: String(score.pages_crawled ?? score.pages ?? 0) },
-          { label: 'Broken links', value: String(score.broken_links ?? 0) },
+          { label: 'Pages checked', value: String(score?.pages_crawled ?? score?.pages ?? 0) },
+          { label: 'Broken links', value: String(score?.broken_links ?? 0) },
           { label: 'Things to fix', value: String(issues.length) },
         ]}
       />

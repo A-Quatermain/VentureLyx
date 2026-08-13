@@ -133,7 +133,10 @@ export interface SeoTrendPoint {
 }
 
 export interface SeoHealthDetail {
-  score: SeoScoreDetail;
+  // q.one() returns null when the site has no crawl yet (new site, or a
+  // crawl that hasn't completed) — not a hypothetical, seo_scores simply
+  // has no matching row until the first crawl finishes.
+  score: SeoScoreDetail | null;
   issues: SeoIssueGroup[];
   trend: SeoTrendPoint[];
 }

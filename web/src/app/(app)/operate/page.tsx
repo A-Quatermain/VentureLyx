@@ -101,13 +101,7 @@ export default function OperatePage() {
 
         <Card className="p-0">
           <p className="p-4 pb-2 text-xs font-medium text-ink-3">WHERE YOUR CUSTOMERS ARE</p>
-          {leadsLoading ? (
-            <SkeletonCard />
-          ) : leads && leads.length > 0 ? (
-            <CityBreakdown leads={leads} />
-          ) : (
-            <p className="px-4 pb-4 text-sm text-ink-2">No leads with a city on file yet.</p>
-          )}
+          {leadsLoading ? <SkeletonCard /> : <CityBreakdown leads={leads ?? []} />}
         </Card>
       </div>
     </div>
