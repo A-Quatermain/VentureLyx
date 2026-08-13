@@ -27,6 +27,7 @@ services:
       SESSION_SECRET: ${SESSION_SECRET}
       VAULT_KEY: ${VAULT_KEY}
       CORS_ORIGINS: https://app.venturelyx.com
+      COOKIE_DOMAIN: .venturelyx.com
       DB_POOL_MAX: 12
       LOG_LEVEL: info
     healthcheck:

@@ -19,10 +19,18 @@ const LOCK_MINUTES = 15;
 
 export default async function authRoutes(app: FastifyInstance) {
 
+  // Host-only (no domain) scopes this cookie to api.venturelyx.com alone.
+  // web/'s Server Components (lib/session.ts) read the cookie off the
+  // *browser's request to app.venturelyx.com* and forward it server-side —
+  // so a host-only cookie never shows up there in the first place, even
+  // though a client-side fetch straight to api.venturelyx.com would still
+  // carry it fine. Scoping to the shared parent domain makes the same
+  // cookie valid for both, which server-side session reads depend on.
   const cookieOpts = {
     httpOnly: true,
     sameSite: 'lax' as const,
     secure: process.env.NODE_ENV === 'production',
+    domain: process.env.COOKIE_DOMAIN ?? '.venturelyx.com',
     path: '/',
     maxAge: SESSION_TTL_DAYS * 86_400,
   };
@@ -203,7 +211,10 @@ export default async function authRoutes(app: FastifyInstance) {
         q.exec(`UPDATE sessions SET revoked_at = now() WHERE id = $1`, [sess.id]),
       );
     }
-    reply.clearCookie(SESSION_COOKIE, { path: '/' });
+    // Must match the domain the cookie was set with, or the browser treats
+    // this as clearing an unrelated host-only cookie and leaves the real
+    // (now-revoked) session cookie sitting in the jar.
+    reply.clearCookie(SESSION_COOKIE, { path: '/', domain: cookieOpts.domain });
     return { ok: true };
   });
 
