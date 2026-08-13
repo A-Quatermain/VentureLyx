@@ -153,10 +153,31 @@ export default async function authRoutes(app: FastifyInstance) {
     const sess = req.session;
     if (!sess) return { authenticated: false };
 
+    // Health/siteCount power the org switcher's per-business summary (it's
+    // the most-used control in the app — the portfolio view is one tap away
+    // rather than a separate screen, per docs/DESIGN.md). Mirrors the
+    // in_health_score / is_primary convention from seo_latest_score
+    // (migration 004): WIP sites are tracked but never the headline score.
     const orgs = await withPlatform((q) =>
-      q.rows<{ id: string; name: string; slug: string; role: string; modules: unknown }>(
-        `SELECT o.id, o.name, o.slug, m.role, o.modules
-           FROM memberships m JOIN organizations o ON o.id = m.org_id
+      q.rows<{
+        id: string; name: string; slug: string; role: string; modules: unknown;
+        health: number | null; siteCount: number;
+      }>(
+        `SELECT o.id, o.name, o.slug, m.role, o.modules,
+                health_row.health, COALESCE(site_row.n, 0)::int AS "siteCount"
+           FROM memberships m
+           JOIN organizations o ON o.id = m.org_id
+      LEFT JOIN LATERAL (
+                  SELECT sc.health
+                    FROM seo_scores sc
+                    JOIN seo_sites s ON s.id = sc.site_id
+                   WHERE s.org_id = o.id AND s.is_primary AND s.in_health_score
+                   ORDER BY sc.computed_at DESC
+                   LIMIT 1
+                ) health_row ON true
+      LEFT JOIN LATERAL (
+                  SELECT count(*)::int AS n FROM seo_sites s WHERE s.org_id = o.id
+                ) site_row ON true
           WHERE m.user_id = $1 AND o.deleted_at IS NULL
           ORDER BY o.name`,
         [sess.user_id],
