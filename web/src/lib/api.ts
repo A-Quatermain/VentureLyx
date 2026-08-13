@@ -14,7 +14,11 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    // Only set Content-Type when there's actually a body — Fastify's JSON
+    // parser rejects an empty body sent with Content-Type: application/json
+    // (FST_ERR_CTP_EMPTY_JSON_BODY), which silently broke every bodyless
+    // POST (logout, crawl-trigger) with no visible error to the user.
+    headers: init?.body ? { 'Content-Type': 'application/json', ...init.headers } : init?.headers,
   });
 
   if (!res.ok) {
