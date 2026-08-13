@@ -1,16 +1,34 @@
 import type { Metadata } from 'next';
-import { Bricolage_Grotesque, Archivo, IBM_Plex_Mono } from 'next/font/google';
+import localFont from 'next/font/local';
 import '@/styles/globals.css';
 
-const display = Bricolage_Grotesque({
-  subsets: ['latin'],
-  weight: ['700', '800'],
+// Self-hosted from public/fonts/ rather than next/font/google: the
+// Docker build container can't reach fonts.googleapis.com (BuildKit's
+// isolated builder network has no working egress there, even though the
+// host and plain `docker run` containers do) — builds hung indefinitely
+// mid-build fetching them. Self-hosting makes the build network-independent
+// and faster; files are pre-subset to exactly the glyphs this app uses.
+const display = localFont({
+  src: [
+    { path: '../../public/fonts/bricolage-grotesque-700.woff2', weight: '700' },
+    { path: '../../public/fonts/bricolage-grotesque-800.woff2', weight: '800' },
+  ],
   variable: '--font-display',
 });
-const ui = Archivo({ subsets: ['latin'], variable: '--font-ui' });
-const mono = IBM_Plex_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500', '600'],
+const ui = localFont({
+  src: [
+    { path: '../../public/fonts/archivo-400.woff2', weight: '400' },
+    { path: '../../public/fonts/archivo-500.woff2', weight: '500' },
+    { path: '../../public/fonts/archivo-600.woff2', weight: '600' },
+  ],
+  variable: '--font-ui',
+});
+const mono = localFont({
+  src: [
+    { path: '../../public/fonts/ibm-plex-mono-400.woff2', weight: '400' },
+    { path: '../../public/fonts/ibm-plex-mono-500.woff2', weight: '500' },
+    { path: '../../public/fonts/ibm-plex-mono-600.woff2', weight: '600' },
+  ],
   variable: '--font-mono',
 });
 
