@@ -7,6 +7,13 @@ const config: Config = {
   content: ['./src/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      // docs/DESIGN.md: "Desktop >=1080px: dark sidebar." `dt` is that exact
+      // breakpoint; `g2` is where dashboard grids go 2-up before `dt` takes
+      // them to 3-up.
+      screens: {
+        g2: '700px',
+        dt: '1080px',
+      },
       colors: {
         deepwater: { DEFAULT: 'var(--deepwater)', 2: 'var(--deepwater-2)' },
         daylight: 'var(--daylight)',

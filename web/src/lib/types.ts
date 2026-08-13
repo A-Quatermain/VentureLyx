@@ -4,6 +4,8 @@ export interface Organization {
   slug: string;
   role: string;
   modules: unknown;
+  health: number | null;
+  siteCount: number;
 }
 
 export interface MeResponse {
@@ -155,4 +157,31 @@ export interface CrawlResponse {
   queued: boolean;
   jobId?: number;
   reason?: string;
+}
+
+// ---- Operate -------------------------------------------------------------
+export interface Lead {
+  id: string;
+  display_name: string;
+  lifecycle: string;
+  city: string | null;
+  last_activity_at: string | null;
+  first_seen_at: string;
+  channel: string | null;
+  source: string | null;
+  phone: string | null;
+}
+
+export interface OverdueInvoice {
+  number: string;
+  total: string;
+  owed: string;
+  due_on: string;
+  display_name: string;
+  days_overdue: number;
+}
+
+export interface OperateMoneyResponse {
+  overdue: OverdueInvoice[];
+  upcoming: { count: number; total: string };
 }

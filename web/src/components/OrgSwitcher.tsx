@@ -1,16 +1,19 @@
 'use client';
 
-import { useState, useTransition, type ChangeEvent } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { mutate } from 'swr';
 import { apiFetch } from '@/lib/api';
 import type { Organization } from '@/lib/types';
+import { healthTone, toneFill } from '@/components/ui/tone';
 
 // Switching orgs is a real state change: POST /auth/org updates
 // sessions.org_id server-side (that's what makes req.db()'s RLS context
 // correct on the next call), then we revalidate every SWR-cached org-scoped
 // query and refresh server-rendered data. Never just re-slice a cached
-// all-orgs list client-side.
+// all-orgs list client-side. The most-used control in the app, per
+// docs/DESIGN.md — the portfolio view (every business + its health) is one
+// tap away rather than a separate screen.
 export function OrgSwitcher({
   organizations,
   currentOrgId,
@@ -21,9 +24,28 @@ export function OrgSwitcher({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [switching, setSwitching] = useState(false);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
 
-  async function onChange(e: ChangeEvent<HTMLSelectElement>) {
-    const orgId = e.target.value;
+  const current = organizations.find((o) => o.id === currentOrgId);
+
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onEscape(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    document.addEventListener('mousedown', onClickOutside);
+    document.addEventListener('keydown', onEscape);
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onEscape);
+    };
+  }, []);
+
+  async function switchTo(orgId: string) {
+    setOpen(false);
     if (orgId === currentOrgId) return;
 
     setSwitching(true);
@@ -37,19 +59,69 @@ export function OrgSwitcher({
   }
 
   return (
-    <select
-      value={currentOrgId ?? ''}
-      onChange={onChange}
-      disabled={switching || pending}
-      aria-label="Switch business"
-      className="min-h-[42px] rounded-button border border-line-2 bg-card px-3 text-sm font-medium text-ink outline-none focus:border-pool disabled:opacity-60"
-    >
-      {!currentOrgId && <option value="">Choose a business…</option>}
-      {organizations.map((org) => (
-        <option key={org.id} value={org.id}>
-          {org.name}
-        </option>
-      ))}
-    </select>
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={switching || pending}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="flex min-h-[42px] items-center gap-2 rounded-button border border-line-2 bg-card px-3 text-sm font-medium text-ink outline-none focus:border-pool disabled:opacity-60"
+      >
+        {current ? (
+          <>
+            <HealthDot health={current.health} />
+            {current.name}
+          </>
+        ) : (
+          'Choose a business…'
+        )}
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+          <path
+            d="M3 4.5 6 7.5 9 4.5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          className="absolute left-0 top-full z-10 mt-1 w-72 rounded-card border border-line-2 bg-card py-1 shadow-card"
+        >
+          {organizations.map((org) => (
+            <button
+              key={org.id}
+              type="button"
+              role="option"
+              aria-selected={org.id === currentOrgId}
+              onClick={() => switchTo(org.id)}
+              className={`flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-card-sunk ${
+                org.id === currentOrgId ? 'bg-pool-soft' : ''
+              }`}
+            >
+              <HealthDot health={org.health} />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-ink">{org.name}</p>
+                <p className="text-xs text-ink-3">
+                  {org.siteCount} site{org.siteCount === 1 ? '' : 's'}
+                </p>
+              </div>
+              <span className="font-mono text-sm text-ink-2" data-numeric>
+                {org.health ?? '—'}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
+}
+
+function HealthDot({ health }: { health: number | null }) {
+  const tone = health === null ? 'ink' : healthTone(health);
+  return <span className={`h-2 w-2 shrink-0 rounded-full ${toneFill[tone]}`} />;
 }
