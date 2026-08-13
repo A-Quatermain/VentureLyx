@@ -8,7 +8,7 @@ export function Row({
   subtitle,
   value,
 }: {
-  icon: ReactNode;
+  icon?: ReactNode;
   tone?: Tone;
   title: ReactNode;
   subtitle?: ReactNode;
@@ -16,11 +16,13 @@ export function Row({
 }) {
   return (
     <div className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-card-sunk">
-      <div
-        className={`flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-button ${toneSoft[tone]}`}
-      >
-        {icon}
-      </div>
+      {icon && (
+        <div
+          className={`flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-button ${toneSoft[tone]}`}
+        >
+          {icon}
+        </div>
+      )}
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm text-ink">{title}</p>
         {subtitle && <p className="truncate text-xs text-ink-3">{subtitle}</p>}

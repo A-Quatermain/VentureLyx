@@ -3,11 +3,13 @@
 import { use } from 'react';
 import Link from 'next/link';
 import { useApi } from '@/lib/useApi';
-import type { SeoHealthDetail } from '@/lib/types';
+import type { SeoHealthDetail, SeoRanking } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
-import { HealthGauge } from '@/components/ui/HealthGauge';
+import { Ring } from '@/components/ui/Ring';
+import { Bar } from '@/components/ui/Bar';
 import { Sparkline } from '@/components/ui/Sparkline';
 import { SeverityBadge } from '@/components/ui/Badge';
+import { StatStrip } from '@/components/ui/StatStrip';
 import { CrawlButton } from '@/components/CrawlButton';
 
 export default function ScaleSeoHealthPage({
@@ -17,6 +19,7 @@ export default function ScaleSeoHealthPage({
 }) {
   const { siteId } = use(params);
   const { data, isLoading, error } = useApi<SeoHealthDetail>(`/seo/health/${siteId}`);
+  const { data: rankings } = useApi<SeoRanking[]>('/seo/rankings');
 
   if (isLoading) return <div className="p-4 text-sm text-ink-2">Loading…</div>;
   if (error || !data) {
@@ -46,26 +49,79 @@ export default function ScaleSeoHealthPage({
       </div>
 
       <Card>
-        <HealthGauge score={score.health} />
+        {score.health !== null ? (
+          <div className="flex flex-wrap items-center gap-5">
+            <Ring score={score.health} />
+            <div className="min-w-[180px] flex-1 space-y-2">
+              <Bar label="Technical" valueText={score.technical ?? '—'} percent={score.technical ?? 0} />
+              <Bar label="Content" valueText={score.content ?? '—'} percent={score.content ?? 0} />
+              <Bar label="Speed" valueText={score.performance ?? '—'} percent={score.performance ?? 0} />
+              <Bar label="Local presence" valueText={score.local_seo ?? '—'} percent={score.local_seo ?? 0} tone="sun" />
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-ink-2">No score yet — waiting on the first crawl.</p>
+        )}
         {score.computed_at && (
           <p className="mt-3 text-xs text-ink-3">
-            Last checked {new Date(score.computed_at).toLocaleString()} · {score.pages_crawled ?? score.pages ?? 0} pages
+            Checked {new Date(score.computed_at).toLocaleString()}
           </p>
         )}
       </Card>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <SubScore label="Technical" value={score.technical} />
-        <SubScore label="Content" value={score.content} />
-        <SubScore label="Performance" value={score.performance} />
-        <SubScore label="Local SEO" value={score.local_seo} />
-      </div>
+      <StatStrip
+        stats={[
+          { label: 'Pages checked', value: String(score.pages_crawled ?? score.pages ?? 0) },
+          { label: 'Broken links', value: String(score.broken_links ?? 0) },
+          { label: 'Things to fix', value: String(issues.length) },
+        ]}
+      />
 
       <Card>
         <p className="text-xs font-medium text-ink-3">HEALTH TREND</p>
         <div className="mt-2">
           <Sparkline points={trend} />
         </div>
+      </Card>
+
+      <Card className="overflow-x-auto p-0">
+        <p className="p-4 pb-2 text-xs font-medium text-ink-3">LOCAL RANKINGS</p>
+        {!rankings || rankings.length === 0 ? (
+          <p className="px-4 pb-4 text-sm text-ink-2">
+            No ranking data yet — this needs a rank-tracking source connected.
+          </p>
+        ) : (
+          <table className="w-full min-w-[520px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-line-2 text-xs text-ink-3">
+                <th className="px-4 py-2 font-medium">Area</th>
+                <th className="px-4 py-2 font-medium">Phrase</th>
+                <th className="px-4 py-2 font-medium">Position</th>
+                <th className="px-4 py-2 font-medium">Trend</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rankings.map((r) => (
+                <tr key={`${r.phrase}-${r.location_name}`} className="border-b border-line-2 last:border-0">
+                  <td className="px-4 py-2 text-ink">{r.location_name}</td>
+                  <td className="px-4 py-2 text-ink-2">{r.phrase}</td>
+                  <td className="px-4 py-2 font-mono" data-numeric>
+                    {r.position ?? '—'}
+                  </td>
+                  <td className="px-4 py-2 font-mono" data-numeric>
+                    {r.movement == null || r.movement === 0 ? (
+                      <span className="text-ink-3">—</span>
+                    ) : r.movement > 0 ? (
+                      <span className="text-growth">▲ {r.movement}</span>
+                    ) : (
+                      <span className="text-alert">▼ {Math.abs(r.movement)}</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </Card>
 
       <Card className="p-0">
@@ -97,14 +153,5 @@ export default function ScaleSeoHealthPage({
         )}
       </Card>
     </div>
-  );
-}
-
-function SubScore({ label, value }: { label: string; value: number | null }) {
-  return (
-    <Card>
-      <p className="text-xs text-ink-3">{label}</p>
-      <p className="mt-1 text-xl font-semibold text-ink">{value ?? '—'}</p>
-    </Card>
   );
 }

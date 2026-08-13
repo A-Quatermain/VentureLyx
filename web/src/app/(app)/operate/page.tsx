@@ -7,7 +7,7 @@ import { Card } from '@/components/ui/Card';
 import { Row } from '@/components/ui/Row';
 import { StatStrip } from '@/components/ui/StatStrip';
 import { SkeletonCard } from '@/components/ui/Skeleton';
-import { IconUsers, IconDollar } from '@/components/ui/icons';
+import { IconUsers, IconDollar, IconClock } from '@/components/ui/icons';
 
 function relativeTime(iso: string | null): string {
   if (!iso) return 'No activity yet';
@@ -33,7 +33,7 @@ export default function OperatePage() {
         ]}
       />
 
-      <div className="grid grid-cols-1 gap-4 g2:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 g2:grid-cols-2 dt:grid-cols-3">
         <Card className="p-0">
           <p className="p-4 pb-2 text-xs font-medium text-ink-3">LEADS NEEDING ATTENTION</p>
           {leadsLoading ? (
@@ -62,7 +62,7 @@ export default function OperatePage() {
           <p className="p-4 pb-2 text-xs font-medium text-ink-3">MONEY OWED TO YOU</p>
           {moneyLoading ? (
             <SkeletonCard />
-          ) : money && money.overdue.length > 0 ? (
+          ) : money && (money.overdue.length > 0 || money.upcoming.count > 0) ? (
             <div className="divide-y divide-line-2">
               {money.overdue.map((inv) => (
                 <Row
@@ -78,14 +78,68 @@ export default function OperatePage() {
                   }
                 />
               ))}
+              {money.upcoming.count > 0 && (
+                <Row
+                  icon={<IconClock width={16} height={16} />}
+                  tone="ink"
+                  title={`${money.upcoming.count} invoice${money.upcoming.count === 1 ? '' : 's'} not yet due`}
+                  subtitle="Due within 30 days"
+                  value={
+                    <span data-numeric className="font-mono text-sm text-ink">
+                      {formatMoney(money.upcoming.total)}
+                    </span>
+                  }
+                />
+              )}
             </div>
           ) : (
             <p className="px-4 pb-4 text-sm text-ink-2">
-              Nothing overdue — invoices past their due date show up here.
+              Nothing owed right now — overdue and upcoming invoices show up here.
             </p>
           )}
         </Card>
+
+        <Card className="p-0">
+          <p className="p-4 pb-2 text-xs font-medium text-ink-3">WHERE YOUR CUSTOMERS ARE</p>
+          {leadsLoading ? (
+            <SkeletonCard />
+          ) : leads && leads.length > 0 ? (
+            <CityBreakdown leads={leads} />
+          ) : (
+            <p className="px-4 pb-4 text-sm text-ink-2">No leads with a city on file yet.</p>
+          )}
+        </Card>
       </div>
+    </div>
+  );
+}
+
+function CityBreakdown({ leads }: { leads: Lead[] }) {
+  const counts = new Map<string, number>();
+  for (const lead of leads) {
+    if (!lead.city) continue;
+    counts.set(lead.city, (counts.get(lead.city) ?? 0) + 1);
+  }
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const top = sorted.slice(0, 4);
+  const restCount = sorted.slice(4).reduce((sum, [, n]) => sum + n, 0);
+  const restAreas = sorted.length - 4;
+
+  if (sorted.length === 0) {
+    return <p className="px-4 pb-4 text-sm text-ink-2">No leads with a city on file yet.</p>;
+  }
+
+  return (
+    <div className="divide-y divide-line-2">
+      {top.map(([city, count]) => (
+        <Row key={city} title={city} value={<span className="font-mono text-sm text-ink">{count}</span>} />
+      ))}
+      {restAreas > 0 && (
+        <Row
+          title={`${restAreas} other area${restAreas === 1 ? '' : 's'}`}
+          value={<span className="font-mono text-sm text-ink">{restCount}</span>}
+        />
+      )}
     </div>
   );
 }

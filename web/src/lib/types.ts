@@ -159,6 +159,15 @@ export interface CrawlResponse {
   reason?: string;
 }
 
+export interface SeoRanking {
+  phrase: string;
+  location_name: string;
+  position: number | null;
+  previous: number | null;
+  movement: number | null;
+  checked_on: string;
+}
+
 // ---- Operate -------------------------------------------------------------
 export interface Lead {
   id: string;
