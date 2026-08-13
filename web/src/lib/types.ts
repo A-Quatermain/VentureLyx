@@ -81,3 +81,78 @@ export interface Signal {
   detail: string | null;
   detected_at: string;
 }
+
+// ---- ScaleSEO ----------------------------------------------------------------
+export interface SeoSite {
+  id: string;
+  key: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+  render: boolean;
+  max_pages: number;
+  last_crawl_at: string | null;
+  next_crawl_at: string | null;
+  crawl_schedule: string | null;
+  health: number | null;
+  pages: number | null;
+  critical_issues: number | null;
+  high_issues: number | null;
+}
+
+export interface SeoScoreDetail {
+  health: number | null;
+  technical: number | null;
+  content: number | null;
+  performance: number | null;
+  local_seo: number | null;
+  pages: number | null;
+  broken_links: number | null;
+  critical_issues: number | null;
+  high_issues: number | null;
+  computed_at: string | null;
+  started_at: string | null;
+  pages_crawled: number | null;
+  crawl_status: string | null;
+}
+
+export interface SeoIssueGroup {
+  code: string;
+  severity: SignalSeverity;
+  auto_fixable: boolean;
+  pages: number;
+  examples: string[];
+  example_detail: string | null;
+}
+
+export interface SeoTrendPoint {
+  health: number | null;
+  computed_at: string;
+}
+
+export interface SeoHealthDetail {
+  score: SeoScoreDetail;
+  issues: SeoIssueGroup[];
+  trend: SeoTrendPoint[];
+}
+
+export interface SeoPage {
+  url: string;
+  status_code: number;
+  title: string | null;
+  title_len: number | null;
+  meta_desc_len: number | null;
+  h1_count: number | null;
+  word_count: number | null;
+  images_total: number | null;
+  images_no_alt: number | null;
+  response_ms: number | null;
+  indexable: boolean;
+  schema_types: unknown;
+}
+
+export interface CrawlResponse {
+  queued: boolean;
+  jobId?: number;
+  reason?: string;
+}
