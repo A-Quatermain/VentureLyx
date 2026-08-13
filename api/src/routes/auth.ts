@@ -112,6 +112,16 @@ export default async function authRoutes(app: FastifyInstance) {
       });
     });
 
+    // Anyone who signed in before the Domain=.venturelyx.com fix has a
+    // stale host-only cookie for api.venturelyx.com still sitting in their
+    // browser. Both it and the new domain-scoped cookie share the same
+    // name, so any request to api.venturelyx.com sends both — and if the
+    // server reads the stale one, client-side fetches (which hit
+    // api.venturelyx.com directly) start failing with 401 even though the
+    // page itself renders fine (server-side reads only ever see the
+    // correct, single forwarded value). Explicitly clear the host-only
+    // variant on every fresh login so it can't linger.
+    reply.clearCookie(SESSION_COOKIE, { path: '/' });
     reply.setCookie(SESSION_COOKIE, token, cookieOpts);
     return { mfaRequired: needsMfa, orgId: soleOrg, needsOrgChoice: orgs.length > 1 };
   });
@@ -232,10 +242,12 @@ export default async function authRoutes(app: FastifyInstance) {
         q.exec(`UPDATE sessions SET revoked_at = now() WHERE id = $1`, [sess.id]),
       );
     }
-    // Must match the domain the cookie was set with, or the browser treats
-    // this as clearing an unrelated host-only cookie and leaves the real
-    // (now-revoked) session cookie sitting in the jar.
+    // Clear both variants: the current domain-scoped cookie (must match
+    // the domain it was set with, or the browser treats this as clearing
+    // an unrelated cookie and leaves the real one behind), and the
+    // host-only one pre-fix browsers may still be carrying alongside it.
     reply.clearCookie(SESSION_COOKIE, { path: '/', domain: cookieOpts.domain });
+    reply.clearCookie(SESSION_COOKIE, { path: '/' });
     return { ok: true };
   });
 
