@@ -10,6 +10,7 @@ import rateLimit from '@fastify/rate-limit';
 import contextPlugin from './plugins/context.js';
 import authRoutes from './routes/auth.js';
 import dataRoutes from './routes/data.js';
+import operateRoutes from './routes/operate.js';
 import { healthy, shutdown } from './lib/db.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -67,6 +68,7 @@ app.get('/health', async (_req, reply) => {
 
 await app.register(authRoutes, { prefix: '/v1' });
 await app.register(dataRoutes, { prefix: '/v1' });
+await app.register(operateRoutes, { prefix: '/v1' });
 
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, async () => {

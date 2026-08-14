@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useApi } from '@/lib/useApi';
 import type { Lead, OperateMoneyResponse } from '@/lib/types';
 import { formatMoney } from '@/lib/format';
@@ -23,7 +24,12 @@ export default function OperatePage() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <p className="font-display text-lg font-bold text-deepwater">Operate</p>
+      <div className="flex items-center justify-between">
+        <p className="font-display text-lg font-bold text-deepwater">Operate</p>
+        <Link href="/operate/catalog" className="text-sm text-pool">
+          Catalog →
+        </Link>
+      </div>
 
       <StatStrip
         stats={[

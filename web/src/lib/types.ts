@@ -197,3 +197,21 @@ export interface OperateMoneyResponse {
   overdue: OverdueInvoice[];
   upcoming: { count: number; total: string };
 }
+
+export type CatalogKind = 'service' | 'product' | 'package' | 'fee';
+
+export interface CatalogItem {
+  id: string;
+  kind: CatalogKind;
+  name: string;
+  slug: string;
+  description: string | null;
+  sku: string | null;
+  unit: string;
+  unit_price: string | null;
+  cost: string | null;
+  taxable: boolean;
+  duration_min: number | null;
+  is_active: boolean;
+  priority: number;
+}
