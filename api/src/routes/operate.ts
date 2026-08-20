@@ -12,15 +12,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../lib/auth.js';
 import type { Querier } from '../lib/db.js';
+import { slugify } from '../lib/slug.js';
 import { HttpError } from '../plugins/context.js';
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
 
 async function logTimeline(
   q: Querier,

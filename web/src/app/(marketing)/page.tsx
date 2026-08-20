@@ -51,11 +51,14 @@ export default async function LandingPage() {
           </div>
           <div className="flex items-center gap-3">
             <ThemeToggle />
+            <Link href="/sign-in" className="hidden text-sm text-muted-foreground hover:text-foreground sm:inline">
+              Sign in
+            </Link>
             <Link
-              href="/sign-in"
+              href="/register"
               className="inline-flex min-h-[42px] items-center gap-1.5 bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
             >
-              Sign in <ArrowRight size={14} weight="bold" />
+              Get started <ArrowRight size={14} weight="bold" />
             </Link>
           </div>
         </div>
@@ -75,17 +78,17 @@ export default async function LandingPage() {
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
-              href="/sign-in"
+              href="/register"
               className="inline-flex min-h-[42px] items-center gap-1.5 bg-primary px-5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
             >
-              Sign in <ArrowRight size={16} weight="bold" />
+              Start free <ArrowRight size={16} weight="bold" />
             </Link>
-            <a
-              href="#modules"
+            <Link
+              href="/sign-in"
               className="inline-flex min-h-[42px] items-center border border-border px-5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
             >
-              See the modules
-            </a>
+              I have an account
+            </Link>
           </div>
         </div>
       </section>

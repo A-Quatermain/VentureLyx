@@ -5,6 +5,7 @@
  * Sessions exist from the first step but carry mfa_satisfied=false until the
  * code is verified, and requireAuth() rejects those.
  */
+import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withPlatform } from '../lib/db.js';
@@ -12,6 +13,7 @@ import {
   SESSION_COOKIE, SESSION_TTL_DAYS, audit, hashToken, newSessionToken,
   newTotpSecret, makeTotp, verifyPassword, verifyTotp, hashPassword,
 } from '../lib/auth.js';
+import { slugify } from '../lib/slug.js';
 import { HttpError } from '../plugins/context.js';
 
 const LOCK_AFTER = 8;
@@ -124,6 +126,139 @@ export default async function authRoutes(app: FastifyInstance) {
     reply.clearCookie(SESSION_COOKIE, { path: '/' });
     reply.setCookie(SESSION_COOKIE, token, cookieOpts);
     return { mfaRequired: needsMfa, orgId: soleOrg, needsOrgChoice: orgs.length > 1 };
+  });
+
+  // ---- register -----------------------------------------------------------
+  // Creates a user only — no org. A fresh account has nothing to enroll 2FA
+  // against yet, so the session starts mfa_satisfied like a login for a user
+  // with no TOTP set up would. POST /orgs (below) is the separate step that
+  // gives the account a business; a user can call it more than once.
+  app.post('/auth/register', {
+    config: { rateLimit: { max: 10, timeWindow: '5 minutes' } },
+  }, async (req, reply) => {
+    const body = z.object({
+      email: z.string().email(),
+      password: z.string().min(12, 'Use at least 12 characters').max(200),
+      full_name: z.string().trim().min(1).max(200),
+    }).parse(req.body);
+
+    const passwordHash = await hashPassword(body.password);
+    const token = newSessionToken();
+
+    let user: { id: string } | null = null;
+    try {
+      user = await withPlatform(async (q) => {
+        const created = await q.one<{ id: string }>(
+          `INSERT INTO users (email, password_hash, full_name)
+           VALUES ($1,$2,$3)
+           RETURNING id`,
+          [body.email, passwordHash, body.full_name],
+        );
+        await q.exec(
+          `INSERT INTO sessions (user_id, org_id, token_hash, ip, user_agent,
+                                 mfa_satisfied, expires_at)
+           VALUES ($1,NULL,$2,$3,$4,true, now() + ($5 || ' days')::interval)`,
+          [
+            created!.id, hashToken(token), req.ip,
+            req.headers['user-agent']?.slice(0, 400) ?? null, SESSION_TTL_DAYS,
+          ],
+        );
+        await audit(q, { orgId: null, actorUser: created!.id, action: 'auth.register', ip: req.ip });
+        return created;
+      });
+    } catch (err) {
+      // users_email_key unique_violation — someone raced us, or the email
+      // is already taken. Either way, fall through to the same generic
+      // rejection login uses for bad credentials: never reveal by a
+      // distinct error whether an email is registered.
+      if ((err as { code?: string }).code !== '23505') throw err;
+    }
+
+    if (!user) {
+      throw new HttpError(401, 'Email or password is incorrect', 'bad_credentials');
+    }
+
+    reply.clearCookie(SESSION_COOKIE, { path: '/' });
+    reply.setCookie(SESSION_COOKIE, token, cookieOpts);
+    return { mfaRequired: false, orgId: null, needsOrgChoice: false };
+  });
+
+  // ---- create an organization ----------------------------------------------
+  // A user may own more than one — this is a first-class path, not a
+  // one-time-only onboarding step, so it's never gated on "does this user
+  // already have a business."
+  app.post('/orgs', async (req) => {
+    const sess = req.requireAuth();
+    const body = z.object({
+      name: z.string().trim().min(1).max(200),
+      website_url: z.string().trim().url().nullable().optional(),
+      vertical: z.string().trim().min(1).max(100).nullable().optional(),
+    }).parse(req.body);
+
+    const baseSlug = slugify(body.name);
+    if (!baseSlug) throw new HttpError(400, 'Name must contain at least one letter or number', 'invalid_input');
+
+    const result = await withPlatform(async (q) => {
+      // organizations.slug is globally unique; two different owners naming
+      // their business the same thing is normal, so disambiguate instead of
+      // rejecting.
+      let slug = baseSlug;
+      const collision = await q.one(`SELECT 1 FROM organizations WHERE slug = $1`, [slug]);
+      if (collision) slug = `${baseSlug}-${randomBytes(3).toString('hex')}`;
+
+      const org = await q.one<{ id: string; name: string; slug: string }>(
+        `INSERT INTO organizations (slug, name, vertical, website_url, status)
+         VALUES ($1,$2,$3,$4,'onboarding')
+         RETURNING id, name, slug`,
+        [slug, body.name, body.vertical ?? null, body.website_url ?? null],
+      );
+      const orgId = org!.id;
+
+      await q.exec(
+        `INSERT INTO memberships (org_id, user_id, role, accepted_at)
+         VALUES ($1,$2,'owner', now())`,
+        [orgId, sess.user_id],
+      );
+
+      // New sign-ins land in "their most recent org if they have exactly
+      // one" (see /auth/login) — setting it here means the very next page
+      // load already has this org selected, no separate switch step.
+      await q.exec(`UPDATE sessions SET org_id = $2 WHERE id = $1`, [sess.id, orgId]);
+
+      let siteId: string | null = null;
+      let crawlQueued = false;
+      if (body.website_url) {
+        let host: string;
+        try { host = new URL(body.website_url).hostname.replace(/^www\./, ''); }
+        catch { host = body.website_url; }
+        const site = await q.one<{ id: string }>(
+          `INSERT INTO seo_sites (org_id, key, name, url, is_primary)
+           VALUES ($1,$2,$3,$4,true)
+           RETURNING id`,
+          [orgId, slugify(host) || slug, body.name, body.website_url],
+        );
+        siteId = site!.id;
+        const job = await q.one<{ id: number }>(
+          `INSERT INTO job_queue (org_id, kind, payload, dedupe_key, priority)
+           VALUES ($1, 'seo.crawl',
+                   jsonb_build_object('site_id', $2::text, 'trigger', 'onboarding'),
+                   'seo.crawl:' || $2::text, 50)
+           ON CONFLICT DO NOTHING
+           RETURNING id`,
+          [orgId, siteId],
+        );
+        crawlQueued = !!job;
+      }
+
+      await audit(q, {
+        orgId, actorUser: sess.user_id, action: 'org.create',
+        entityType: 'organizations', entityId: orgId, ip: req.ip,
+      });
+
+      return { id: orgId, name: org!.name, slug: org!.slug, siteId, crawlQueued };
+    });
+
+    return result;
   });
 
   // ---- verify 2FA -------------------------------------------------------

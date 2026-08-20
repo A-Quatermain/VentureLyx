@@ -28,6 +28,14 @@ export interface LoginResponse {
   needsOrgChoice: boolean;
 }
 
+export interface CreateOrgResponse {
+  id: string;
+  name: string;
+  slug: string;
+  siteId: string | null;
+  crawlQueued: boolean;
+}
+
 // ---- GET /command/summary --------------------------------------------------
 export interface Opportunity {
   id: string;

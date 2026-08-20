@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { apiFetch, ApiError } from '@/lib/api';
 import { ensureOrgSelected } from '@/lib/orgSelect';
 import type { LoginResponse } from '@/lib/types';
@@ -75,6 +76,13 @@ export default function SignInPage() {
             {busy ? 'Signing in…' : 'Sign in'}
           </Button>
         </form>
+
+        <p className="mt-4 text-center text-sm text-muted-foreground">
+          New to Venturelyx?{' '}
+          <Link href="/register" className="text-primary">
+            Create an account
+          </Link>
+        </p>
       </Card>
     </main>
   );
