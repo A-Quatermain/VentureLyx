@@ -10,19 +10,19 @@ export function Skeleton({ className = '' }: { className?: string }) {
 export function SkeletonRow() {
   return (
     <div className="flex items-center gap-3 px-4 py-3">
-      <Skeleton className="h-[34px] w-[34px] rounded-button bg-line-2" />
+      <Skeleton className="h-[34px] w-[34px] rounded-none bg-muted" />
       <div className="flex-1 space-y-2">
-        <Skeleton className="h-3.5 w-2/3 rounded-button bg-line-2" />
-        <Skeleton className="h-3 w-1/3 rounded-button bg-line-2" />
+        <Skeleton className="h-3.5 w-2/3 rounded-none bg-muted" />
+        <Skeleton className="h-3 w-1/3 rounded-none bg-muted" />
       </div>
-      <Skeleton className="h-4 w-12 rounded-button bg-line-2" />
+      <Skeleton className="h-4 w-12 rounded-none bg-muted" />
     </div>
   );
 }
 
 export function SkeletonCard({ rows = 3 }: { rows?: number }) {
   return (
-    <div className="divide-y divide-line-2">
+    <div className="divide-y divide-border">
       {Array.from({ length: rows }).map((_, i) => (
         <SkeletonRow key={i} />
       ))}

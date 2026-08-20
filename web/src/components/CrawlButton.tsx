@@ -36,7 +36,7 @@ export function CrawlButton({ siteId }: { siteId: string }) {
       <Button variant="ghost" onClick={onClick} disabled={busy}>
         {busy ? 'Queuing…' : 'Run a check now'}
       </Button>
-      {message && <span className="text-xs text-ink-3">{message}</span>}
+      {message && <span className="text-xs text-muted-foreground">{message}</span>}
     </div>
   );
 }

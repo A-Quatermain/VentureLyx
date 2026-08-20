@@ -9,6 +9,7 @@ import type { SummaryResponse, Signal, Lead, MeResponse, Opportunity } from '@/l
 import { formatMoney } from '@/lib/format';
 import { GrowthGauge } from '@/components/GrowthGauge';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { toneOutline, type Tone } from '@/components/ui/tone';
 
 function Metric({
   label,
@@ -37,10 +38,10 @@ type Action =
   | { kind: 'opportunity'; id: string; title: string; detail: string; module: string; priority: 'high' }
   | { kind: 'signal'; id: string; title: string; detail: string; module: string; priority: 'high' | 'medium' | 'low' };
 
-const PRIORITY_STYLE: Record<Action['priority'], string> = {
-  high: 'border-destructive text-destructive',
-  medium: 'border-primary text-primary',
-  low: 'border-muted-foreground text-muted-foreground',
+const PRIORITY_TONE: Record<Action['priority'], Tone> = {
+  high: 'destructive',
+  medium: 'primary',
+  low: 'muted',
 };
 
 function toActions(opportunities: Opportunity[], signals: Signal[]): Action[] {
@@ -142,7 +143,7 @@ export default function CommandCenter() {
           {actions.map((a) => (
             <div key={`${a.kind}-${a.id}`} className="group flex items-start justify-between gap-4 px-6 py-4">
               <div className="flex items-start gap-3">
-                <span className={`mt-0.5 border px-1.5 py-0.5 font-mono text-[10px] uppercase ${PRIORITY_STYLE[a.priority]}`}>
+                <span className={`mt-0.5 border px-1.5 py-0.5 font-mono text-[10px] uppercase ${toneOutline[PRIORITY_TONE[a.priority]]}`}>
                   {a.priority}
                 </span>
                 <div>

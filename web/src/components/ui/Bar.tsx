@@ -5,7 +5,7 @@ export function Bar({
   label,
   valueText,
   percent,
-  tone = 'pool',
+  tone = 'primary',
 }: {
   label: ReactNode;
   valueText: ReactNode;
@@ -16,13 +16,13 @@ export function Bar({
   return (
     <div>
       <div className="flex items-baseline justify-between gap-2 text-xs">
-        <span className="truncate text-ink-2">{label}</span>
-        <span className="shrink-0 font-mono text-ink" data-numeric>
+        <span className="truncate text-muted-foreground">{label}</span>
+        <span className="shrink-0 font-mono text-foreground" data-numeric>
           {valueText}
         </span>
       </div>
-      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-line-2">
-        <div className={`h-full rounded-full ${toneFill[tone]}`} style={{ width: `${clamped}%` }} />
+      <div className="mt-1 h-1.5 w-full overflow-hidden bg-muted">
+        <div className={`h-full ${toneFill[tone]}`} style={{ width: `${clamped}%` }} />
       </div>
     </div>
   );

@@ -18,7 +18,7 @@ export function Sparkline({ points }: { points: SeoTrendPoint[] }) {
   }>;
 
   if (chrono.length < 2) {
-    return <p className="text-xs text-ink-3">Not enough history yet for a trend.</p>;
+    return <p className="text-xs text-muted-foreground">Not enough history yet for a trend.</p>;
   }
 
   const w = 100;
@@ -35,7 +35,7 @@ export function Sparkline({ points }: { points: SeoTrendPoint[] }) {
         <polyline
           points={linePoints}
           fill="none"
-          className="stroke-ink-3"
+          className="stroke-muted-foreground"
           strokeWidth="2"
           strokeLinejoin="round"
           strokeLinecap="round"
@@ -47,7 +47,7 @@ export function Sparkline({ points }: { points: SeoTrendPoint[] }) {
           y1={yAt(chrono[lastIdx - 1]!.health)}
           x2={xAt(lastIdx)}
           y2={yAt(chrono[lastIdx]!.health)}
-          className="stroke-pool"
+          className="stroke-primary"
           strokeWidth="2"
           strokeLinecap="round"
           vectorEffect="non-scaling-stroke"
@@ -58,7 +58,7 @@ export function Sparkline({ points }: { points: SeoTrendPoint[] }) {
             cx={xAt(i)}
             cy={yAt(p.health)}
             r={i === lastIdx ? 2.5 : 1.5}
-            className={i === lastIdx ? 'fill-pool' : 'fill-ink-3'}
+            className={i === lastIdx ? 'fill-primary' : 'fill-muted-foreground'}
           />
         ))}
       </svg>
@@ -69,7 +69,7 @@ export function Sparkline({ points }: { points: SeoTrendPoint[] }) {
           key={p.computed_at}
           type="button"
           aria-label={`${p.health} on ${new Date(p.computed_at).toLocaleDateString()}`}
-          className="absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full"
+          className="absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2"
           style={{ left: `${xAt(i)}%`, top: `${(yAt(p.health) / h) * 100}%` }}
           onMouseEnter={() => setActive(i)}
           onMouseLeave={() => setActive(null)}
@@ -79,17 +79,17 @@ export function Sparkline({ points }: { points: SeoTrendPoint[] }) {
       ))}
       {active !== null && (
         <div
-          className="pointer-events-none absolute -translate-x-1/2 -translate-y-full rounded-button border border-line-2 bg-card px-2 py-1 text-xs shadow-card"
+          className="pointer-events-none absolute -translate-x-1/2 -translate-y-full border border-border bg-surface px-2 py-1 text-xs"
           style={{
             left: `${xAt(active)}%`,
             top: `${(yAt(chrono[active]!.health) / h) * 100}%`,
             marginTop: '-6px',
           }}
         >
-          <span className="font-mono font-medium text-ink" data-numeric>
+          <span className="font-mono font-medium text-foreground" data-numeric>
             {chrono[active]!.health}
           </span>{' '}
-          <span className="text-ink-3">
+          <span className="text-muted-foreground">
             {new Date(chrono[active]!.computed_at).toLocaleDateString()}
           </span>
         </div>

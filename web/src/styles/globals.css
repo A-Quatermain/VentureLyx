@@ -2,35 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
-/* "Daylight Ledger" tokens — docs/DESIGN.md, verbatim. This file is the only
-   place these hex values are written; everything else references the vars. */
+/* Swiss Brutalist tokens — docs/design_guidelines.json, verbatim (HSL
+   triplets: GrowthGauge's inline SVG reads hsl(var(--muted|primary|
+   destructive|success)) directly, so these can't be hex). Light is the
+   default per the spec ("Light theme by default... Must have a
+   Light/Dark theme toggle") — .dark below is applied by lib/theme.ts via
+   a class on <html>, not a media query, since the toggle is explicit. */
 :root {
-  --deepwater: #0e323c;
-  --deepwater-2: #14434f;
-  --daylight: #fbf8f3;
-  --card: #ffffff;
-  --card-sunk: #f6f2ea;
-  --ink: #16262a;
-  --ink-2: #41565a;
-  --ink-3: #7a8c8f;
-  --pool: #0f7a70;
-  --pool-soft: #e2f0ee;
-  --sun: #de9827;
-  --sun-soft: #fbf0dc;
-  --growth: #2c7a4b;
-  --growth-soft: #e5f1e9;
-  --alert: #be4437;
-  --alert-soft: #f8e6e4;
-  --line: #e8e2d6;
-  --line-2: #f1ece2;
-  --shadow: 0 1px 2px rgb(14 50 60 / 0.06), 0 1px 3px rgb(14 50 60 / 0.04);
-
-  /* Swiss Brutalist tokens — docs/design_guidelines.json, verbatim (HSL
-     triplets: GrowthGauge's inline SVG reads hsl(var(--muted|primary|
-     destructive|success)) directly, so these can't be hex). Light is the
-     default per the spec ("Light theme by default... Must have a
-     Light/Dark theme toggle") — .dark below is applied by lib/theme.ts via
-     a class on <html>, not a media query, since the toggle is explicit. */
   --bg: 60 5.9% 96.7%;
   --fg: 0 0% 3.9%;
   --card: 0 0% 100%;
@@ -63,8 +41,8 @@
 }
 
 body {
-  background: var(--daylight);
-  color: var(--ink);
+  background: hsl(var(--bg));
+  color: hsl(var(--fg));
   font-family: var(--font-ui), sans-serif;
 }
 

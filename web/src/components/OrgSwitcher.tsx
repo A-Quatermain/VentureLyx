@@ -128,6 +128,6 @@ export function OrgSwitcher({
 }
 
 function HealthDot({ health }: { health: number | null }) {
-  const tone = health === null ? 'ink' : healthTone(health);
+  const tone = health === null ? 'muted' : healthTone(health);
   return <span className={`h-2 w-2 shrink-0 rounded-full ${toneFill[tone]}`} />;
 }

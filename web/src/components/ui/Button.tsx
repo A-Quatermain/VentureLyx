@@ -4,16 +4,21 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'attention' | 'ghost';
 }
 
+// design_guidelines.json: primary (Klein Blue) is reserved for critical
+// conversions/CTAs — there's no separate "amber attention" tier in this
+// system the way Daylight Ledger had one, so `attention` maps to
+// destructive instead (unused anywhere currently, kept for a future
+// urgent/destructive-toned CTA rather than removed outright).
 const variants: Record<NonNullable<ButtonProps['variant']>, string> = {
-  primary: 'bg-pool text-white hover:opacity-90',
-  attention: 'bg-sun text-white hover:opacity-90',
-  ghost: 'bg-transparent text-ink border border-line-2 hover:bg-card-sunk',
+  primary: 'bg-primary text-primary-foreground hover:opacity-90',
+  attention: 'bg-destructive text-destructive-foreground hover:opacity-90',
+  ghost: 'bg-transparent text-foreground border border-border hover:bg-muted',
 };
 
 export function Button({ variant = 'primary', className = '', ...props }: ButtonProps) {
   return (
     <button
-      className={`min-h-[42px] rounded-button px-4 text-sm font-medium transition-opacity disabled:opacity-50 ${variants[variant]} ${className}`}
+      className={`min-h-[42px] rounded-none px-4 text-sm font-medium transition-opacity disabled:opacity-50 ${variants[variant]} ${className}`}
       {...props}
     />
   );

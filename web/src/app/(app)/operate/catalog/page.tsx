@@ -59,11 +59,11 @@ export default function CatalogPage() {
     <div className="flex flex-col gap-4 p-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="font-display text-lg font-bold text-deepwater">Catalog</p>
-          <p className="text-sm text-ink-2">What the business sells — feeds job and invoice lines.</p>
+          <p className="font-display text-lg font-black tracking-tight">Catalog</p>
+          <p className="text-sm text-muted-foreground">What the business sells — feeds job and invoice lines.</p>
         </div>
         <div className="flex items-center gap-3">
-          <Link href="/operate" className="text-sm text-pool">
+          <Link href="/operate" className="text-sm text-primary">
             ← Operate
           </Link>
           {canEdit && !adding && (
@@ -76,13 +76,13 @@ export default function CatalogPage() {
         {isLoading ? (
           <SkeletonCard />
         ) : error ? (
-          <p className="p-4 text-sm text-alert">
+          <p className="p-4 text-sm text-destructive">
             {error instanceof Error ? error.message : 'Could not load the catalog.'}
           </p>
         ) : (
           <table className="w-full min-w-[640px] text-left text-sm">
             <thead>
-              <tr className="border-b border-line-2 text-xs text-ink-3">
+              <tr className="border-b border-border text-xs text-muted-foreground">
                 <th className="px-4 py-2 font-medium">Name</th>
                 <th className="px-4 py-2 font-medium">Kind</th>
                 <th className="px-4 py-2 font-medium">Price</th>
@@ -131,7 +131,7 @@ export default function CatalogPage() {
               )}
               {!adding && (items?.length ?? 0) === 0 && (
                 <tr>
-                  <td colSpan={canEdit ? 7 : 6} className="px-4 py-6 text-center text-sm text-ink-2">
+                  <td colSpan={canEdit ? 7 : 6} className="px-4 py-6 text-center text-sm text-muted-foreground">
                     Nothing in the catalog yet.
                     {canEdit && ' Add the first item above.'}
                   </td>
@@ -172,21 +172,21 @@ function CatalogDisplayRow({
   }
 
   return (
-    <tr className="border-b border-line-2 last:border-0 hover:bg-card-sunk">
-      <td className="px-4 py-2 text-ink">
+    <tr className="border-b border-border last:border-0 hover:bg-muted">
+      <td className="px-4 py-2">
         {item.name}
-        {item.description && <p className="text-xs text-ink-3">{item.description}</p>}
+        {item.description && <p className="text-xs text-muted-foreground">{item.description}</p>}
       </td>
-      <td className="px-4 py-2 text-ink-2 capitalize">{item.kind}</td>
+      <td className="px-4 py-2 capitalize text-muted-foreground">{item.kind}</td>
       <td className="px-4 py-2 font-mono" data-numeric>
         {item.unit_price !== null ? formatMoney(item.unit_price) : '—'}
       </td>
-      <td className="px-4 py-2 text-ink-2">{item.unit}</td>
-      <td className="px-4 py-2 text-ink-2">{item.taxable ? 'Yes' : 'No'}</td>
+      <td className="px-4 py-2 text-muted-foreground">{item.unit}</td>
+      <td className="px-4 py-2 text-muted-foreground">{item.taxable ? 'Yes' : 'No'}</td>
       <td className="px-4 py-2">
         <span
-          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-            item.is_active ? 'bg-growth-soft text-growth' : 'bg-line-2 text-ink-3'
+          className={`border px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase ${
+            item.is_active ? 'border-success text-success' : 'border-border text-muted-foreground'
           }`}
         >
           {item.is_active ? 'Active' : 'Inactive'}
@@ -195,14 +195,14 @@ function CatalogDisplayRow({
       {canEdit && (
         <td className="px-4 py-2 text-right">
           <div className="flex justify-end gap-2">
-            <button onClick={onEdit} className="text-xs text-pool hover:underline">
+            <button onClick={onEdit} className="text-xs text-primary hover:underline">
               Edit
             </button>
             {canDelete && (
               <button
                 onClick={onDelete}
                 disabled={busy}
-                className="text-xs text-alert hover:underline disabled:opacity-50"
+                className="text-xs text-destructive hover:underline disabled:opacity-50"
               >
                 Delete
               </button>
@@ -259,25 +259,28 @@ function CatalogFormRow({
     }
   }
 
+  const inputCls =
+    'min-h-[36px] rounded-none border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary';
+
   return (
-    <tr className="border-b border-line-2 bg-card-sunk last:border-0">
+    <tr className="border-b border-border bg-muted last:border-0">
       <td className="px-4 py-2" colSpan={columns}>
         <div className="flex flex-wrap items-end gap-2">
-          <label className="flex flex-col gap-1 text-xs text-ink-2">
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Name
             <input
               autoFocus
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="min-h-[36px] w-40 rounded-button border border-line-2 bg-daylight px-2 text-sm text-ink outline-none focus:border-pool"
+              className={`w-40 ${inputCls}`}
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs text-ink-2">
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Kind
             <select
               value={form.kind}
               onChange={(e) => setForm({ ...form, kind: e.target.value as CatalogKind })}
-              className="min-h-[36px] rounded-button border border-line-2 bg-daylight px-2 text-sm text-ink outline-none focus:border-pool"
+              className={inputCls}
             >
               {KINDS.map((k) => (
                 <option key={k} value={k}>
@@ -286,25 +289,25 @@ function CatalogFormRow({
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-xs text-ink-2">
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Price
             <input
               type="number"
               step="0.01"
               value={form.unit_price}
               onChange={(e) => setForm({ ...form, unit_price: e.target.value })}
-              className="min-h-[36px] w-24 rounded-button border border-line-2 bg-daylight px-2 text-sm text-ink outline-none focus:border-pool"
+              className={`w-24 ${inputCls}`}
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs text-ink-2">
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Unit
             <input
               value={form.unit}
               onChange={(e) => setForm({ ...form, unit: e.target.value })}
-              className="min-h-[36px] w-20 rounded-button border border-line-2 bg-daylight px-2 text-sm text-ink outline-none focus:border-pool"
+              className={`w-20 ${inputCls}`}
             />
           </label>
-          <label className="flex items-center gap-1.5 text-xs text-ink-2">
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <input
               type="checkbox"
               checked={form.taxable}
@@ -312,7 +315,7 @@ function CatalogFormRow({
             />
             Taxable
           </label>
-          <label className="flex items-center gap-1.5 text-xs text-ink-2">
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <input
               type="checkbox"
               checked={form.is_active}
@@ -320,12 +323,12 @@ function CatalogFormRow({
             />
             Active
           </label>
-          <label className="flex flex-1 flex-col gap-1 text-xs text-ink-2">
+          <label className="flex flex-1 flex-col gap-1 text-xs text-muted-foreground">
             Description
             <input
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
-              className="min-h-[36px] w-full min-w-[140px] rounded-button border border-line-2 bg-daylight px-2 text-sm text-ink outline-none focus:border-pool"
+              className={`w-full min-w-[140px] ${inputCls}`}
             />
           </label>
           <div className="flex gap-2">
@@ -337,7 +340,7 @@ function CatalogFormRow({
             </Button>
           </div>
         </div>
-        {error && <p className="mt-2 text-xs text-alert">{error}</p>}
+        {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
       </td>
     </tr>
   );

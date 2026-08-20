@@ -40,13 +40,13 @@ export default function SignInPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-daylight p-6">
-      <Card className="w-full max-w-sm">
-        <p className="font-display text-lg font-bold text-deepwater">Venturelyx</p>
-        <p className="mt-1 text-sm text-ink-2">Sign in to Command Center</p>
+    <main className="flex min-h-screen items-center justify-center bg-background p-6">
+      <Card className="w-full max-w-sm p-8">
+        <p className="font-display text-lg font-black tracking-tight">Venturelyx</p>
+        <p className="mt-1 text-sm text-muted-foreground">Sign in to Command Center</p>
 
         <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-3">
-          <label className="flex flex-col gap-1 text-sm text-ink-2">
+          <label className="flex flex-col gap-1 text-sm text-muted-foreground">
             Email
             <input
               type="email"
@@ -54,10 +54,10 @@ export default function SignInPage() {
               autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="min-h-[42px] rounded-button border border-line-2 bg-daylight px-3 text-ink outline-none focus:border-pool"
+              className="min-h-[42px] rounded-none border border-border bg-background px-3 text-foreground outline-none focus:border-primary"
             />
           </label>
-          <label className="flex flex-col gap-1 text-sm text-ink-2">
+          <label className="flex flex-col gap-1 text-sm text-muted-foreground">
             Password
             <input
               type="password"
@@ -65,11 +65,11 @@ export default function SignInPage() {
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="min-h-[42px] rounded-button border border-line-2 bg-daylight px-3 text-ink outline-none focus:border-pool"
+              className="min-h-[42px] rounded-none border border-border bg-background px-3 text-foreground outline-none focus:border-primary"
             />
           </label>
 
-          {error && <p className="text-sm text-alert">{error}</p>}
+          {error && <p className="text-sm text-destructive">{error}</p>}
 
           <Button type="submit" disabled={busy} className="mt-2">
             {busy ? 'Signing in…' : 'Sign in'}

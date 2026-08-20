@@ -1,13 +1,13 @@
-import { healthTone, type HealthTone } from './tone';
+import { healthTone } from './tone';
 
-const strokeTone: Record<HealthTone, { track: string; fill: string }> = {
-  growth: { track: 'stroke-growth-soft', fill: 'stroke-growth' },
-  sun: { track: 'stroke-sun-soft', fill: 'stroke-sun' },
-  alert: { track: 'stroke-alert-soft', fill: 'stroke-alert' },
+const strokeFill: Record<string, string> = {
+  success: 'stroke-success',
+  primary: 'stroke-primary',
+  destructive: 'stroke-destructive',
 };
 
 export function Ring({ score, size = 88, strokeWidth = 8 }: { score: number; size?: number; strokeWidth?: number }) {
-  const tone = strokeTone[healthTone(score)];
+  const fill = strokeFill[healthTone(score)];
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const clamped = Math.max(0, Math.min(100, score));
@@ -16,14 +16,7 @@ export function Ring({ score, size = 88, strokeWidth = 8 }: { score: number; siz
   return (
     <div className="relative" style={{ width: size, height: size }}>
       <svg width={size} height={size} className="-rotate-90">
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          strokeWidth={strokeWidth}
-          className={tone.track}
-        />
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" strokeWidth={strokeWidth} className="stroke-muted" />
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -32,13 +25,12 @@ export function Ring({ score, size = 88, strokeWidth = 8 }: { score: number; siz
           strokeWidth={strokeWidth}
           strokeDasharray={circumference}
           strokeDashoffset={offset}
-          strokeLinecap="round"
-          className={tone.fill}
+          className={fill}
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-2xl font-semibold text-ink">{score}</span>
-        <span className="text-[10px] text-ink-3">/100</span>
+        <span className="font-mono text-2xl font-semibold text-foreground">{score}</span>
+        <span className="text-[10px] text-muted-foreground">/100</span>
       </div>
     </div>
   );
