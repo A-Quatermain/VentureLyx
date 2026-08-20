@@ -1,115 +1,182 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
+import {
+  TrendUp, Users, CurrencyDollar, MagnifyingGlass, Kanban, Lightning, ArrowRight,
+} from '@phosphor-icons/react';
 import { useApi } from '@/lib/useApi';
-import type { SummaryResponse, Signal, Lead, MeResponse } from '@/lib/types';
-import { NextMoveCard } from '@/components/NextMoveCard';
-import { WorthDoingCard } from '@/components/WorthDoingCard';
-import { NewLeadsCard } from '@/components/NewLeadsCard';
-import { ModuleRail } from '@/components/ModuleRail';
-import { RevenueCard } from '@/components/RevenueCard';
-import { ScaleSeoHealthCard } from '@/components/ScaleSeoHealthCard';
-import { StatStrip } from '@/components/ui/StatStrip';
-import { Card } from '@/components/ui/Card';
+import type { SummaryResponse, Signal, Lead, MeResponse, Opportunity } from '@/lib/types';
+import { formatMoney } from '@/lib/format';
+import { GrowthGauge } from '@/components/GrowthGauge';
 import { Skeleton } from '@/components/ui/Skeleton';
 
-function greeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 18) return 'Good afternoon';
-  return 'Good evening';
-}
-
-export default function HomePage() {
-  const { data: summary, error: summaryError, isLoading: summaryLoading } =
-    useApi<SummaryResponse>('/command/summary');
-  const { data: signals } = useApi<Signal[]>('/command/signals');
-  const { data: leads } = useApi<Lead[]>('/operate/leads');
-  const { data: me } = useApi<MeResponse>('/auth/me');
-
-  if (summaryLoading) return <HomeSkeleton />;
-
-  if (summaryError || !summary) {
-    return (
-      <div className="p-4">
-        <Card>
-          <p className="text-sm text-alert">
-            {summaryError instanceof Error ? summaryError.message : 'Could not load Command Center.'}
-          </p>
-        </Card>
-      </div>
-    );
-  }
-
-  const firstName = me?.user?.name?.split(' ')[0];
-  const remainingOpportunities = summary.opportunities.slice(1);
-
+function Metric({
+  label,
+  value,
+  sub,
+  icon: Icon,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  icon: typeof CurrencyDollar;
+}) {
   return (
-    <div className="flex flex-col gap-4 p-4">
-      <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-ink-3">
-          {new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' })}
-        </p>
-        <p className="font-display text-2xl font-extrabold text-deepwater">
-          {greeting()}{firstName ? `, ${firstName}` : ''}
-        </p>
-        <p className="mt-1 text-sm text-ink-2">Here&apos;s where the business stands today.</p>
+    <div className="border border-border bg-surface p-6 transition-transform hover:-translate-y-0.5">
+      <div className="mb-4 flex items-center justify-between">
+        <span className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">{label}</span>
+        <Icon size={18} weight="duotone" className="text-muted-foreground" />
       </div>
-
-      <NextMoveCard opportunity={summary.opportunities[0]} />
-
-      <StatStrip
-        stats={[
-          {
-            label: 'Jobs done today',
-            value: `${summary.work.today_done}/${summary.work.today_total}`,
-          },
-          { label: 'New leads', value: String(summary.leads.new_leads) },
-          { label: 'Site health', value: summary.seo?.health != null ? String(summary.seo.health) : '—' },
-        ]}
-      />
-
-      <div className="grid grid-cols-1 gap-4 g2:grid-cols-2 dt:grid-cols-3">
-        <div className="dt:col-span-2">
-          <RevenueCard
-            collected={summary.money.collected}
-            outstanding={summary.money.outstanding}
-            lastMonth={summary.money.last_month}
-            channels={summary.channels}
-          />
-        </div>
-        <ScaleSeoHealthCard seo={summary.seo} />
-
-        <WorthDoingCard opportunities={remainingOpportunities} signals={signals ?? []} />
-        <div className="dt:col-span-2">
-          <NewLeadsCard leads={leads ?? []} />
-        </div>
-      </div>
-
-      <ModuleRail leadCount={leads?.length} seoHealth={summary.seo?.health} />
+      <div className="font-mono text-3xl font-bold tracking-tighter sm:text-4xl">{value}</div>
+      {sub && <div className="mt-2 text-xs text-muted-foreground">{sub}</div>}
     </div>
   );
 }
 
-function HomeSkeleton() {
+type Action =
+  | { kind: 'opportunity'; id: string; title: string; detail: string; module: string; priority: 'high' }
+  | { kind: 'signal'; id: string; title: string; detail: string; module: string; priority: 'high' | 'medium' | 'low' };
+
+const PRIORITY_STYLE: Record<Action['priority'], string> = {
+  high: 'border-destructive text-destructive',
+  medium: 'border-primary text-primary',
+  low: 'border-muted-foreground text-muted-foreground',
+};
+
+function toActions(opportunities: Opportunity[], signals: Signal[]): Action[] {
+  const fromOpportunities: Action[] = opportunities.map((o) => ({
+    kind: 'opportunity',
+    id: o.id,
+    title: o.title,
+    detail: o.est_value_monthly ? `${o.rationale} — worth ~${formatMoney(o.est_value_monthly)}/mo` : o.rationale,
+    module: o.module,
+    priority: 'high',
+  }));
+  const fromSignals: Action[] = signals.map((s) => ({
+    kind: 'signal',
+    id: s.id,
+    title: s.summary,
+    detail: s.detail ?? s.module,
+    module: s.module,
+    priority: s.severity === 'critical' || s.severity === 'high' ? 'high' : s.severity === 'medium' ? 'medium' : 'low',
+  }));
+  return [...fromOpportunities, ...fromSignals];
+}
+
+export default function CommandCenter() {
+  const router = useRouter();
+  const { data: summary, error, isLoading } = useApi<SummaryResponse>('/command/summary');
+  const { data: signals } = useApi<Signal[]>('/command/signals');
+  const { data: leads } = useApi<Lead[]>('/operate/leads');
+  const { data: me } = useApi<MeResponse>('/auth/me');
+
+  if (isLoading) return <CommandCenterSkeleton />;
+
+  if (error || !summary) {
+    return (
+      <div className="border border-border bg-surface p-6">
+        <p className="text-sm text-destructive">
+          {error instanceof Error ? error.message : 'Could not load Command Center.'}
+        </p>
+      </div>
+    );
+  }
+
+  const orgName = me?.organizations?.find((o) => o.id === me.currentOrgId)?.name ?? 'Your Business';
+  const customers = (leads ?? []).filter((l) => l.lifecycle === 'customer').length;
+  const actions = toActions(summary.opportunities, signals ?? []);
+
   return (
-    <div className="flex flex-col gap-4 p-4">
-      <div className="space-y-2">
-        <Skeleton className="h-3 w-32" />
-        <Skeleton className="h-7 w-48" />
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="mb-1 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+            Business Command Center
+          </p>
+          <h1 className="font-display text-3xl font-black tracking-tighter sm:text-4xl">{orgName}</h1>
+        </div>
+        <p className="max-w-sm text-sm text-muted-foreground">
+          Everything reporting into one place. Here&apos;s what&apos;s driving your growth right now.
+        </p>
       </div>
-      <Skeleton className="h-32 w-full rounded-card" />
-      <div className="grid grid-cols-3 gap-2">
-        <Skeleton className="h-16 rounded-card" />
-        <Skeleton className="h-16 rounded-card" />
-        <Skeleton className="h-16 rounded-card" />
+
+      <div className="grid grid-cols-12 gap-4">
+        <div className="col-span-12 flex flex-col items-center justify-center border border-border bg-surface p-6 md:col-span-4">
+          <GrowthGauge score={summary.seo?.health ?? null} />
+          <p className="mt-4 max-w-[220px] text-center text-xs text-muted-foreground">
+            A single number for how healthy your business is across sales, reputation &amp; visibility.
+          </p>
+        </div>
+
+        <div className="col-span-12 grid grid-cols-2 gap-4 md:col-span-8 lg:grid-cols-3">
+          <Metric
+            label="Revenue (paid)"
+            value={formatMoney(summary.money.collected)}
+            sub={`${formatMoney(summary.money.outstanding)} outstanding`}
+            icon={CurrencyDollar}
+          />
+          <Metric label="New Leads" value={String(summary.leads.new_leads)} sub={`${summary.leads.stale} stale`} icon={TrendUp} />
+          <Metric label="Customers" value={String(customers)} sub="Lifecycle: customer" icon={Users} />
+          <Metric
+            label="SEO Score"
+            value={summary.seo?.health != null ? String(summary.seo.health) : '—'}
+            sub={summary.seo?.health ? 'of 100' : 'Run a scan'}
+            icon={MagnifyingGlass}
+          />
+          <Metric
+            label="Open Jobs"
+            value={String(summary.work.today_total)}
+            sub={`${summary.work.today_done} done today`}
+            icon={Kanban}
+          />
+        </div>
       </div>
-      <div className="grid grid-cols-1 gap-4 g2:grid-cols-2 dt:grid-cols-3">
-        <Skeleton className="h-40 rounded-card dt:col-span-2" />
-        <Skeleton className="h-40 rounded-card" />
-        <Skeleton className="h-40 rounded-card" />
-        <Skeleton className="h-40 rounded-card dt:col-span-2" />
+
+      <div className="border border-border bg-surface">
+        <div className="flex items-center gap-2 border-b border-border px-6 py-4">
+          <Lightning size={18} weight="fill" className="text-primary" />
+          <h3 className="font-display font-bold tracking-tight">Next Best Actions</h3>
+        </div>
+        <div className="divide-y divide-border">
+          {actions.length === 0 && <p className="px-6 py-8 text-sm text-muted-foreground">You&apos;re all caught up. Nice work.</p>}
+          {actions.map((a) => (
+            <div key={`${a.kind}-${a.id}`} className="group flex items-start justify-between gap-4 px-6 py-4">
+              <div className="flex items-start gap-3">
+                <span className={`mt-0.5 border px-1.5 py-0.5 font-mono text-[10px] uppercase ${PRIORITY_STYLE[a.priority]}`}>
+                  {a.priority}
+                </span>
+                <div>
+                  <p className="text-sm font-semibold">{a.title}</p>
+                  <p className="mt-0.5 text-sm text-muted-foreground">{a.detail}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => router.push(`/${a.module}`)}
+                className="inline-flex shrink-0 items-center gap-1.5 bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+              >
+                Review <ArrowRight size={13} weight="bold" />
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
-      <Skeleton className="h-24 w-full rounded-card" />
+    </div>
+  );
+}
+
+function CommandCenterSkeleton() {
+  return (
+    <div className="space-y-6">
+      <Skeleton className="h-10 w-64 rounded-none" />
+      <div className="grid grid-cols-12 gap-4">
+        <Skeleton className="col-span-12 h-64 rounded-none md:col-span-4" />
+        <div className="col-span-12 grid grid-cols-2 gap-4 md:col-span-8 lg:grid-cols-3">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-32 rounded-none" />
+          ))}
+        </div>
+      </div>
+      <Skeleton className="h-48 w-full rounded-none" />
     </div>
   );
 }
