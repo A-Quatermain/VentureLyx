@@ -233,6 +233,22 @@ export interface ContentPage {
   updated_at: string;
 }
 
+// ---- Reviews ---------------------------------------------------------------
+export type ReviewSource = 'manual' | 'google' | 'facebook' | 'yelp';
+export type ReviewResponseStatus = 'none' | 'drafted' | 'published';
+
+export interface Review {
+  id: string;
+  source: ReviewSource;
+  author_name: string;
+  rating: number;
+  body: string | null;
+  reviewed_at: string;
+  response_body: string | null;
+  response_status: ReviewResponseStatus;
+  responded_at: string | null;
+}
+
 // ---- Operate -------------------------------------------------------------
 export interface Lead {
   id: string;

@@ -7,6 +7,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { getProviderPreference, logAiUsage, streamAI, streamEventsToSSE, type AIStreamEvent } from '../lib/ai.js';
+import { HttpError } from '../plugins/context.js';
 
 async function* staticEvents(text: string): AsyncGenerator<AIStreamEvent> {
   yield { type: 'delta', text };
@@ -97,6 +98,58 @@ export default async function aiRoutes(app: FastifyInstance) {
 
     await streamEventsToSSE(reply, gen);
   });
+
+  // ---- Reviews: AI-drafted reply --------------------------------------------
+  // The review's real rating/author/body are read server-side by ID rather
+  // than trusted from the request body — a client can't ask the model to
+  // reply to fabricated review content this way.
+  app.post('/ai/review-response/stream', async (req, reply) => {
+    req.requireRole('staff');
+    const orgId = req.ctx.orgId!;
+    const feature = 'review_response' as const;
+    const { reviewId } = z.object({ reviewId: z.string().uuid() }).parse(req.body);
+
+    const { system, user, providerPreference } = await req.db(async (q) => {
+      const preference = await getProviderPreference(q, orgId);
+      const org = await q.one<{ name: string; vertical: string | null }>(
+        `SELECT name, vertical FROM organizations WHERE id = app.current_org()`,
+      );
+      const review = await q.one<{ author_name: string; rating: number; body: string | null }>(
+        `SELECT author_name, rating, body FROM reviews WHERE id = $1`,
+        [reviewId],
+      );
+      if (!review) throw new HttpError(404, 'Review not found', 'not_found');
+      return {
+        system: buildReviewResponsePrompt(org),
+        user: `Reviewer: ${review.author_name} (${review.rating}/5 stars)\nReview: "${review.body ?? '(no text)'}"`,
+        providerPreference: preference,
+      };
+    });
+
+    const gen = streamAI({
+      orgId,
+      feature,
+      system,
+      messages: [{ role: 'user', content: user }],
+      maxTokens: 500,
+      providerPreference,
+      onUsage: (usage) => req.db((q) => logAiUsage(q, { orgId, feature, ...usage })),
+    });
+
+    await streamEventsToSSE(reply, gen);
+  });
+}
+
+function buildReviewResponsePrompt(org: { name: string; vertical: string | null } | null): string {
+  return (
+    `You are writing a public reply to a customer review for ${org?.name ?? 'this business'}` +
+    `${org?.vertical ? ` (a ${org.vertical} business)` : ''}. Write ONE short, warm, professional ` +
+    `reply (2-4 sentences) the owner can post as-is or lightly edit. Thank the reviewer by name. ` +
+    `For 4-5 star reviews: express genuine gratitude, invite them back. For 1-3 star reviews: ` +
+    `acknowledge their specific concern without being defensive, apologize sincerely, and invite them ` +
+    `to reach out directly to resolve it — never argue or make excuses. Never invent specific facts, ` +
+    `promises, or discounts not already in the review itself.`
+  );
 }
 
 function buildPageGenerationPrompt(org: { name: string; vertical: string | null } | null, kind: string): string {

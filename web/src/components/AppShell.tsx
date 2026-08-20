@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   Gauge, Kanban, MagnifyingGlass, Compass, Package, TrendUp, Robot, Lock,
-  Buildings, List, X,
+  Buildings, List, X, Star,
 } from '@phosphor-icons/react';
 import type { Organization } from '@/lib/types';
 import { OrgSwitcher } from '@/components/OrgSwitcher';
@@ -13,8 +13,13 @@ import { SignOutButton } from '@/components/SignOutButton';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip';
 
+// Reviews isn't one of the six lifecycle modules below (no product plan
+// slot for it), but it's real and functional — real schema (migration 007),
+// real CRUD, real AI-drafted replies — so it lives here, not in the
+// numbered/locked list.
 const NAV = [
   { href: '/home', label: 'Command Center', icon: Gauge },
+  { href: '/reviews', label: 'Reviews', icon: Star },
 ] as const;
 
 // Business-lifecycle modules, numbered 01–06. Only Operate and ScaleSEO
