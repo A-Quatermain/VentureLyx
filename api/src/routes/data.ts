@@ -223,6 +223,113 @@ export default async function dataRoutes(app: FastifyInstance) {
     });
   });
 
+  // ---- ScaleSEO: keywords -------------------------------------------------
+  // All tracked keywords for the site, not just seo_rank_current's ranked
+  // subset — a keyword can be tracked before it's ever been checked, and
+  // that's a real state ("—" for position), not one to hide.
+  app.get('/seo/keywords/:siteId', async (req) => {
+    req.requireRole('viewer');
+    const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
+    return req.db((q) =>
+      q.rows(
+        `SELECT k.id, k.phrase, k.search_volume, k.difficulty, k.intent, k.is_branded,
+                k.est_value_monthly::text, r.position, r.checked_on
+           FROM seo_keywords k
+      LEFT JOIN LATERAL (
+                  SELECT position, checked_on FROM seo_rankings
+                   WHERE keyword_id = k.id AND engine = 'google'
+                   ORDER BY checked_on DESC LIMIT 1
+                ) r ON true
+          WHERE k.site_id = $1 AND k.is_tracked
+          ORDER BY k.est_value_monthly DESC NULLS LAST, k.phrase`,
+        [siteId],
+      ),
+    );
+  });
+
+  // ---- ScaleSEO: competitors -----------------------------------------------
+  app.get('/seo/competitors/:siteId', async (req) => {
+    req.requireRole('viewer');
+    const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
+    return req.db((q) =>
+      q.rows(
+        `SELECT c.id, c.name, c.domain, c.discovered,
+                avg(cr.position)::numeric(5,1)::text AS avg_position,
+                count(cr.id)::int AS tracked_keywords
+           FROM seo_competitors c
+      LEFT JOIN seo_competitor_rankings cr ON cr.competitor_id = c.id
+                 AND cr.checked_on = (SELECT max(checked_on) FROM seo_competitor_rankings
+                                       WHERE competitor_id = c.id)
+          WHERE c.site_id = $1 AND c.is_tracked
+          GROUP BY c.id, c.name, c.domain, c.discovered
+          ORDER BY avg_position ASC NULLS LAST, c.name`,
+        [siteId],
+      ),
+    );
+  });
+
+  // ---- ScaleSEO: crawl history ----------------------------------------------
+  app.get('/seo/crawl-history/:siteId', async (req) => {
+    req.requireRole('viewer');
+    const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
+    return req.db((q) =>
+      q.rows(
+        `SELECT c.id, c.started_at, c.finished_at, c.status, c.pages_crawled,
+                c.trigger, c.error, sc.health
+           FROM seo_crawls c
+      LEFT JOIN seo_scores sc ON sc.crawl_id = c.id
+          WHERE c.site_id = $1
+          ORDER BY c.started_at DESC
+          LIMIT 50`,
+        [siteId],
+      ),
+    );
+  });
+
+  // ---- ScaleSEO: AI-drafted content pages -----------------------------------
+  const contentPageInput = z.object({
+    kind: z.string().min(1).default('service_page'),
+    url: z.string().nullable().optional(),
+    slug: z.string().nullable().optional(),
+    title: z.string().nullable().optional(),
+    meta_description: z.string().nullable().optional(),
+    h1: z.string().nullable().optional(),
+    body: z.string().nullable().optional(),
+    generated_by: z.string().nullable().optional(),
+  });
+
+  app.get('/seo/content-pages', async (req) => {
+    req.requireRole('viewer');
+    return req.db((q) =>
+      q.rows(
+        `SELECT id, kind, url, slug, title, meta_description, h1, status,
+                generated_by, published_at, created_at, updated_at
+           FROM content_pages
+          ORDER BY created_at DESC
+          LIMIT 100`,
+      ),
+    );
+  });
+
+  app.post('/seo/content-pages', async (req) => {
+    req.requireRole('staff');
+    const body = contentPageInput.parse(req.body);
+    return req.db((q) =>
+      q.one(
+        `INSERT INTO content_pages
+           (org_id, kind, url, slug, title, meta_description, h1, body, generated_by, status)
+         VALUES (app.current_org(), $1,$2,$3,$4,$5,$6,$7,$8,'draft')
+         RETURNING id, kind, url, slug, title, meta_description, h1, body, status,
+                   generated_by, published_at, created_at, updated_at`,
+        [
+          body.kind, body.url ?? null, body.slug ?? null, body.title ?? null,
+          body.meta_description ?? null, body.h1 ?? null, body.body ?? null,
+          body.generated_by ?? null,
+        ],
+      ),
+    );
+  });
+
   // ---- Operate: leads (all pipeline stages) ------------------------------
   // Was restricted to new/working/qualified ("needing attention"). The
   // Kanban pipeline (Operate) and the Command Center's Customers metric

@@ -28,12 +28,15 @@ export function AIStreamPanel({
   title = 'AI Insight',
   autoStart = false,
   triggerLabel = 'Generate',
+  onTextChange,
 }: {
   path: string;
   body?: unknown;
   title?: string;
   autoStart?: boolean;
   triggerLabel?: string;
+  /** Mirrors the accumulated streamed text out, e.g. so a caller can offer a Save action on it. */
+  onTextChange?: (text: string) => void;
 }) {
   const [text, setText] = useState('');
   const [status, setStatus] = useState<Status>('idle');
@@ -44,15 +47,19 @@ export function AIStreamPanel({
 
   async function run() {
     setText('');
+    onTextChange?.('');
     setError('');
     setMeta(null);
     setStatus('streaming');
     let sawError = false;
+    let acc = '';
     await streamSSE(path, body, (event) => {
       if (event.type === 'meta') {
         setMeta({ provider: String(event.provider), model: String(event.model), fallback: !!event.fallback });
       } else if (event.type === 'delta') {
-        setText((t) => t + String(event.text ?? ''));
+        acc += String(event.text ?? '');
+        setText(acc);
+        onTextChange?.(acc);
       } else if (event.type === 'error') {
         sawError = true;
         setError(typeof event.message === 'string' ? event.message : 'Something went wrong.');

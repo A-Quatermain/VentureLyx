@@ -5,6 +5,7 @@
  * itself (see the note on ai.ts's StreamAIOptions).
  */
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { getProviderPreference, logAiUsage, streamAI, streamEventsToSSE, type AIStreamEvent } from '../lib/ai.js';
 
 async function* staticEvents(text: string): AsyncGenerator<AIStreamEvent> {
@@ -62,6 +63,51 @@ export default async function aiRoutes(app: FastifyInstance) {
 
     await streamEventsToSSE(reply, gen);
   });
+
+  // ---- ScaleSEO: AI Page Builder --------------------------------------------
+  // Drafts body copy only — title/meta/H1/slug stay real form fields the
+  // person fills in, not AI-generated, since a small business owner reading
+  // this needs to trust and edit those directly, not approve a black box.
+  app.post('/ai/page-generation/stream', async (req, reply) => {
+    req.requireRole('staff');
+    const orgId = req.ctx.orgId!;
+    const feature = 'page_generation' as const;
+    const body = z.object({
+      kind: z.string().min(1),
+      topic: z.string().min(1).max(500),
+    }).parse(req.body);
+
+    const { system, providerPreference } = await req.db(async (q) => {
+      const preference = await getProviderPreference(q, orgId);
+      const org = await q.one<{ name: string; vertical: string | null }>(
+        `SELECT name, vertical FROM organizations WHERE id = app.current_org()`,
+      );
+      return { system: buildPageGenerationPrompt(org, body.kind), providerPreference: preference };
+    });
+
+    const gen = streamAI({
+      orgId,
+      feature,
+      system,
+      messages: [{ role: 'user', content: `Write the page. Topic / target keyword: ${body.topic}` }],
+      maxTokens: 1500,
+      providerPreference,
+      onUsage: (usage) => req.db((q) => logAiUsage(q, { orgId, feature, ...usage })),
+    });
+
+    await streamEventsToSSE(reply, gen);
+  });
+}
+
+function buildPageGenerationPrompt(org: { name: string; vertical: string | null } | null, kind: string): string {
+  return (
+    `You are writing website body copy for ${org?.name ?? 'a small business'}` +
+    `${org?.vertical ? `, a ${org.vertical} business` : ''}. Page type: ${kind}. ` +
+    `Write plain body copy only — no title, no meta description, no HTML, no markdown headers, ` +
+    `no code fences. 3-5 short paragraphs, plain text, conversational but professional. ` +
+    `Never invent specific facts about this business (no fake testimonials, years in business, ` +
+    `credentials, or statistics) — write generically persuasive copy the owner can edit in real details.`
+  );
 }
 
 function buildGrowthStrategistPrompt(

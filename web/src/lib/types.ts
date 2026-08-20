@@ -183,6 +183,56 @@ export interface SeoRanking {
   checked_on: string;
 }
 
+export interface SeoKeyword {
+  id: string;
+  phrase: string;
+  search_volume: number | null;
+  difficulty: number | null;
+  intent: string | null;
+  is_branded: boolean;
+  est_value_monthly: string | null;
+  position: number | null;
+  checked_on: string | null;
+}
+
+export interface SeoCompetitor {
+  id: string;
+  name: string;
+  domain: string;
+  discovered: boolean;
+  avg_position: string | null;
+  tracked_keywords: number;
+}
+
+export interface SeoCrawlHistoryEntry {
+  id: number;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  pages_crawled: number;
+  trigger: string;
+  error: string | null;
+  health: number | null;
+}
+
+export type ContentPageStatus = 'draft' | 'approved' | 'published';
+
+export interface ContentPage {
+  id: string;
+  kind: string;
+  url: string | null;
+  slug: string | null;
+  title: string | null;
+  meta_description: string | null;
+  h1: string | null;
+  body?: string | null;
+  status: ContentPageStatus;
+  generated_by: string | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // ---- Operate -------------------------------------------------------------
 export interface Lead {
   id: string;
