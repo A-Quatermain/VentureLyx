@@ -223,7 +223,13 @@ export default async function dataRoutes(app: FastifyInstance) {
     });
   });
 
-  // ---- Operate: leads needing attention --------------------------------
+  // ---- Operate: leads (all pipeline stages) ------------------------------
+  // Was restricted to new/working/qualified ("needing attention"). The
+  // Kanban pipeline (Operate) and the Command Center's Customers metric
+  // both need every stage — new|working|qualified|customer|lost|dormant —
+  // so the filter is gone. LIMIT bumped from 25 (a short "attention" list)
+  // to 500 (the whole pipeline); real pagination is parties.js's job later
+  // per OPERATE-SPEC.md, not this endpoint, for now.
   app.get('/operate/leads', async (req) => {
     req.requireRole('viewer');
     return req.db((q) =>
@@ -235,9 +241,8 @@ export default async function dataRoutes(app: FastifyInstance) {
            FROM parties p
       LEFT JOIN attribution_touches t ON t.id = p.first_touch_id
           WHERE p.is_lead AND p.deleted_at IS NULL
-            AND p.lifecycle IN ('new','working','qualified')
           ORDER BY p.last_activity_at NULLS FIRST, p.first_seen_at DESC
-          LIMIT 25`,
+          LIMIT 500`,
       ),
     );
   });
