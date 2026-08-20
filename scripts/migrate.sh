@@ -95,13 +95,20 @@ for f in "$MIGDIR"/*.sql; do
   fi
 
   echo "  apply  $b"
-  start=$(date +%s%3N)
+  # %s%3N (seconds + millis truncated from nanoseconds) assumes GNU date's
+  # truncation behavior for the digit-count prefix; this box's `date` is
+  # uutils coreutils, which doesn't truncate it and returns the full
+  # nanosecond value instead — silently inflating duration_ms past
+  # Postgres's int4 range on any migration slow enough to notice. Using
+  # %s%N (always full nanoseconds, portable) and dividing down avoids
+  # depending on that truncation behavior at all.
+  start=$(date +%s%N)
   if ! docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" "$CONTAINER" \
         psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"; then
     echo "FATAL: $b failed. Nothing recorded; fix and re-run."
     exit 1
   fi
-  dur=$(( $(date +%s%3N) - start ))
+  dur=$(( ($(date +%s%N) - start) / 1000000 ))
   psql_run -q -c "INSERT INTO schema_migrations (filename,checksum,duration_ms)
                   VALUES ('$b','$sum',$dur);"
   echo "         ok (${dur}ms)"
