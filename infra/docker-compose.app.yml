@@ -30,6 +30,10 @@ services:
       COOKIE_DOMAIN: .venturelyx.com
       DB_POOL_MAX: 12
       LOG_LEVEL: info
+      # api/src/lib/ai.ts. Anthropic is primary; empty/unset is handled (ai.ts
+      # skips a provider with no key) so this works with only one of the two set.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 20s
