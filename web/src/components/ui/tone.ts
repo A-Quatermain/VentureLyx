@@ -38,3 +38,18 @@ export function severityTone(severity: 'critical' | 'high' | 'medium' | 'low'): 
   if (severity === 'medium') return 'primary';
   return 'muted';
 }
+
+// signals.severity is a smallint, lower = more severe (1/2 ~ critical/high,
+// 3 ~ medium, 4+ ~ low) — not the same scale as severityTone's text enum
+// above, which is seo_issues' column specifically.
+export function signalSeverityTone(severity: number): Tone {
+  if (severity <= 2) return 'destructive';
+  if (severity === 3) return 'primary';
+  return 'muted';
+}
+
+export function signalSeverityLabel(severity: number): 'high' | 'medium' | 'low' {
+  if (severity <= 2) return 'high';
+  if (severity === 3) return 'medium';
+  return 'low';
+}

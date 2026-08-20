@@ -9,7 +9,7 @@ import type { SummaryResponse, Signal, Lead, MeResponse, Opportunity } from '@/l
 import { formatMoney } from '@/lib/format';
 import { GrowthGauge } from '@/components/GrowthGauge';
 import { Skeleton } from '@/components/ui/Skeleton';
-import { toneOutline, type Tone } from '@/components/ui/tone';
+import { toneOutline, signalSeverityLabel, type Tone } from '@/components/ui/tone';
 
 function Metric({
   label,
@@ -55,11 +55,14 @@ function toActions(opportunities: Opportunity[], signals: Signal[]): Action[] {
   }));
   const fromSignals: Action[] = signals.map((s) => ({
     kind: 'signal',
-    id: s.id,
+    id: String(s.id),
     title: s.summary,
-    detail: s.detail ?? s.module,
+    // s.detail is jsonb with a shape that varies per signal_type — never
+    // render it directly (see the crash this caused: an object reaching a
+    // JSX child). The module name is always a safe, real string.
+    detail: s.module,
     module: s.module,
-    priority: s.severity === 'critical' || s.severity === 'high' ? 'high' : s.severity === 'medium' ? 'medium' : 'low',
+    priority: signalSeverityLabel(s.severity),
   }));
   return [...fromOpportunities, ...fromSignals];
 }

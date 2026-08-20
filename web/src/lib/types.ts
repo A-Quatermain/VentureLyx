@@ -72,15 +72,19 @@ export interface SummaryResponse {
 }
 
 // ---- GET /command/signals ---------------------------------------------------
+// seo_issues.severity (used below by SeoIssueGroup) is a real `text` column
+// with these four values. signals.severity is a *different* table — a
+// smallint, lower number = more severe — see Signal below; don't reuse this
+// type for it.
 export type SignalSeverity = 'critical' | 'high' | 'medium' | 'low';
 
 export interface Signal {
-  id: string;
+  id: number;
   module: string;
   signal_type: string;
-  severity: SignalSeverity;
+  severity: number;
   summary: string;
-  detail: string | null;
+  detail: Record<string, unknown> | null;
   detected_at: string;
 }
 
