@@ -1,0 +1,275 @@
+'use client';
+
+import { use, useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { mutate } from 'swr';
+import {
+  CaretLeft, Phone, EnvelopeSimple, Globe, ChatCircle, MapPin, Tag, Note,
+  PencilSimple, Trash, ClockCounterClockwise,
+} from '@phosphor-icons/react';
+import { useApi, useRole, atLeast } from '@/lib/useApi';
+import { apiFetch, ApiError } from '@/lib/api';
+import type { ContactChannel, PartyDetail, TimelineEvent } from '@/lib/types';
+import { formatMoney } from '@/lib/format';
+import { Card } from '@/components/ui/Card';
+import { Button } from '@/components/ui/Button';
+import { Skeleton, SkeletonCard } from '@/components/ui/Skeleton';
+import { CustomerDrawer } from '@/components/CustomerDrawer';
+import { toneOutline, type Tone } from '@/components/ui/tone';
+import type { Lifecycle as LifecycleT } from '@/lib/types';
+
+const LIFECYCLE_TONE: Record<LifecycleT, Tone> = {
+  new: 'primary',
+  working: 'primary',
+  qualified: 'primary',
+  customer: 'success',
+  lost: 'destructive',
+  dormant: 'muted',
+};
+
+const CONTACT_ICON: Record<ContactChannel, typeof Phone> = {
+  phone: Phone,
+  email: EnvelopeSimple,
+  sms: ChatCircle,
+  whatsapp: ChatCircle,
+  url: Globe,
+};
+
+function formatDate(iso: string | null): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+}
+
+export default function CustomerDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const router = useRouter();
+  const role = useRole();
+  const canEdit = atLeast(role, 'staff');
+  const canDelete = atLeast(role, 'manager');
+
+  const { data, isLoading, error } = useApi<PartyDetail>(`/operate/parties/${id}`);
+  const { data: timeline, isLoading: timelineLoading } = useApi<TimelineEvent[]>(`/operate/parties/${id}/timeline`);
+
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function onDelete() {
+    if (!data) return;
+    if (!confirm(`Remove "${data.party.display_name}"? This can't be undone.`)) return;
+    setBusy(true);
+    try {
+      await apiFetch(`/operate/parties/${id}`, { method: 'DELETE' });
+      await mutate((key: string) => typeof key === 'string' && key.startsWith('/operate/parties'), undefined, {
+        revalidate: true,
+      });
+      router.push('/operate/customers');
+    } catch (err) {
+      alert(err instanceof ApiError ? err.message : 'Could not remove this customer.');
+      setBusy(false);
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col gap-4 p-4">
+        <Skeleton className="h-10 w-64 rounded-none bg-muted" />
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <Skeleton className="h-64 rounded-none bg-muted lg:col-span-1" />
+          <Skeleton className="h-64 rounded-none bg-muted lg:col-span-2" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <div className="p-4">
+        <Card className="p-4">
+          <p className="text-sm text-destructive">
+            {error instanceof Error ? error.message : 'Could not load this customer.'}
+          </p>
+        </Card>
+      </div>
+    );
+  }
+
+  const { party, contacts, money } = data;
+  const phone = contacts.find((c) => c.channel === 'phone' && c.is_primary);
+  const email = contacts.find((c) => c.channel === 'email' && c.is_primary);
+
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <Link
+            href="/operate/customers"
+            className="mb-2 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <CaretLeft size={14} weight="bold" /> Customers
+          </Link>
+          <div className="flex items-center gap-3">
+            <h1 className="font-display text-2xl font-black tracking-tight sm:text-3xl">{party.display_name}</h1>
+            <span className={`border px-1.5 py-0.5 font-mono text-[10px] uppercase ${toneOutline[LIFECYCLE_TONE[party.lifecycle]]}`}>
+              {party.lifecycle}
+            </span>
+          </div>
+          {party.company_name && <p className="mt-1 text-sm text-muted-foreground">{party.company_name}</p>}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {phone && (
+            <a href={`tel:${phone.value}`} className="inline-flex min-h-[38px] items-center gap-1.5 border border-border px-3 text-sm hover:bg-muted">
+              <Phone size={14} weight="bold" /> Call
+            </a>
+          )}
+          {email && (
+            <a href={`mailto:${email.value}`} className="inline-flex min-h-[38px] items-center gap-1.5 border border-border px-3 text-sm hover:bg-muted">
+              <EnvelopeSimple size={14} weight="bold" /> Email
+            </a>
+          )}
+          {canEdit && (
+            <Button variant="ghost" onClick={() => setEditing(true)}>
+              <PencilSimple size={14} weight="bold" className="mr-1.5 inline" /> Edit
+            </Button>
+          )}
+          {canDelete && (
+            <Button variant="ghost" onClick={onDelete} disabled={busy} className="text-destructive">
+              <Trash size={14} weight="bold" className="mr-1.5 inline" /> Remove
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4">
+        <MoneyTile label="Lifetime value" value={formatMoney(money.lifetime_value)} />
+        <MoneyTile label="Open balance" value={formatMoney(money.open_balance)} />
+        <MoneyTile
+          label="Last payment"
+          value={money.last_payment ? formatMoney(money.last_payment.amount) : '—'}
+          sub={money.last_payment ? formatDate(money.last_payment.received_at) : 'None recorded'}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="flex flex-col gap-4 lg:col-span-1">
+          <Card className="p-5">
+            <p className="mb-3 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Contact</p>
+            {contacts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No contact points on file.</p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {contacts.map((c) => {
+                  const Icon = CONTACT_ICON[c.channel];
+                  return (
+                    <div key={c.id} className="flex items-center gap-2 text-sm">
+                      <Icon size={15} className="shrink-0 text-muted-foreground" />
+                      <span>{c.value}</span>
+                      {c.label && <span className="text-xs text-muted-foreground">({c.label})</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {(party.city || party.address_line1) && (
+              <div className="mt-3 flex items-start gap-2 border-t border-border pt-3 text-sm">
+                <MapPin size={15} className="mt-0.5 shrink-0 text-muted-foreground" />
+                <span className="text-muted-foreground">
+                  {[party.address_line1, party.address_line2, party.city, party.region, party.postal_code]
+                    .filter(Boolean)
+                    .join(', ') || '—'}
+                </span>
+              </div>
+            )}
+          </Card>
+
+          {party.tags.length > 0 && (
+            <Card className="p-5">
+              <p className="mb-3 flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                <Tag size={13} /> Tags
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {party.tags.map((t) => (
+                  <span key={t} className="border border-border px-1.5 py-0.5 text-xs text-muted-foreground">
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {party.notes && (
+            <Card className="p-5">
+              <p className="mb-3 flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                <Note size={13} /> Notes
+              </p>
+              <p className="whitespace-pre-wrap text-sm text-muted-foreground">{party.notes}</p>
+            </Card>
+          )}
+
+          <Card className="p-5">
+            <p className="mb-2 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Attribution</p>
+            {party.first_touch_channel ? (
+              <p className="text-sm text-muted-foreground">
+                First found you through <span className="font-medium text-foreground">{party.first_touch_channel}</span>
+                {party.first_touch_at && `, ${formatDate(party.first_touch_at)}`}
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">No attribution recorded yet.</p>
+            )}
+          </Card>
+        </div>
+
+        <Card className="lg:col-span-2">
+          <div className="flex items-center gap-2 border-b border-border px-5 py-4">
+            <ClockCounterClockwise size={18} className="text-muted-foreground" />
+            <h3 className="font-display font-bold tracking-tight">Timeline</h3>
+          </div>
+          {timelineLoading ? (
+            <SkeletonCard />
+          ) : !timeline || timeline.length === 0 ? (
+            <p className="px-5 py-8 text-sm text-muted-foreground">Nothing here yet.</p>
+          ) : (
+            <div className="divide-y divide-border">
+              {timeline.map((ev) => (
+                <div key={ev.id} className="px-5 py-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-semibold">{ev.title}</p>
+                    <span className="shrink-0 font-mono text-xs text-muted-foreground">{formatDateTime(ev.occurred_at)}</span>
+                  </div>
+                  {ev.body && <p className="mt-0.5 text-sm text-muted-foreground">{ev.body}</p>}
+                  {ev.actor_label && <p className="mt-1 text-xs text-muted-foreground/70">{ev.actor_label}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      <CustomerDrawer
+        open={editing}
+        onOpenChange={setEditing}
+        party={party}
+        contacts={contacts}
+        onSaved={() => mutate(`/operate/parties/${id}`)}
+      />
+    </div>
+  );
+}
+
+function MoneyTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="border border-border bg-surface p-4">
+      <p className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">{label}</p>
+      <p data-numeric className="mt-1 font-mono text-xl font-bold">
+        {value}
+      </p>
+      {sub && <p className="mt-0.5 text-xs text-muted-foreground">{sub}</p>}
+    </div>
+  );
+}

@@ -42,6 +42,9 @@ export default function OperatePage() {
           <h1 className="font-display text-3xl font-black tracking-tighter sm:text-4xl">Pipeline &amp; Money</h1>
         </div>
         <div className="flex items-center gap-4">
+          <Link href="/operate/customers" className="text-sm text-primary">
+            Customers →
+          </Link>
           <Link href="/operate/catalog" className="text-sm text-primary">
             Catalog →
           </Link>

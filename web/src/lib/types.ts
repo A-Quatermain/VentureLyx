@@ -202,6 +202,81 @@ export interface OperateMoneyResponse {
   upcoming: { count: number; total: string };
 }
 
+export type Lifecycle = 'new' | 'working' | 'qualified' | 'customer' | 'lost' | 'dormant';
+export type PartyKind = 'person' | 'company';
+export type ContactChannel = 'email' | 'phone' | 'sms' | 'whatsapp' | 'url';
+
+export interface PartyListItem {
+  id: string;
+  display_name: string;
+  company_name: string | null;
+  lifecycle: Lifecycle;
+  city: string | null;
+  last_activity_at: string | null;
+  first_seen_at: string;
+  phone: string | null;
+  email: string | null;
+  lifetime_value: string;
+  open_balance: string;
+  first_touch_channel: string | null;
+}
+
+export interface PartyContact {
+  id: string;
+  channel: ContactChannel;
+  value: string;
+  label: string | null;
+  is_primary: boolean;
+}
+
+export interface Party {
+  id: string;
+  kind: PartyKind;
+  display_name: string;
+  first_name: string | null;
+  last_name: string | null;
+  company_name: string | null;
+  is_lead: boolean;
+  is_customer: boolean;
+  is_vendor: boolean;
+  lifecycle: Lifecycle;
+  city: string | null;
+  address_line1: string | null;
+  address_line2: string | null;
+  region: string | null;
+  postal_code: string | null;
+  country: string;
+  notes: string | null;
+  tags: string[];
+  first_seen_at: string;
+  last_activity_at: string | null;
+}
+
+export interface PartyDetail {
+  party: Party & {
+    first_touch_channel: string | null;
+    first_touch_source: string | null;
+    first_touch_at: string | null;
+  };
+  contacts: PartyContact[];
+  money: {
+    lifetime_value: string;
+    open_balance: string;
+    last_payment: { amount: string; received_at: string } | null;
+  };
+}
+
+export interface TimelineEvent {
+  id: number;
+  event_type: string;
+  module: string | null;
+  title: string;
+  body: string | null;
+  actor_type: string;
+  actor_label: string | null;
+  occurred_at: string;
+}
+
 export type CatalogKind = 'service' | 'product' | 'package' | 'fee';
 
 export interface CatalogItem {
