@@ -8,6 +8,7 @@ import { useApi } from '@/lib/useApi';
 import type { SummaryResponse, Signal, Lead, MeResponse, Opportunity } from '@/lib/types';
 import { formatMoney } from '@/lib/format';
 import { GrowthGauge } from '@/components/GrowthGauge';
+import { AIStreamPanel } from '@/components/AIStreamPanel';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { toneOutline, signalSeverityLabel, type Tone } from '@/components/ui/tone';
 
@@ -164,6 +165,12 @@ export default function CommandCenter() {
           ))}
         </div>
       </div>
+
+      <AIStreamPanel
+        path="/ai/growth-strategist/stream"
+        title="AI Growth Strategist"
+        triggerLabel="What should I do next?"
+      />
     </div>
   );
 }

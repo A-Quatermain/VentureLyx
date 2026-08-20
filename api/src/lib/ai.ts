@@ -75,6 +75,9 @@ function resolveProviderOrder(pref: ProviderPreference): Provider[] {
   return [...(have.anthropic ? (['anthropic'] as const) : []), ...(have.openai ? (['openai'] as const) : [])];
 }
 
+// Reads an org's provider preference. Callers own the Querier's lifetime —
+// call this inside their own short req.db(), not across a whole stream (see
+// the note on StreamAIOptions.providerPreference below).
 export async function getProviderPreference(db: Querier, orgId: string): Promise<ProviderPreference> {
   const row = await db.one<{ modules: { ai_provider?: string } | null }>(
     `SELECT modules FROM organizations WHERE id = $1`,
@@ -84,7 +87,7 @@ export async function getProviderPreference(db: Querier, orgId: string): Promise
   return pref === 'anthropic' || pref === 'openai' ? pref : 'auto';
 }
 
-async function logAiUsage(
+export async function logAiUsage(
   db: Querier,
   entry: { orgId: string; feature: Feature; provider: Provider; model: string; approxTokens: number },
 ): Promise<void> {
@@ -100,14 +103,22 @@ export interface AIMessage {
 }
 
 export interface StreamAIOptions {
-  db: Querier;
   orgId: string;
   feature: Feature;
   system?: string;
   messages: AIMessage[];
   maxTokens?: number;
-  /** Skips the organizations.modules lookup when already known. */
-  providerPreference?: ProviderPreference;
+  // req.db() opens a transaction for one short-lived callback; a stream can
+  // run for many seconds (gpt-5-pro took ~20s for a trivial prompt in
+  // testing), so streamAI never holds a Querier open across it — that would
+  // pin a pooled connection for the whole request under concurrent AI
+  // traffic. Callers resolve the org's preference in their own short
+  // req.db() upfront and pass it in here.
+  providerPreference: ProviderPreference;
+  // Same reasoning: called once, after the stream finishes, so the caller
+  // can log usage inside its own short req.db() rather than one held open
+  // for the duration.
+  onUsage: (entry: { provider: Provider; model: string; approxTokens: number }) => Promise<void>;
 }
 
 export type AIStreamEvent =
@@ -194,8 +205,7 @@ async function* streamOpenAI(tier: Tier, opts: StreamAIOptions, usage: UsageInfo
  */
 export async function* streamAI(opts: StreamAIOptions): AsyncGenerator<AIStreamEvent, void, unknown> {
   const tier = FEATURE_TIER[opts.feature];
-  const pref = opts.providerPreference ?? (await getProviderPreference(opts.db, opts.orgId));
-  const order = resolveProviderOrder(pref);
+  const order = resolveProviderOrder(opts.providerPreference);
   if (order.length === 0) {
     throw new Error('No AI provider is configured for this deployment');
   }
@@ -212,7 +222,7 @@ export async function* streamAI(opts: StreamAIOptions): AsyncGenerator<AIStreamE
         yield { type: 'delta', text: chunk };
       }
       yield { type: 'done' };
-      await logAiUsage(opts.db, { orgId: opts.orgId, feature: opts.feature, ...usage });
+      await opts.onUsage(usage);
       return;
     } catch (err) {
       lastErr = err;
