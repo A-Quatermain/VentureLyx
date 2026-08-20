@@ -66,14 +66,14 @@ export function OrgSwitcher({
         disabled={switching || pending}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex min-h-[42px] items-center gap-2 rounded-button border border-line-2 bg-card px-3 text-sm font-medium text-ink outline-none focus:border-pool disabled:opacity-60"
+        className="flex min-h-[42px] items-center gap-2 rounded-none border border-border bg-surface px-3 text-sm font-medium text-foreground outline-none focus:border-primary disabled:opacity-60"
       >
         {current ? (
           <>
             <HealthDot health={current.health} />
             <span className="flex flex-col items-start leading-tight">
               <span>{current.name}</span>
-              <span className="text-[11px] font-normal text-ink-3">
+              <span className="text-[11px] font-normal text-muted-foreground">
                 {current.siteCount} site{current.siteCount === 1 ? '' : 's'}
                 {current.health != null ? ` · ${current.health}/100` : ''}
               </span>
@@ -96,7 +96,7 @@ export function OrgSwitcher({
       {open && (
         <div
           role="listbox"
-          className="absolute left-0 top-full z-10 mt-1 w-72 rounded-card border border-line-2 bg-card py-1 shadow-card"
+          className="absolute left-0 top-full z-10 mt-1 w-72 rounded-none border border-border bg-surface py-1"
         >
           {organizations.map((org) => (
             <button
@@ -105,18 +105,18 @@ export function OrgSwitcher({
               role="option"
               aria-selected={org.id === currentOrgId}
               onClick={() => switchTo(org.id)}
-              className={`flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-card-sunk ${
-                org.id === currentOrgId ? 'bg-pool-soft' : ''
+              className={`flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-muted ${
+                org.id === currentOrgId ? 'bg-primary/5' : ''
               }`}
             >
               <HealthDot health={org.health} />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm text-ink">{org.name}</p>
-                <p className="text-xs text-ink-3">
+                <p className="truncate text-sm text-foreground">{org.name}</p>
+                <p className="text-xs text-muted-foreground">
                   {org.siteCount} site{org.siteCount === 1 ? '' : 's'}
                 </p>
               </div>
-              <span className="font-mono text-sm text-ink-2" data-numeric>
+              <span className="font-mono text-sm text-muted-foreground" data-numeric>
                 {org.health ?? '—'}
               </span>
             </button>

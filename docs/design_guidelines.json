@@ -1,0 +1,160 @@
+{
+  "project_name": "Venturelyx",
+  "theme": "hybrid_fullstack",
+  "positioning": "We build businesses, not websites.",
+  "design_philosophy": "Swiss Brutalist SaaS Architecture. The app functions as a 'Business Command Center'. We optimize for high information density, structural clarity, and decisive action over decorative fluff. The UI must feel like a precision tool—think architectural blueprints and command consoles. It emphasizes sharp 1px grid borders, explicit bento layouts, high-contrast monochrome bases, and strategic accent colors only for critical actions or AI highlights.",
+  "typography": {
+    "strategy": "The 'Old Money Tech' approach mixed with structural authority. We use a sturdy, wide sans-serif for headings to command respect, and a sterile, highly legible sans-serif for body/UI to handle dense data.",
+    "fonts": {
+      "headings": "Chivo",
+      "body": "IBM Plex Sans",
+      "mono": "JetBrains Mono"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl font-black tracking-tighter leading-none",
+      "h2": "text-2xl sm:text-3xl font-bold tracking-tight",
+      "h3": "text-xl font-bold",
+      "h4": "text-base sm:text-lg font-semibold uppercase tracking-[0.15em]",
+      "body": "text-sm sm:text-base leading-relaxed",
+      "metrics": "font-mono text-4xl sm:text-5xl tracking-tighter",
+      "labels": "text-xs font-mono uppercase tracking-[0.2em] text-muted-foreground"
+    },
+    "instructions": "Do NOT use Inter, Roboto, or standard sans for headings. Apply `tracking-tight` to all headings over 32px. Use `JetBrains Mono` for any data points, metric values, pipeline totals, or SEO scores to enforce the 'Command Center' feel."
+  },
+  "colors": {
+    "archetype": "ARCHETYPE 4: SWISS & HIGH-CONTRAST + ARCHETYPE 5: LUXURY",
+    "theme_preference": "Light theme by default with a pristine 'Bone White' and 'Charcoal' base, but fully support an inverted Dark Mode that feels like a midnight command terminal. Do not use generic gray. Tint grays slightly cool.",
+    "palette": {
+      "light": {
+        "background": "#F7F7F6",
+        "foreground": "#0A0A0A",
+        "card": "#FFFFFF",
+        "card_foreground": "#0A0A0A",
+        "border": "rgba(0, 0, 0, 0.12)",
+        "primary": "#0055FF",
+        "primary_foreground": "#FFFFFF",
+        "muted": "#EBEBEA",
+        "muted_foreground": "#5C5C5C",
+        "destructive": "#FF3B30",
+        "success": "#00C853",
+        "ai_accent": "#000000"
+      },
+      "dark": {
+        "background": "#050505",
+        "foreground": "#F2F2F2",
+        "card": "#0A0A0A",
+        "card_foreground": "#F2F2F2",
+        "border": "rgba(255, 255, 255, 0.12)",
+        "primary": "#0055FF",
+        "primary_foreground": "#FFFFFF",
+        "muted": "#1A1A1A",
+        "muted_foreground": "#A3A3A3",
+        "destructive": "#FF453A",
+        "success": "#32D74B",
+        "ai_accent": "#FFFFFF"
+      }
+    },
+    "rules": [
+      "No full-screen gradients. Texture > gloss.",
+      "Primary color (#0055FF - Klein Blue) is ONLY used for critical conversions, active pipeline stages, and the 'Fix this for me' CTA.",
+      "AI generation UI (streaming) should use high-contrast black/white inverse flashing or monospace typing highlights, not generic purple gradients. (Forbidden: #7351B7).",
+      "Never use pure transparent backgrounds on floating elements or dropdowns; always use solid or heavily blurred glass.",
+      "Must have a Light/Dark theme toggle."
+    ]
+  },
+  "visual_enhancers": {
+    "borders": "Expose the skeleton. Use 'Grid Borders' pattern. 1px solid borders on cards. No rounded corners (radius: 0px or max 4px for form inputs) to maintain brutalist edge.",
+    "shadows": "Hard shadows (e.g., `4px 4px 0px rgba(0,0,0,1)`) for hovering critical CTAs in light mode, or pure flat design with translate lifts (`-translate-y-1`) for cards.",
+    "glassmorphism": "Used ONLY for sticky headers. Must have `backdrop-blur-xl` + 1px bottom border + solid enough background (`bg-white/80` or `bg-black/80`) to ensure 4.5:1 text contrast.",
+    "icons": "Phosphor Icons (@phosphor-icons/react). Use 'duotone' weight for main nav, 'regular' for dense UI elements."
+  },
+  "layouts": {
+    "strategy": "The Bento Grid Protocol (MODE B: High Density Grid). We are building an OS, space is premium but clarity is paramount.",
+    "app_shell": "Left Sidebar Nav (w/ 1px right border, locked modules with padlock icons and reduced opacity) + Main Content Area.",
+    "command_center": "A 12-column grid layout. The top section must feature the 'Growth Score' gauge (Hero metric, col-span-12 md:col-span-4). Followed by bento boxes for Revenue, Leads, Customers, SEO score, Reviews, etc.",
+    "kanban_operate": "Horizontal scrolling flex container, tall columns (`min-h-[70vh]`), cards must have clear pipeline dollar values prominently displayed.",
+    "spacing": "Generous internal card padding (`p-6` or `p-8`) combined with tight bento gaps (`gap-4` or `gap-6`) to create distinct structural chunks.",
+    "alignment": "Strict left-alignment for all text and labels. Right-align numeric values in lists or tables."
+  },
+  "motion": {
+    "interactions": "Hover states on all interactive elements. Buttons should have a slight `-translate-y-[1px]` or a sharp background color inversion. Do NOT use `transition: all`. Target specific properties.",
+    "ai_streaming": "AI text generation should use a typing effect (step-by-step reveal) coupled with a subtle blinking cursor. Wrapping the text in a monospace 'terminal-like' review/approve UI.",
+    "loaders": "Use ASCII art or geometric pulsing blocks instead of generic circular spinners. We are an OS."
+  },
+  "components": {
+    "buttons": "Sharp edges (`rounded-none` or `rounded-sm`). Primary buttons ('Fix this for me') should be highly prominent. Use a 'Tracing Beam' or subtle animated border glow if they require immediate attention.",
+    "cards": "Flat, 1px border. No shadows by default. The content defines the card, not the container.",
+    "gauge": "Custom SVG or Recharts for the Growth Score gauge. Needs clear text overlay (e.g., '82/100').",
+    "inputs": "Shadcn based. Square corners, 1px borders, solid backgrounds.",
+    "tables": "Dense. Row height 36-40px. Left-align text, right-align numbers. Strict 1px bottom borders for rows.",
+    "locked_modules": "Render with a muted foreground color, a small lock icon, and a 'Coming Soon' tooltip or badge."
+  },
+  "media": {
+    "strategy": "Minimal photography. Use imagery for user avatars (team members, CRM leads) and structural geometric backgrounds for empty states.",
+    "image_urls": {
+      "avatars": [
+        {
+          "url": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBkaXZlcnNlJTIwaGVhZHNob3QlMjBwb3J0cmFpdHxlbnwwfHx8fDE3ODY4NjExNTJ8MA&ixlib=rb-4.1.0&q=85",
+          "description": "Male avatar for CRM lead or AI team profile"
+        },
+        {
+          "url": "https://images.unsplash.com/photo-1609371497456-3a55a205d5eb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHw0fHxwcm9mZXNzaW9uYWwlMjBkaXZlcnNlJTIwaGVhZHNob3QlMjBwb3J0cmFpdHxlbnwwfHx8fDE3ODY4NjExNTJ8MA&ixlib=rb-4.1.0&q=85",
+          "description": "Female avatar for user profile"
+        },
+        {
+          "url": "https://images.unsplash.com/photo-1609436132311-e4b0c9370469?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MTN8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBkaXZlcnNlJTIwaGVhZHNob3QlMjBwb3J0cmFpdHxlbnwwfHx8fDE3ODY4NjExNTJ8MA&ixlib=rb-4.1.0&q=85",
+          "description": "Female avatar for CRM lead"
+        },
+        {
+          "url": "https://images.pexels.com/photos/33646670/pexels-photo-33646670.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+          "description": "Business owner avatar"
+        }
+      ],
+      "empty_states": [
+        {
+          "url": "https://images.unsplash.com/photo-1632667680404-572c57873c21?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NjV8MHwxfHNlYXJjaHwzfHxhYnN0cmFjdCUyMGdlb21ldHJpYyUyMGFyY2hpdGVjdHVyYWwlMjBtaW5pbWFsfGVufDB8fHx8MTc4Njg2MTE1Mnww&ixlib=rb-4.1.0&q=85",
+          "description": "Geometric architectural minimal background for 'Build' or locked screens"
+        },
+        {
+          "url": "https://images.unsplash.com/photo-1498262257252-c282316270bc?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NjV8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMGdlb21ldHJpYyUyMGFyY2hpdGVjdHVyYWwlMjBtaW5pbWFsfGVufDB8fHx8MTc4Njg2MTE1Mnww&ixlib=rb-4.1.0&q=85",
+          "description": "Abstract gray pattern for onboarding background"
+        }
+      ]
+    }
+  },
+  "libraries_to_install": [
+    "yarn add @phosphor-icons/react",
+    "yarn add recharts",
+    "yarn add framer-motion",
+    "yarn add clsx tailwind-merge"
+  ],
+  "accessibility": {
+    "contrast": "Minimum 4.5:1 text, 3:1 for large UI elements.",
+    "testing": "All interactive and key informational elements MUST include `data-testid` attribute (e.g. `data-testid=\"fix-seo-button\"`).",
+    "focus": "Focus rings must use the primary brand color (`ring-primary`) with an offset (`ring-offset-2`) for clear visibility."
+  },
+  "instructions_to_main_agent": [
+    "1. Setup Shadcn components heavily modifying `radius` to `0` in global CSS for the brutalist OS aesthetic.",
+    "2. Implement the left sidebar nav first, locking down Build, Source, Grow, and AI Team with muted opacities and padlock icons.",
+    "3. Build the Command Center (Dashboard) using a 12-column grid. Ensure the 'AI Next Best Action' list uses monospace fonts and a distinct visual block (maybe inverse colors) to stand out.",
+    "4. For OPERATE, implement a horizontally scrolling Kanban board using standard CSS flex/overflow, representing CRM pipeline values cleanly.",
+    "5. For SCALESEO, create a form mimicking a 'website scanner input' that leads to a dashboard of prioritized issues with prominent 'Fix this for me' CTAs.",
+    "6. AI generation screens must include a review/approve UI pattern (side-by-side or modal diff view).",
+    "7. DO NOT center-align main layouts. Left-align for reading flow.",
+    "8. DO NOT use generic AI emojis 🤖💡 in the UI. Use Phosphor icons.",
+    "9. Use `sonner` for toast notifications.",
+    "10. Strip default Shadcn 'Vercel-look' shadows, apply 1px strict borders."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Avoid generic, 'on distribution' outputs. Make creative, distinctive frontends that surprise and delight.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters where overlapping occurs.",
+    "You MUST NOT apply universal transition (transition: all).",
+    "You MUST NOT center align the app container (.App { text-align: center; }).",
+    "Every interaction needs micro-animations - hover states, focus states, etc.",
+    "Use 2-3x more spacing inside padded containers.",
+    "NEVER use placeholder text for images. Use the provided Unsplash/Pexels URLs.",
+    "Add data-testid to all interactive and data-displaying elements.",
+    "Check components in src/components/ui and adapt them to the brutalist aesthetic (remove border radii)."
+  ]
+}

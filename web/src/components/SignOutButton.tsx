@@ -1,7 +1,7 @@
 'use client';
 
+import { SignOut } from '@phosphor-icons/react';
 import { apiFetch } from '@/lib/api';
-import { Button } from '@/components/ui/Button';
 
 export function SignOutButton() {
   async function onClick() {
@@ -24,8 +24,12 @@ export function SignOutButton() {
   }
 
   return (
-    <Button variant="ghost" onClick={onClick}>
-      Sign out
-    </Button>
+    <button
+      onClick={onClick}
+      aria-label="Sign out"
+      className="grid h-9 w-9 place-items-center border border-border text-muted-foreground transition-colors hover:bg-destructive hover:text-destructive-foreground"
+    >
+      <SignOut size={16} weight="bold" />
+    </button>
   );
 }

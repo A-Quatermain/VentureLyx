@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import localFont from 'next/font/local';
+import Script from 'next/script';
 import '@/styles/globals.css';
 
 // Self-hosted from public/fonts/ rather than next/font/google: the
@@ -10,24 +11,25 @@ import '@/styles/globals.css';
 // and faster; files are pre-subset to exactly the glyphs this app uses.
 const display = localFont({
   src: [
-    { path: '../../public/fonts/bricolage-grotesque-700.woff2', weight: '700' },
-    { path: '../../public/fonts/bricolage-grotesque-800.woff2', weight: '800' },
+    { path: '../../public/fonts/chivo-700.woff2', weight: '700' },
+    { path: '../../public/fonts/chivo-900.woff2', weight: '900' },
   ],
   variable: '--font-display',
 });
 const ui = localFont({
   src: [
-    { path: '../../public/fonts/archivo-400.woff2', weight: '400' },
-    { path: '../../public/fonts/archivo-500.woff2', weight: '500' },
-    { path: '../../public/fonts/archivo-600.woff2', weight: '600' },
+    { path: '../../public/fonts/ibm-plex-sans-400.woff2', weight: '400' },
+    { path: '../../public/fonts/ibm-plex-sans-500.woff2', weight: '500' },
+    { path: '../../public/fonts/ibm-plex-sans-600.woff2', weight: '600' },
   ],
   variable: '--font-ui',
 });
 const mono = localFont({
   src: [
-    { path: '../../public/fonts/ibm-plex-mono-400.woff2', weight: '400' },
-    { path: '../../public/fonts/ibm-plex-mono-500.woff2', weight: '500' },
-    { path: '../../public/fonts/ibm-plex-mono-600.woff2', weight: '600' },
+    { path: '../../public/fonts/jetbrains-mono-400.woff2', weight: '400' },
+    { path: '../../public/fonts/jetbrains-mono-500.woff2', weight: '500' },
+    { path: '../../public/fonts/jetbrains-mono-600.woff2', weight: '600' },
+    { path: '../../public/fonts/jetbrains-mono-700.woff2', weight: '700' },
   ],
   variable: '--font-mono',
 });
@@ -46,7 +48,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       {/* Password managers / dark-mode extensions inject attributes here
           before React hydrates; without this, that alone can make React
           abandon hydration and leave the DOM inert. */}
-      <body suppressHydrationWarning>{children}</body>
+      <body suppressHydrationWarning>
+        {/* Sets the .dark class before first paint so toggling theme never
+            flashes light-then-dark. Light is the default per
+            design_guidelines.json — this only ever adds the class, never
+            removes what SSR already rendered. */}
+        <Script id="theme-init" strategy="beforeInteractive">
+          {`try{if(localStorage.getItem('theme')==='dark'){document.documentElement.classList.add('dark')}}catch(e){}`}
+        </Script>
+        {children}
+      </body>
     </html>
   );
 }

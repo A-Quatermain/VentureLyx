@@ -24,6 +24,42 @@
   --line: #e8e2d6;
   --line-2: #f1ece2;
   --shadow: 0 1px 2px rgb(14 50 60 / 0.06), 0 1px 3px rgb(14 50 60 / 0.04);
+
+  /* Swiss Brutalist tokens — docs/design_guidelines.json, verbatim (HSL
+     triplets: GrowthGauge's inline SVG reads hsl(var(--muted|primary|
+     destructive|success)) directly, so these can't be hex). Light is the
+     default per the spec ("Light theme by default... Must have a
+     Light/Dark theme toggle") — .dark below is applied by lib/theme.ts via
+     a class on <html>, not a media query, since the toggle is explicit. */
+  --bg: 60 5.9% 96.7%;
+  --fg: 0 0% 3.9%;
+  --card: 0 0% 100%;
+  --card-fg: 0 0% 3.9%;
+  --border: rgba(0, 0, 0, 0.12);
+  --primary: 220 100% 50%;
+  --primary-fg: 0 0% 100%;
+  --muted: 60 2.4% 92%;
+  --muted-fg: 0 0% 36.1%;
+  --destructive: 3.2 100% 59.4%;
+  --destructive-fg: 0 0% 100%;
+  --success: 144.9 100% 39.2%;
+  --success-fg: 0 0% 100%;
+}
+
+.dark {
+  --bg: 0 0% 2%;
+  --fg: 0 0% 94.9%;
+  --card: 0 0% 3.9%;
+  --card-fg: 0 0% 94.9%;
+  --border: rgba(255, 255, 255, 0.12);
+  --primary: 220 100% 50%;
+  --primary-fg: 0 0% 100%;
+  --muted: 0 0% 10.2%;
+  --muted-fg: 0 0% 63.9%;
+  --destructive: 3.4 100% 61.4%;
+  --destructive-fg: 0 0% 100%;
+  --success: 129.1 67.3% 52%;
+  --success-fg: 0 0% 100%;
 }
 
 body {
