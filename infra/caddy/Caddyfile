@@ -26,6 +26,13 @@
 		reverse_proxy web:3000
 	}
 
+	# Apex and www both serve the marketing site. Until that exists they
+	# redirect into the app rather than showing Caddy's 404.
+	@root host venturelyx.com www.venturelyx.com
+	handle @root {
+		redir https://app.venturelyx.com{uri} permanent
+	}
+
 	# Anything else reaching the tunnel gets a flat refusal rather than a
 	# confusing default page.
 	handle {

@@ -167,16 +167,16 @@ export default function CommandCenter() {
 function CommandCenterSkeleton() {
   return (
     <div className="space-y-6">
-      <Skeleton className="h-10 w-64 rounded-none" />
+      <Skeleton className="h-10 w-64 rounded-none bg-muted" />
       <div className="grid grid-cols-12 gap-4">
-        <Skeleton className="col-span-12 h-64 rounded-none md:col-span-4" />
+        <Skeleton className="col-span-12 h-64 rounded-none bg-muted md:col-span-4" />
         <div className="col-span-12 grid grid-cols-2 gap-4 md:col-span-8 lg:grid-cols-3">
           {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-32 rounded-none" />
+            <Skeleton key={i} className="h-32 rounded-none bg-muted" />
           ))}
         </div>
       </div>
-      <Skeleton className="h-48 w-full rounded-none" />
+      <Skeleton className="h-48 w-full rounded-none bg-muted" />
     </div>
   );
 }

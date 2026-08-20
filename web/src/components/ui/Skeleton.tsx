@@ -1,16 +1,21 @@
+// No default radius/background — string-concatenated Tailwind classes
+// don't reliably override each other by append order (CSS cascade order
+// depends on how Tailwind compiles them, not class-attribute order), so a
+// hardcoded default here could silently "win" over a caller's override.
+// Every caller specifies its own.
 export function Skeleton({ className = '' }: { className?: string }) {
-  return <div className={`animate-pulse rounded-button bg-line-2 ${className}`} />;
+  return <div className={`animate-pulse ${className}`} />;
 }
 
 export function SkeletonRow() {
   return (
     <div className="flex items-center gap-3 px-4 py-3">
-      <Skeleton className="h-[34px] w-[34px] rounded-button" />
+      <Skeleton className="h-[34px] w-[34px] rounded-button bg-line-2" />
       <div className="flex-1 space-y-2">
-        <Skeleton className="h-3.5 w-2/3" />
-        <Skeleton className="h-3 w-1/3" />
+        <Skeleton className="h-3.5 w-2/3 rounded-button bg-line-2" />
+        <Skeleton className="h-3 w-1/3 rounded-button bg-line-2" />
       </div>
-      <Skeleton className="h-4 w-12" />
+      <Skeleton className="h-4 w-12 rounded-button bg-line-2" />
     </div>
   );
 }

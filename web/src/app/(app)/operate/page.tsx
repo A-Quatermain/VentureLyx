@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { useApi } from '@/lib/useApi';
 import type { Lead, OperateMoneyResponse } from '@/lib/types';
 import { formatMoney } from '@/lib/format';
-import { StatStrip } from '@/components/ui/StatStrip';
 import { Skeleton } from '@/components/ui/Skeleton';
 
 // Our real parties.lifecycle values (migration 002's own documented
@@ -76,7 +75,7 @@ function Pipeline({ leads, loading }: { leads: Lead[]; loading: boolean }) {
     return (
       <div className="flex gap-4 overflow-x-auto pb-4">
         {STAGES.map((s) => (
-          <Skeleton key={s.key} className="h-[70vh] w-72 shrink-0 rounded-none" />
+          <Skeleton key={s.key} className="h-[70vh] w-72 shrink-0 rounded-none bg-muted" />
         ))}
       </div>
     );
@@ -131,22 +130,31 @@ function Money({
   leadsLoading: boolean;
   moneyLoading: boolean;
 }) {
+  const stats = [
+    { label: 'Leads to work', value: String(leads.length) },
+    { label: 'Overdue invoices', value: String(money?.overdue.length ?? 0) },
+    { label: 'Upcoming', value: money ? formatMoney(money.upcoming.total) : '—' },
+  ];
+
   return (
     <div className="space-y-4">
-      <StatStrip
-        stats={[
-          { label: 'Leads to work', value: String(leads.length) },
-          { label: 'Overdue invoices', value: String(money?.overdue.length ?? 0) },
-          { label: 'Upcoming', value: money ? formatMoney(money.upcoming.total) : '—' },
-        ]}
-      />
+      <div className="grid grid-cols-3 gap-4">
+        {stats.map((s) => (
+          <div key={s.label} className="border border-border bg-surface p-4 text-center">
+            <p data-numeric className="font-mono text-xl font-semibold">
+              {s.value}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{s.label}</p>
+          </div>
+        ))}
+      </div>
 
       <div className="grid grid-cols-1 gap-4 g2:grid-cols-2">
         <div className="border border-border bg-surface">
           <p className="p-4 pb-2 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Money owed to you</p>
           {moneyLoading ? (
             <div className="p-4">
-              <Skeleton className="h-20 rounded-none" />
+              <Skeleton className="h-20 rounded-none bg-muted" />
             </div>
           ) : money && (money.overdue.length > 0 || money.upcoming.count > 0) ? (
             <div className="divide-y divide-border">
@@ -188,7 +196,7 @@ function Money({
           </p>
           {leadsLoading ? (
             <div className="p-4">
-              <Skeleton className="h-20 rounded-none" />
+              <Skeleton className="h-20 rounded-none bg-muted" />
             </div>
           ) : (
             <CityBreakdown leads={leads} />
