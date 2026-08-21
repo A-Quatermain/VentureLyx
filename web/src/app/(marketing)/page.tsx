@@ -5,6 +5,7 @@ import {
 } from '@phosphor-icons/react/ssr';
 import { getServerSession } from '@/lib/session';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { VideoHero } from '@/components/VideoHero';
 
 // This page's output depends on the request's session cookie (redirects an
 // authenticated visitor away entirely), so it was never actually a static
@@ -74,31 +75,42 @@ export default async function LandingPage() {
         </div>
       </header>
 
-      <section className="mx-auto max-w-6xl px-6 pb-20 pt-20 sm:pt-28">
-        <div className="max-w-3xl">
-          <h1 className="font-display text-4xl font-bold leading-tight tracking-tight sm:text-5xl">
-            We build businesses,
-            <br />
-            not websites.
-          </h1>
-          <p className="mt-6 max-w-xl text-base leading-relaxed text-muted-foreground sm:text-lg">
-            The operating system that takes your small business from idea to launch to
-            scale — CRM, SEO, and revenue, all reporting into one Command Center, with an
-            AI team behind it.
-          </p>
-          <div className="mt-8 flex flex-wrap gap-3">
-            <Link
-              href="/register"
-              className="inline-flex min-h-[42px] items-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
-            >
-              Start free <ArrowRight size={16} weight="bold" />
-            </Link>
-            <Link
-              href="/sign-in"
-              className="inline-flex min-h-[42px] items-center rounded-lg border border-border px-5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-            >
-              I have an account
-            </Link>
+      <section className="relative isolate overflow-hidden">
+        <VideoHero
+          poster="/video/hero-trades-poster.jpg"
+          mp4="/video/hero-trades.mp4"
+          webm="/video/hero-trades.webm"
+          className="absolute inset-0 -z-10"
+        />
+        {/* Dark scrim so headline/CTA text stays legible over any frame of the loop. */}
+        <div className="absolute inset-0 -z-10 bg-gradient-to-b from-black/70 via-black/55 to-black/75" />
+
+        <div className="mx-auto max-w-6xl px-6 pb-24 pt-20 sm:pt-28">
+          <div className="max-w-3xl">
+            <h1 className="font-display text-4xl font-bold leading-tight tracking-tight text-white sm:text-5xl">
+              We build businesses,
+              <br />
+              not websites.
+            </h1>
+            <p className="mt-6 max-w-xl text-base leading-relaxed text-white/80 sm:text-lg">
+              The operating system that takes your small business from idea to launch to
+              scale — CRM, SEO, and revenue, all reporting into one Command Center, with an
+              AI team behind it.
+            </p>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Link
+                href="/register"
+                className="inline-flex min-h-[42px] items-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
+              >
+                Start free <ArrowRight size={16} weight="bold" />
+              </Link>
+              <Link
+                href="/sign-in"
+                className="inline-flex min-h-[42px] items-center rounded-lg border border-white/30 px-5 text-sm font-medium text-white transition-colors hover:bg-white/10"
+              >
+                I have an account
+              </Link>
+            </div>
           </div>
         </div>
       </section>

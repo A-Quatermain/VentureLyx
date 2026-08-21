@@ -41,20 +41,20 @@ export default function SignInPage() {
 
   return (
     <main className="grid min-h-screen grid-cols-1 lg:grid-cols-2">
-      {/* No product photography exists to license or self-host here, so the
-          "photo left" panel is a brand gradient with the headline overlaid
-          rather than a stock image hotlinked from a third party. */}
-      <div className="relative hidden overflow-hidden bg-gradient-to-br from-primary via-violet-700 to-violet-950 lg:flex lg:flex-col lg:justify-between lg:p-12">
-        <div
-          className="pointer-events-none absolute inset-0 opacity-[0.07]"
-          style={{
-            backgroundImage:
-              'linear-gradient(to right, white 1px, transparent 1px), linear-gradient(to bottom, white 1px, transparent 1px)',
-            backgroundSize: '48px 48px',
-          }}
+      {/*
+        PLACEHOLDER PHOTO — stock still, not real Venturelyx brand
+        photography. Swap web/public/images/signin-hero.jpg (same filename)
+        for a real photo; see public/video/SOURCES.md. Sign-in keeps a
+        still image by design — landing and onboarding use video instead.
+      */}
+      <div className="relative hidden overflow-hidden lg:flex lg:flex-col lg:justify-between lg:p-12">
+        <img
+          src="/images/signin-hero.jpg"
+          alt=""
+          aria-hidden
+          className="absolute inset-0 h-full w-full object-cover"
         />
-        <div className="pointer-events-none absolute -right-24 -top-24 h-96 w-96 rounded-full bg-accent/30 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-32 -left-16 h-96 w-96 rounded-full bg-white/10 blur-3xl" />
+        <div className="absolute inset-0 bg-gradient-to-b from-primary/80 via-primary/40 to-violet-950/85" />
 
         <p className="relative font-display text-lg font-bold tracking-tight text-white">Venturelyx</p>
 

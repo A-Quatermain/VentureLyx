@@ -1,16 +1,44 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch, ApiError } from '@/lib/api';
 import type { CreateOrgResponse, SeoHealthDetail } from '@/lib/types';
-import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { BusinessProfileForm, type BusinessProfileValues } from '@/components/BusinessProfileForm';
+import { VideoHero } from '@/components/VideoHero';
 
 type Step = 'form' | 'crawling' | 'done';
 
 const BLANK_PROFILE: BusinessProfileValues = { name: '', website_url: '', vertical: '', service_area: '' };
+
+// Same split treatment as sign-in — video panel left (sign-in uses a still
+// photo instead), wizard content right.
+function OnboardingLayout({ children, wide = false }: { children: ReactNode; wide?: boolean }) {
+  return (
+    <main className="grid min-h-screen grid-cols-1 lg:grid-cols-2">
+      <div className="relative hidden overflow-hidden lg:flex lg:flex-col lg:justify-between lg:p-12">
+        <VideoHero
+          poster="/video/hero-trades-poster.jpg"
+          mp4="/video/hero-trades.mp4"
+          webm="/video/hero-trades.webm"
+          className="absolute inset-0"
+        />
+        <div className="absolute inset-0 bg-gradient-to-b from-primary/80 via-primary/40 to-violet-950/85" />
+
+        <p className="relative font-display text-lg font-bold tracking-tight text-white">Venturelyx</p>
+
+        <h1 className="relative max-w-lg font-display text-4xl font-bold leading-tight tracking-tight text-white xl:text-5xl">
+          We build businesses, not websites.
+        </h1>
+      </div>
+
+      <div className="flex items-center justify-center bg-background p-6">
+        <div className={`w-full text-center ${wide ? 'max-w-lg' : 'max-w-sm'}`}>{children}</div>
+      </div>
+    </main>
+  );
+}
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -83,57 +111,55 @@ export default function OnboardingPage() {
 
   if (step === 'crawling' || step === 'done') {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-background p-6">
-        <Card className="w-full max-w-sm p-8 text-center">
-          <p className="font-display text-lg font-bold tracking-tight">Venturelyx</p>
-          {step === 'crawling' ? (
-            <>
-              <div className="mt-6 flex justify-center gap-1.5" aria-hidden>
-                {[0, 1, 2].map((i) => (
-                  <span
-                    key={i}
-                    className="h-2 w-2 animate-pulse rounded-full bg-primary"
-                    style={{ animationDelay: `${i * 150}ms` }}
-                  />
-                ))}
-              </div>
-              <p className="mt-4 text-sm text-muted-foreground">Scanning your site…</p>
-              <p className="mt-1 text-xs text-muted-foreground/70">
-                This usually takes a minute or two. Feel free to move on — it'll keep running.
-              </p>
-            </>
-          ) : (
-            <>
-              <p data-numeric className="mt-4 font-mono text-4xl font-bold">
-                {health}
-              </p>
-              <p className="mt-1 text-sm text-muted-foreground">Your starting SEO health score</p>
-            </>
-          )}
-          <button onClick={() => router.push('/home')} className="mt-6 text-sm text-primary">
-            {step === 'done' ? 'Continue →' : 'Skip for now →'}
-          </button>
-        </Card>
-      </main>
+      <OnboardingLayout>
+        <p className="font-display text-lg font-bold tracking-tight lg:hidden">Venturelyx</p>
+        {step === 'crawling' ? (
+          <>
+            <div className="mt-6 flex justify-center gap-1.5" aria-hidden>
+              {[0, 1, 2].map((i) => (
+                <span
+                  key={i}
+                  className="h-2 w-2 animate-pulse rounded-full bg-primary"
+                  style={{ animationDelay: `${i * 150}ms` }}
+                />
+              ))}
+            </div>
+            <p className="mt-4 text-sm text-muted-foreground">Scanning your site…</p>
+            <p className="mt-1 text-xs text-muted-foreground/70">
+              This usually takes a minute or two. Feel free to move on — it'll keep running.
+            </p>
+          </>
+        ) : (
+          <>
+            <p data-numeric className="mt-4 font-mono text-4xl font-semibold tabular-nums">
+              {health}
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">Your starting SEO health score</p>
+          </>
+        )}
+        <button onClick={() => router.push('/home')} className="mt-6 text-sm font-medium text-primary hover:underline">
+          {step === 'done' ? 'Continue →' : 'Skip for now →'}
+        </button>
+      </OnboardingLayout>
     );
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background p-6">
-      <Card className="w-full max-w-lg p-8">
-        <p className="font-display text-lg font-bold tracking-tight">Venturelyx</p>
-        <p className="mt-1 text-sm text-muted-foreground">Tell us about your business</p>
+    <OnboardingLayout wide>
+      <div className="text-left">
+        <p className="font-display text-lg font-bold tracking-tight lg:hidden">Venturelyx</p>
+        <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">Tell us about your business</h2>
 
         <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-4">
           <BusinessProfileForm values={profile} onChange={setProfile} />
 
           {error && <p className="text-sm text-destructive">{error}</p>}
 
-          <Button type="submit" disabled={busy} className="mt-2">
+          <Button type="submit" disabled={busy} className="mt-2 w-full">
             {busy ? 'Creating…' : 'Continue'}
           </Button>
         </form>
-      </Card>
-    </main>
+      </div>
+    </OnboardingLayout>
   );
 }
