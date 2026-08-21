@@ -1,14 +1,16 @@
-// Swiss Brutalist semantic tones. design_guidelines.json's palette has no
-// dedicated "amber/warning" tier the way Daylight Ledger did — primary
-// (Klein Blue) is explicitly reserved for "critical actions," so it also
-// covers the "needs attention, not yet critical" middle tier here.
-export type Tone = 'primary' | 'muted' | 'destructive' | 'success';
+// Indigo/violet semantic tones (docs/design_guidelines.json). Unlike the
+// earlier Swiss Brutalist palette, this one has a dedicated warning/amber
+// tier — primary (indigo) is the brand action color, not a stand-in for
+// "needs attention, not yet critical" anymore, so that middle tier now maps
+// to warning instead.
+export type Tone = 'primary' | 'muted' | 'destructive' | 'success' | 'warning';
 
 export const toneSoft: Record<Tone, string> = {
   primary: 'bg-primary/10 text-primary',
   muted: 'bg-muted text-muted-foreground',
   destructive: 'bg-destructive/10 text-destructive',
   success: 'bg-success/10 text-success',
+  warning: 'bg-warning/10 text-warning',
 };
 
 export const toneFill: Record<Tone, string> = {
@@ -16,26 +18,27 @@ export const toneFill: Record<Tone, string> = {
   muted: 'bg-muted-foreground',
   destructive: 'bg-destructive',
   success: 'bg-success',
+  warning: 'bg-warning',
 };
 
-// Outlined tag style — border + text, no fill. Matches ref-1's PRIORITY
-// badge treatment (CommandCenter.jsx) exactly.
+// Outlined pill/chip style — border + text, no fill.
 export const toneOutline: Record<Tone, string> = {
   primary: 'border-primary text-primary',
   muted: 'border-border text-muted-foreground',
   destructive: 'border-destructive text-destructive',
   success: 'border-success text-success',
+  warning: 'border-warning text-warning',
 };
 
 export function healthTone(score: number): Tone {
   if (score >= 80) return 'success';
-  if (score >= 50) return 'primary';
+  if (score >= 50) return 'warning';
   return 'destructive';
 }
 
 export function severityTone(severity: 'critical' | 'high' | 'medium' | 'low'): Tone {
   if (severity === 'critical' || severity === 'high') return 'destructive';
-  if (severity === 'medium') return 'primary';
+  if (severity === 'medium') return 'warning';
   return 'muted';
 }
 
@@ -44,7 +47,7 @@ export function severityTone(severity: 'critical' | 'high' | 'medium' | 'low'): 
 // above, which is seo_issues' column specifically.
 export function signalSeverityTone(severity: number): Tone {
   if (severity <= 2) return 'destructive';
-  if (severity === 3) return 'primary';
+  if (severity === 3) return 'warning';
   return 'muted';
 }
 

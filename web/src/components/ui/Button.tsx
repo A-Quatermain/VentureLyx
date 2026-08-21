@@ -1,24 +1,23 @@
 import { type ButtonHTMLAttributes } from 'react';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'attention' | 'ghost';
+  variant?: 'primary' | 'ai' | 'attention' | 'ghost';
 }
 
-// design_guidelines.json: primary (Klein Blue) is reserved for critical
-// conversions/CTAs — there's no separate "amber attention" tier in this
-// system the way Daylight Ledger had one, so `attention` maps to
-// destructive instead (unused anywhere currently, kept for a future
-// urgent/destructive-toned CTA rather than removed outright).
+// docs/design_guidelines.json: 'ai' is the recurring "Fix this for me"
+// gradient CTA — the one place the indigo-to-violet gradient appears,
+// consistently, everywhere an AI action is on offer.
 const variants: Record<NonNullable<ButtonProps['variant']>, string> = {
-  primary: 'bg-primary text-primary-foreground hover:opacity-90',
-  attention: 'bg-destructive text-destructive-foreground hover:opacity-90',
+  primary: 'bg-primary text-primary-foreground shadow-sm hover:bg-primary-hover hover:shadow-md',
+  ai: 'bg-gradient-to-r from-primary to-violet-600 dark:to-violet-400 text-white shadow-sm hover:shadow-md',
+  attention: 'bg-destructive text-destructive-foreground shadow-sm hover:opacity-90',
   ghost: 'bg-transparent text-foreground border border-border hover:bg-muted',
 };
 
 export function Button({ variant = 'primary', className = '', ...props }: ButtonProps) {
   return (
     <button
-      className={`min-h-[42px] rounded-none px-4 text-sm font-medium transition-opacity disabled:opacity-50 ${variants[variant]} ${className}`}
+      className={`min-h-[42px] rounded-lg px-4 text-sm font-medium transition-[background-color,box-shadow] duration-200 disabled:opacity-50 ${variants[variant]} ${className}`}
       {...props}
     />
   );

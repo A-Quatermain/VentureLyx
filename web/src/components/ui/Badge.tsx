@@ -3,7 +3,7 @@ import { severityTone, toneOutline } from './tone';
 
 export function SeverityBadge({ severity }: { severity: SignalSeverity }) {
   return (
-    <span className={`border px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase ${toneOutline[severityTone(severity)]}`}>
+    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase ${toneOutline[severityTone(severity)]}`}>
       {severity}
     </span>
   );

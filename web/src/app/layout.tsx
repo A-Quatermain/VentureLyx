@@ -9,10 +9,17 @@ import '@/styles/globals.css';
 // host and plain `docker run` containers do) — builds hung indefinitely
 // mid-build fetching them. Self-hosting makes the build network-independent
 // and faster; files are pre-subset to exactly the glyphs this app uses.
+//
+// One family (IBM Plex Sans) for both --font-display and --font-ui now —
+// docs/design_guidelines.json dropped the separate brutalist display face
+// (Chivo) in favor of weight/size alone carrying heading hierarchy. Kept as
+// two separate font-display declarations (rather than pointing font-display
+// at --font-ui) so the two Tailwind classes can still diverge later without
+// touching every call site again.
 const display = localFont({
   src: [
-    { path: '../../public/fonts/chivo-700.woff2', weight: '700' },
-    { path: '../../public/fonts/chivo-900.woff2', weight: '900' },
+    { path: '../../public/fonts/ibm-plex-sans-600.woff2', weight: '600' },
+    { path: '../../public/fonts/ibm-plex-sans-700.woff2', weight: '700' },
   ],
   variable: '--font-display',
 });

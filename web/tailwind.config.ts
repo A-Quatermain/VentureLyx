@@ -1,10 +1,9 @@
 import type { Config } from 'tailwindcss';
 
-// Swiss Brutalist (docs/design_guidelines.json) — authoritative over
-// docs/DESIGN.md's Daylight Ledger, which this file no longer has any
-// trace of (removed once the last consumer was retoken'd). Token values
-// live in src/styles/globals.css; this file only maps Tailwind utilities
-// onto those variables.
+// Indigo/violet (docs/design_guidelines.json) — replaces the earlier Swiss
+// Brutalist palette entirely (this file no longer has any trace of Klein
+// Blue). Token values live in src/styles/globals.css; this file only maps
+// Tailwind utilities onto those variables.
 const config: Config = {
   content: ['./src/**/*.{ts,tsx}'],
   darkMode: 'class',
@@ -21,16 +20,21 @@ const config: Config = {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-fg))',
         },
-        // Plain var(), not hsl(var()) — the spec's border is an alpha-blended
-        // rgba(), not a solid HSL triplet like the tones below (those stay
-        // HSL specifically because GrowthGauge's inline SVG reads
+        // Plain var(), not hsl(var()) — border is a solid hex, not a solid
+        // HSL triplet like the tones below (those stay HSL specifically
+        // because GrowthGauge's inline SVG reads
         // hsl(var(--muted|primary|destructive|success)) directly).
         border: 'var(--border)',
         input: 'var(--border)',
         ring: 'hsl(var(--primary))',
         primary: {
           DEFAULT: 'hsl(var(--primary))',
+          hover: 'hsl(var(--primary-hover))',
           foreground: 'hsl(var(--primary-fg))',
+        },
+        accent: {
+          DEFAULT: 'hsl(var(--accent))',
+          foreground: 'hsl(var(--accent-fg))',
         },
         muted: {
           DEFAULT: 'hsl(var(--muted))',
@@ -43,6 +47,10 @@ const config: Config = {
         success: {
           DEFAULT: 'hsl(var(--success))',
           foreground: 'hsl(var(--success-fg))',
+        },
+        warning: {
+          DEFAULT: 'hsl(var(--warning))',
+          foreground: 'hsl(var(--warning-fg))',
         },
       },
       fontFamily: {
