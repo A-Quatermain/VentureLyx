@@ -8,6 +8,53 @@ export interface Organization {
   siteCount: number;
 }
 
+// ---- Settings ----------------------------------------------------------
+export interface OrgProfile {
+  id: string;
+  name: string;
+  website_url: string | null;
+  vertical: string | null;
+  service_area: string | null;
+}
+
+export type AIFeature =
+  | 'seo_recommendations' | 'page_generation' | 'review_response'
+  | 'next_best_action' | 'metric_explanation' | 'business_blueprint';
+
+export type AIProvider = 'anthropic' | 'openai';
+export type AIProviderPreference = 'auto' | AIProvider;
+
+export interface KnownModel {
+  provider: AIProvider;
+  model: string;
+  label: string;
+}
+
+export interface AIModelOverride {
+  provider: AIProvider;
+  model: string;
+}
+
+export interface AIUsageByFeature {
+  calls: number;
+  tokens: number;
+  estimatedCost: number;
+}
+
+export interface AISettingsResponse {
+  providerPreference: AIProviderPreference;
+  spendCapMonthly: number | null;
+  modelOverrides: Partial<Record<AIFeature, AIModelOverride | null>>;
+  connectedProviders: AIProvider[];
+  hasSharedAnthropic: boolean;
+  hasSharedOpenai: boolean;
+  knownModels: KnownModel[];
+  usageThisMonth: {
+    byFeature: Partial<Record<AIFeature, AIUsageByFeature>>;
+    totalEstimatedCost: number;
+  };
+}
+
 export interface MeResponse {
   authenticated: boolean;
   mfaSatisfied?: boolean;

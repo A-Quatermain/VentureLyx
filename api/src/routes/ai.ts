@@ -1,18 +1,48 @@
 /**
  * Venturelyx :: AI-backed routes. Thin over api/src/lib/ai.ts — each route
- * gathers real org data in one short req.db() call, then streams a
- * completion via SSE. No route holds a Querier open across the stream
- * itself (see the note on ai.ts's StreamAIOptions).
+ * gathers real org data (plus AI settings/clients/spend check) in one short
+ * req.db() call, then streams a completion via SSE. No route holds a
+ * Querier open across the stream itself (see the note on ai.ts's
+ * StreamAIOptions).
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { getProviderPreference, logAiUsage, streamAI, streamEventsToSSE, type AIStreamEvent } from '../lib/ai.js';
+import {
+  getAISettings, getAIClients, getMonthlySpend, logAiUsage, streamAI, streamEventsToSSE,
+  type AIStreamEvent, type AIClients, type ProviderPreference, type Provider, type Feature,
+} from '../lib/ai.js';
+import type { Querier } from '../lib/db.js';
 import { HttpError } from '../plugins/context.js';
 
 async function* staticEvents(text: string): AsyncGenerator<AIStreamEvent> {
   yield { type: 'delta', text };
   yield { type: 'done' };
 }
+
+interface AIContext {
+  providerPreference: ProviderPreference;
+  clients: AIClients;
+  modelOverride?: { provider: Provider; model: string };
+  capExceeded: boolean;
+}
+
+async function resolveAIContext(db: Querier, orgId: string, feature: Feature): Promise<AIContext> {
+  const settings = await getAISettings(db, orgId);
+  const clients = await getAIClients(db, orgId);
+  let capExceeded = false;
+  if (settings.spendCapMonthly !== null) {
+    const spent = await getMonthlySpend(db, orgId);
+    capExceeded = spent >= settings.spendCapMonthly;
+  }
+  return {
+    providerPreference: settings.providerPreference,
+    clients,
+    modelOverride: settings.modelOverrides[feature],
+    capExceeded,
+  };
+}
+
+const CAP_MESSAGE = "AI is paused for this business — this month's spend cap has been reached. Raise it in Settings to continue.";
 
 export default async function aiRoutes(app: FastifyInstance) {
 
@@ -25,8 +55,8 @@ export default async function aiRoutes(app: FastifyInstance) {
     const orgId = req.ctx.orgId!;
     const feature = 'next_best_action' as const;
 
-    const { prompt, providerPreference } = await req.db(async (q) => {
-      const preference = await getProviderPreference(q, orgId);
+    const { prompt, ctx } = await req.db(async (q) => {
+      const context = await resolveAIContext(q, orgId, feature);
       const org = await q.one<{ name: string; vertical: string | null }>(
         `SELECT name, vertical FROM organizations WHERE id = app.current_org()`,
       );
@@ -45,11 +75,15 @@ export default async function aiRoutes(app: FastifyInstance) {
           ORDER BY severity, detected_at DESC
           LIMIT 10`,
       );
-      return { prompt: buildGrowthStrategistPrompt(org, opportunities, signals), providerPreference: preference };
+      return { prompt: buildGrowthStrategistPrompt(org, opportunities, signals), ctx: context };
     });
 
     if (!prompt) {
       await streamEventsToSSE(reply, staticEvents("You're all caught up — no open opportunities or active signals right now."));
+      return;
+    }
+    if (ctx.capExceeded) {
+      await streamEventsToSSE(reply, staticEvents(CAP_MESSAGE));
       return;
     }
 
@@ -58,7 +92,9 @@ export default async function aiRoutes(app: FastifyInstance) {
       feature,
       system: prompt.system,
       messages: [{ role: 'user', content: prompt.user }],
-      providerPreference,
+      providerPreference: ctx.providerPreference,
+      clients: ctx.clients,
+      modelOverride: ctx.modelOverride,
       onUsage: (usage) => req.db((q) => logAiUsage(q, { orgId, feature, ...usage })),
     });
 
@@ -78,13 +114,18 @@ export default async function aiRoutes(app: FastifyInstance) {
       topic: z.string().min(1).max(500),
     }).parse(req.body);
 
-    const { system, providerPreference } = await req.db(async (q) => {
-      const preference = await getProviderPreference(q, orgId);
+    const { system, ctx } = await req.db(async (q) => {
+      const context = await resolveAIContext(q, orgId, feature);
       const org = await q.one<{ name: string; vertical: string | null }>(
         `SELECT name, vertical FROM organizations WHERE id = app.current_org()`,
       );
-      return { system: buildPageGenerationPrompt(org, body.kind), providerPreference: preference };
+      return { system: buildPageGenerationPrompt(org, body.kind), ctx: context };
     });
+
+    if (ctx.capExceeded) {
+      await streamEventsToSSE(reply, staticEvents(CAP_MESSAGE));
+      return;
+    }
 
     const gen = streamAI({
       orgId,
@@ -92,7 +133,9 @@ export default async function aiRoutes(app: FastifyInstance) {
       system,
       messages: [{ role: 'user', content: `Write the page. Topic / target keyword: ${body.topic}` }],
       maxTokens: 1500,
-      providerPreference,
+      providerPreference: ctx.providerPreference,
+      clients: ctx.clients,
+      modelOverride: ctx.modelOverride,
       onUsage: (usage) => req.db((q) => logAiUsage(q, { orgId, feature, ...usage })),
     });
 
@@ -109,8 +152,8 @@ export default async function aiRoutes(app: FastifyInstance) {
     const feature = 'review_response' as const;
     const { reviewId } = z.object({ reviewId: z.string().uuid() }).parse(req.body);
 
-    const { system, user, providerPreference } = await req.db(async (q) => {
-      const preference = await getProviderPreference(q, orgId);
+    const { system, user, ctx } = await req.db(async (q) => {
+      const context = await resolveAIContext(q, orgId, feature);
       const org = await q.one<{ name: string; vertical: string | null }>(
         `SELECT name, vertical FROM organizations WHERE id = app.current_org()`,
       );
@@ -122,9 +165,14 @@ export default async function aiRoutes(app: FastifyInstance) {
       return {
         system: buildReviewResponsePrompt(org),
         user: `Reviewer: ${review.author_name} (${review.rating}/5 stars)\nReview: "${review.body ?? '(no text)'}"`,
-        providerPreference: preference,
+        ctx: context,
       };
     });
+
+    if (ctx.capExceeded) {
+      await streamEventsToSSE(reply, staticEvents(CAP_MESSAGE));
+      return;
+    }
 
     const gen = streamAI({
       orgId,
@@ -132,7 +180,9 @@ export default async function aiRoutes(app: FastifyInstance) {
       system,
       messages: [{ role: 'user', content: user }],
       maxTokens: 500,
-      providerPreference,
+      providerPreference: ctx.providerPreference,
+      clients: ctx.clients,
+      modelOverride: ctx.modelOverride,
       onUsage: (usage) => req.db((q) => logAiUsage(q, { orgId, feature, ...usage })),
     });
 

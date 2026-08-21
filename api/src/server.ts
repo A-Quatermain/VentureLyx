@@ -13,6 +13,7 @@ import dataRoutes from './routes/data.js';
 import operateRoutes from './routes/operate.js';
 import aiRoutes from './routes/ai.js';
 import reviewsRoutes from './routes/reviews.js';
+import settingsRoutes from './routes/settings.js';
 import { healthy, shutdown } from './lib/db.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -73,6 +74,7 @@ await app.register(dataRoutes, { prefix: '/v1' });
 await app.register(operateRoutes, { prefix: '/v1' });
 await app.register(aiRoutes, { prefix: '/v1' });
 await app.register(reviewsRoutes, { prefix: '/v1' });
+await app.register(settingsRoutes, { prefix: '/v1' });
 
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, async () => {

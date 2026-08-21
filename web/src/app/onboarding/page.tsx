@@ -6,17 +6,15 @@ import { apiFetch, ApiError } from '@/lib/api';
 import type { CreateOrgResponse, SeoHealthDetail } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-
-const inputCls =
-  'min-h-[42px] rounded-none border border-border bg-background px-3 text-foreground outline-none focus:border-primary';
+import { BusinessProfileForm, type BusinessProfileValues } from '@/components/BusinessProfileForm';
 
 type Step = 'form' | 'crawling' | 'done';
 
+const BLANK_PROFILE: BusinessProfileValues = { name: '', website_url: '', vertical: '', service_area: '' };
+
 export default function OnboardingPage() {
   const router = useRouter();
-  const [name, setName] = useState('');
-  const [websiteUrl, setWebsiteUrl] = useState('');
-  const [vertical, setVertical] = useState('');
+  const [profile, setProfile] = useState<BusinessProfileValues>(BLANK_PROFILE);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState<Step>('form');
@@ -31,9 +29,10 @@ export default function OnboardingPage() {
       const org = await apiFetch<CreateOrgResponse>('/orgs', {
         method: 'POST',
         body: JSON.stringify({
-          name,
-          website_url: websiteUrl.trim() || null,
-          vertical: vertical.trim() || null,
+          name: profile.name,
+          website_url: profile.website_url.trim() || null,
+          vertical: profile.vertical.trim() || null,
+          service_area: profile.service_area.trim() || null,
         }),
       });
       if (org.crawlQueued && org.siteId) {
@@ -121,29 +120,12 @@ export default function OnboardingPage() {
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6">
-      <Card className="w-full max-w-sm p-8">
+      <Card className="w-full max-w-lg p-8">
         <p className="font-display text-lg font-black tracking-tight">Venturelyx</p>
         <p className="mt-1 text-sm text-muted-foreground">Tell us about your business</p>
 
-        <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-3">
-          <label className="flex flex-col gap-1 text-sm text-muted-foreground">
-            Business name
-            <input required value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
-          </label>
-          <label className="flex flex-col gap-1 text-sm text-muted-foreground">
-            Website (optional)
-            <input
-              type="url"
-              placeholder="https://example.com"
-              value={websiteUrl}
-              onChange={(e) => setWebsiteUrl(e.target.value)}
-              className={inputCls}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm text-muted-foreground">
-            Industry (optional)
-            <input value={vertical} onChange={(e) => setVertical(e.target.value)} className={inputCls} />
-          </label>
+        <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-4">
+          <BusinessProfileForm values={profile} onChange={setProfile} />
 
           {error && <p className="text-sm text-destructive">{error}</p>}
 

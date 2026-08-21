@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   Gauge, Kanban, MagnifyingGlass, Compass, Package, TrendUp, Robot, Lock,
-  Buildings, List, X, Star,
+  Buildings, List, X, Star, Gear,
 } from '@phosphor-icons/react';
 import type { Organization } from '@/lib/types';
 import { OrgSwitcher } from '@/components/OrgSwitcher';
@@ -145,6 +145,17 @@ export function AppShell({
               <OrgSwitcher organizations={organizations} currentOrgId={currentOrgId} />
             </div>
             <div className="flex items-center gap-2">
+              <Link
+                href="/settings"
+                aria-label="Settings"
+                className={`grid h-9 w-9 place-items-center border transition-colors ${
+                  pathname === '/settings'
+                    ? 'border-primary text-primary'
+                    : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`}
+              >
+                <Gear size={16} weight="bold" />
+              </Link>
               <ThemeToggle />
               <SignOutButton />
             </div>
