@@ -33,8 +33,18 @@ export function VideoHero({
     setCanPlayVideo(isDesktop && !reducedMotion);
   }, []);
 
+  // No baked-in `relative` here: Tailwind's utilities for the same CSS
+  // property don't reliably override by string/class-attribute order (only
+  // by their fixed position in the generated stylesheet), so a hardcoded
+  // `relative` fighting a caller's `absolute` (both landing and onboarding
+  // pass one) can silently win and leave this whole component in normal
+  // document flow instead of overlaid — which is exactly what happened
+  // here: the poster/video rendered at their own intrinsic aspect-ratio
+  // height, in-flow, tall enough to push into and cover the section below.
+  // Every caller must supply its own position utility; `overflow-hidden`
+  // alone has no such conflict.
   return (
-    <div className={`relative overflow-hidden ${className}`}>
+    <div className={`overflow-hidden ${className}`}>
       {/*
         PLACEHOLDER FOOTAGE — stock video, not real Venturelyx brand
         content. Swap web/public/video/hero-trades.{mp4,webm,poster.jpg}

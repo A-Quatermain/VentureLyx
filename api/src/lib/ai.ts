@@ -126,7 +126,19 @@ export async function getAIClients(db: Querier, orgId: string): Promise<AIClient
   );
   const clients: AIClients = { anthropic: sharedAnthropic, openai: sharedOpenai };
   for (const row of rows) {
-    const key = decryptSecret(row.credential_enc, row.credential_iv, row.credential_tag);
+    // A BYO row can become permanently undecryptable if VAULT_KEY ever
+    // changes after it was saved (the ciphertext was encrypted under the
+    // old key) — that's an operational event, not a per-request bug, and
+    // must not take down the whole AI feature for the org. Fall back to
+    // the shared client for that provider, same as if nothing were
+    // connected; Settings' "Connected" status is a separate, human-visible
+    // signal that the key needs reconnecting.
+    let key: string;
+    try {
+      key = decryptSecret(row.credential_enc, row.credential_iv, row.credential_tag);
+    } catch {
+      continue;
+    }
     if (row.provider === 'anthropic') clients.anthropic = new Anthropic({ apiKey: key });
     if (row.provider === 'openai') clients.openai = new OpenAI({ apiKey: key });
   }
@@ -347,20 +359,43 @@ export async function* streamAI(opts: StreamAIOptions): AsyncGenerator<AIStreamE
   throw lastErr instanceof Error ? lastErr : new Error('All configured AI providers failed');
 }
 
+// Same origin list @fastify/cors is configured with in server.ts. Duplicated
+// here (not imported) because streamEventsToSSE has to compute this itself —
+// see the comment below on why.
+const CORS_ORIGINS = (process.env.CORS_ORIGINS ?? 'https://app.venturelyx.com').split(',');
+
 /**
  * Pipes an AIStreamEvent generator to the client as SSE. Hijacks the
  * response so Fastify never tries to also send its own reply.
+ *
+ * reply.hijack() means Fastify's onSend hook never runs for this response —
+ * which is exactly where @fastify/cors attaches Access-Control-Allow-Origin/
+ * -Credentials. Without reproducing that here, every one of these responses
+ * came back 200 with a real streamed body (confirmed live: the request does
+ * reach the route, runs the model, and streams real tokens) but with no CORS
+ * headers on the actual response — only on its preflight. Browsers allow the
+ * preflight and the request itself to go out, then silently discard the
+ * response and reject fetch() with a network-level error, which is
+ * indistinguishable from the server never having been reached at all.
  */
 export async function streamEventsToSSE(
   reply: import('fastify').FastifyReply,
   gen: AsyncGenerator<AIStreamEvent, void, unknown>,
 ): Promise<void> {
   reply.hijack();
+  const origin = reply.request.headers.origin;
+  const corsHeaders: Record<string, string> = {};
+  if (origin && CORS_ORIGINS.includes(origin)) {
+    corsHeaders['Access-Control-Allow-Origin'] = origin;
+    corsHeaders['Access-Control-Allow-Credentials'] = 'true';
+    corsHeaders['Vary'] = 'Origin';
+  }
   reply.raw.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
     Connection: 'keep-alive',
     'X-Accel-Buffering': 'no',
+    ...corsHeaders,
   });
   try {
     for await (const event of gen) {
