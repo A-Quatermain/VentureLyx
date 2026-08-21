@@ -25,7 +25,7 @@ const MODULES = [
   { href: '/operate', label: 'Operate', icon: Kanban, locked: false },
   { href: '/scaleseo', label: 'ScaleSEO', icon: MagnifyingGlass, locked: false },
   { href: '/grow', label: 'Grow', icon: TrendUp, locked: true },
-  { href: '/ai-team', label: 'AI Team', icon: Robot, locked: true },
+  { href: '/ai-team', label: 'AI Team', icon: Robot, locked: false },
 ] as const;
 
 const NAV_BOTTOM = [
