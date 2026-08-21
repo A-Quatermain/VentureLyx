@@ -77,6 +77,14 @@ export interface SummaryResponse {
   seo: SeoSummary | null;
   leads: { new_leads: number; stale: number };
   work: { today_total: number; today_done: number; week: number };
+  pipeline: { pipeline_value: string; open_deals: number };
+  reputation: { avg_rating: string | null; review_count: number };
+}
+
+export interface RevenueTrendPoint {
+  month: string;
+  month_key: string;
+  amount: string;
 }
 
 // ---- GET /command/signals ---------------------------------------------------

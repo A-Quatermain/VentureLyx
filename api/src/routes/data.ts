@@ -15,7 +15,7 @@ export default async function dataRoutes(app: FastifyInstance) {
     req.requireRole('viewer');
 
     return req.db(async (q) => {
-      const [org, money, opportunities, seo, leads, work] = await Promise.all([
+      const [org, money, opportunities, seo, leads, work, pipeline, reputation] = await Promise.all([
         q.one<{ name: string; vertical: string | null; modules: unknown }>(
           `SELECT name, vertical, modules FROM organizations WHERE id = app.current_org()`,
         ),
@@ -75,6 +75,15 @@ export default async function dataRoutes(app: FastifyInstance) {
                WHERE scheduled_start >= date_trunc('week', now())
                  AND scheduled_start <  date_trunc('week', now()) + interval '7 days')::int AS week`,
         ),
+
+        q.one<{ pipeline_value: string; open_deals: number }>(
+          `SELECT COALESCE(sum(value), 0)::text AS pipeline_value, count(*)::int AS open_deals
+             FROM deals WHERE status = 'open'`,
+        ),
+
+        q.one<{ avg_rating: string | null; review_count: number }>(
+          `SELECT avg(rating)::numeric(3,1)::text AS avg_rating, count(*)::int AS review_count FROM reviews`,
+        ),
       ]);
 
       // Revenue by acquisition channel — the claim no single-purpose tool can make.
@@ -90,8 +99,33 @@ export default async function dataRoutes(app: FastifyInstance) {
           ORDER BY sum(p.amount) DESC`,
       );
 
-      return { org, money, channels, opportunities, seo, leads, work };
+      return { org, money, channels, opportunities, seo, leads, work, pipeline, reputation };
     });
+  });
+
+  // ---- Command Center: revenue trend --------------------------------------
+  // Real months from payments, not sampled/hardcoded — an org with zero
+  // succeeded payments (true for every org today) gets six real $0 months,
+  // not fabricated numbers.
+  app.get('/command/revenue-trend', async (req) => {
+    req.requireRole('viewer');
+    return req.db((q) =>
+      q.rows<{ month: string; month_key: string; amount: string }>(
+        `SELECT to_char(gs, 'Mon') AS month,
+                to_char(gs, 'YYYY-MM') AS month_key,
+                COALESCE((
+                  SELECT sum(amount) FROM payments
+                   WHERE status = 'succeeded'
+                     AND date_trunc('month', received_at) = gs
+                ), 0)::text AS amount
+           FROM generate_series(
+                  date_trunc('month', now()) - interval '5 months',
+                  date_trunc('month', now()),
+                  interval '1 month'
+                ) AS gs
+          ORDER BY gs`,
+      ),
+    );
   });
 
   // ---- open signals (the "worth doing" list) ----------------------------

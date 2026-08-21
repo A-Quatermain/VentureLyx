@@ -29,3 +29,14 @@ export function SkeletonCard({ rows = 3 }: { rows?: number }) {
     </div>
   );
 }
+
+// A sweeping highlight rather than a uniform pulse — foreground/10 reads as a
+// faint light streak on dark muted backgrounds and a faint dark streak on
+// light ones, so it works in both themes without a light/dark branch.
+export function ShimmerBlock({ className = '' }: { className?: string }) {
+  return (
+    <div className={`relative overflow-hidden bg-muted ${className}`}>
+      <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-foreground/10 to-transparent" />
+    </div>
+  );
+}
