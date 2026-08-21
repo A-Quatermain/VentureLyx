@@ -36,7 +36,8 @@ const MODULES = [
 export default async function LandingPage() {
   const me = await getServerSession();
   if (me.authenticated) {
-    redirect(me.mfaSatisfied ? '/home' : '/mfa');
+    if (!me.mfaSatisfied) redirect('/mfa');
+    redirect(me.organizations?.length ? '/home' : '/onboarding');
   }
 
   return (

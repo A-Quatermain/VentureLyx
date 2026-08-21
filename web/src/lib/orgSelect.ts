@@ -8,12 +8,16 @@
 import { apiFetch } from './api';
 import type { MeResponse } from './types';
 
-export async function ensureOrgSelected(): Promise<void> {
+// Returns the (possibly now-updated) session info so callers can route a
+// zero-org user to /onboarding instead of /home — without this, they'd land
+// on /home only to immediately bounce via (app)/layout.tsx's own guard.
+export async function ensureOrgSelected(): Promise<MeResponse> {
   const me = await apiFetch<MeResponse>('/auth/me');
-  if (me.currentOrgId || !me.organizations?.length) return;
+  if (me.currentOrgId || !me.organizations?.length) return me;
 
   await apiFetch('/auth/org', {
     method: 'POST',
     body: JSON.stringify({ orgId: me.organizations[0]!.id }),
   });
+  return me;
 }

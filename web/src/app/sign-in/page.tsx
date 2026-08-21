@@ -31,8 +31,8 @@ export default function SignInPage() {
         return;
       }
 
-      await ensureOrgSelected();
-      router.push('/home');
+      const me = await ensureOrgSelected();
+      router.push(me.organizations?.length ? '/home' : '/onboarding');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong. Try again.');
     } finally {

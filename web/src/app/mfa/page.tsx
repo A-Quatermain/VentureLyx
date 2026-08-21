@@ -19,8 +19,8 @@ export default function MfaPage() {
     setBusy(true);
     try {
       await apiFetch('/auth/mfa', { method: 'POST', body: JSON.stringify({ code }) });
-      await ensureOrgSelected();
-      router.push('/home');
+      const me = await ensureOrgSelected();
+      router.push(me.organizations?.length ? '/home' : '/onboarding');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong. Try again.');
     } finally {
