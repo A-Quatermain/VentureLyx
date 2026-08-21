@@ -11,7 +11,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { SkeletonCard } from '@/components/ui/Skeleton';
 import { CustomerDrawer } from '@/components/CustomerDrawer';
-import { toneOutline, type Tone } from '@/components/ui/tone';
+import { toneSoft, type Tone } from '@/components/ui/tone';
 
 type ChipFilter = 'all' | 'lead' | 'customer' | 'dormant';
 const CHIPS: { key: ChipFilter; label: string }[] = [
@@ -42,7 +42,7 @@ function relativeTime(iso: string | null): string {
 
 function LifecycleChip({ value }: { value: Lifecycle }) {
   return (
-    <span className={`border px-1.5 py-0.5 font-mono text-[10px] uppercase ${toneOutline[LIFECYCLE_TONE[value]]}`}>
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${toneSoft[LIFECYCLE_TONE[value]]}`}>
       {value}
     </span>
   );
@@ -128,7 +128,7 @@ export default function CustomersPage() {
     <div className="flex flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <p className="font-display text-lg font-black tracking-tight">Customers</p>
+          <p className="font-display text-lg font-bold tracking-tight">Customers</p>
           <p className="text-sm text-muted-foreground">Every lead and customer, in one list.</p>
         </div>
         <div className="flex items-center gap-3">
@@ -140,7 +140,7 @@ export default function CustomersPage() {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex border border-border">
+        <div className="flex gap-1 rounded-full border border-border bg-surface p-1 shadow-sm">
           {CHIPS.map((c) => (
             <button
               key={c.key}
@@ -148,8 +148,8 @@ export default function CustomersPage() {
                 setChip(c.key);
                 setPage(1);
               }}
-              className={`border-r border-border px-4 py-2 text-sm font-medium transition-colors last:border-r-0 ${
-                chip === c.key ? 'bg-foreground text-background' : 'hover:bg-muted'
+              className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+                chip === c.key ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
               }`}
             >
               {c.label}
@@ -163,7 +163,7 @@ export default function CustomersPage() {
             setPage(1);
           }}
           placeholder="Search name, company, phone, email…"
-          className="min-h-[38px] w-full max-w-xs rounded-none border border-border bg-background px-3 text-sm outline-none focus:border-primary"
+          className="min-h-[38px] w-full max-w-xs rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
       </div>
 

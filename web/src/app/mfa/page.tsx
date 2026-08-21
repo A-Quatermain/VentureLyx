@@ -31,7 +31,7 @@ export default function MfaPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6">
       <Card className="w-full max-w-sm p-8">
-        <p className="font-display text-lg font-black tracking-tight">Two-factor code</p>
+        <p className="font-display text-lg font-bold tracking-tight">Two-factor code</p>
         <p className="mt-1 text-sm text-muted-foreground">Codes change every 30 seconds.</p>
 
         <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-3">
@@ -44,7 +44,7 @@ export default function MfaPage() {
               autoComplete="one-time-code"
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              className="min-h-[42px] rounded-none border border-border bg-background px-3 font-mono text-foreground outline-none focus:border-primary"
+              className="min-h-[42px] rounded-lg border border-border bg-background px-3 font-mono text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               data-numeric
             />
           </label>

@@ -228,7 +228,7 @@ function AICard({ canEdit }: { canEdit: boolean }) {
             type="button"
             onClick={() => canEdit && setProviderPreference(p.key)}
             disabled={!canEdit}
-            className={`w-full border p-4 text-left transition-colors ${
+            className={`w-full rounded-lg border p-4 text-left transition-colors ${
               providerPreference === p.key ? 'border-primary bg-primary/10' : 'border-border hover:bg-muted'
             } disabled:cursor-not-allowed`}
           >
@@ -257,7 +257,7 @@ function AICard({ canEdit }: { canEdit: boolean }) {
             const connected = data.connectedProviders.includes(provider);
             const sharedAvailable = provider === 'anthropic' ? data.hasSharedAnthropic : data.hasSharedOpenai;
             return (
-              <div key={provider} className="border border-border p-3">
+              <div key={provider} className="rounded-lg border border-border p-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium capitalize">{provider}</span>
                   <span
@@ -274,7 +274,7 @@ function AICard({ canEdit }: { canEdit: boolean }) {
                       placeholder={connected ? 'Replace key…' : 'sk-…'}
                       value={keyDrafts[provider]}
                       onChange={(e) => setKeyDrafts((d) => ({ ...d, [provider]: e.target.value }))}
-                      className="min-h-[36px] flex-1 rounded-none border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
+                      className="min-h-[36px] flex-1 rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                     />
                     <Button
                       variant="ghost"
@@ -310,7 +310,7 @@ function AICard({ canEdit }: { canEdit: boolean }) {
         {featureEntries.length === 0 ? (
           <p className="text-sm text-muted-foreground">No AI usage yet this month.</p>
         ) : (
-          <div className="divide-y divide-border border border-border">
+          <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
             {featureEntries.map(([feature, u]) => (
               <div key={feature} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
                 <span className="min-w-0 flex-1 truncate">{FEATURE_LABEL[feature] ?? feature}</span>
@@ -348,7 +348,7 @@ function AICard({ canEdit }: { canEdit: boolean }) {
               placeholder="No cap"
               value={spendCap}
               onChange={(e) => setSpendCap(e.target.value)}
-              className="min-h-[38px] w-32 rounded-none border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary"
+              className="min-h-[38px] w-32 rounded-lg border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           </div>
         </label>
@@ -390,7 +390,7 @@ function AICard({ canEdit }: { canEdit: boolean }) {
                         [feature]: v && provider && model ? { provider: provider as AIProvider, model } : null,
                       }));
                     }}
-                    className="min-h-[36px] w-56 rounded-none border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
+                    className="min-h-[36px] w-56 rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                   >
                     <option value="">Default (tier-based)</option>
                     {data.knownModels.map((m) => (

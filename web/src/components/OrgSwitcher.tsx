@@ -66,7 +66,7 @@ export function OrgSwitcher({
         disabled={switching || pending}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex min-h-[42px] items-center gap-2 rounded-none border border-border bg-surface px-3 text-sm font-medium text-foreground outline-none focus:border-primary disabled:opacity-60"
+        className="flex min-h-[42px] items-center gap-2 rounded-lg border border-border bg-surface px-3 text-sm font-medium text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
       >
         {current ? (
           <>
@@ -96,7 +96,7 @@ export function OrgSwitcher({
       {open && (
         <div
           role="listbox"
-          className="absolute left-0 top-full z-10 mt-1 w-72 rounded-none border border-border bg-surface py-1"
+          className="absolute left-0 top-full z-10 mt-1 w-72 rounded-lg border border-border bg-surface py-1 shadow-md"
         >
           {organizations.map((org) => (
             <button

@@ -38,8 +38,8 @@ export default function ReviewsPage() {
     <div className="flex flex-col gap-4 p-4">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="mb-1 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Reviews &amp; Reputation</p>
-          <h1 className="font-display text-3xl font-black tracking-tighter sm:text-4xl">Reviews</h1>
+          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Reviews &amp; Reputation</p>
+          <h1 className="font-display text-3xl font-bold tracking-tight sm:text-4xl">Reviews</h1>
         </div>
         {canEdit && (
           <Button onClick={() => setAdding(true)} className="inline-flex items-center gap-1.5">
@@ -59,29 +59,29 @@ export default function ReviewsPage() {
       ) : (
         <>
           <div className="grid grid-cols-12 gap-4">
-            <div className="col-span-12 flex flex-col items-center justify-center border border-border bg-foreground p-6 text-background md:col-span-4">
-              <div data-numeric className="font-mono text-5xl font-black tracking-tighter">
+            <Card className="col-span-12 flex flex-col items-center justify-center p-6 md:col-span-4">
+              <div data-numeric className="font-mono text-5xl font-semibold tabular-nums tracking-tight text-primary">
                 {avg.toFixed(1)}
               </div>
               <Stars n={Math.round(avg)} />
-              <p className="mt-2 font-mono text-xs uppercase tracking-[0.2em] text-background/60">
+              <p className="mt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 {reviews?.length ?? 0} review{reviews?.length === 1 ? '' : 's'}
               </p>
-            </div>
-            <div className="col-span-12 flex flex-col justify-center gap-2 border border-border bg-surface p-6 md:col-span-8">
+            </Card>
+            <Card className="col-span-12 flex flex-col justify-center gap-2 p-6 md:col-span-8">
               {dist.map(({ n, count }) => (
                 <div key={n} className="flex items-center gap-3">
-                  <span className="w-8 font-mono text-xs">{n}★</span>
-                  <div className="h-2 flex-1 bg-muted">
+                  <span className="w-8 font-mono text-xs tabular-nums">{n}★</span>
+                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
                     <div
-                      className="h-full bg-primary"
+                      className="h-full rounded-full bg-primary"
                       style={{ width: `${reviews?.length ? (count / reviews.length) * 100 : 0}%` }}
                     />
                   </div>
-                  <span className="w-8 text-right font-mono text-xs">{count}</span>
+                  <span className="w-8 text-right font-mono text-xs tabular-nums">{count}</span>
                 </div>
               ))}
-            </div>
+            </Card>
           </div>
 
           <div className="flex flex-col gap-4">
@@ -203,7 +203,7 @@ function AddReviewDrawer({ open, onOpenChange }: { open: boolean; onOpenChange: 
   }
 
   const inputCls =
-    'min-h-[42px] w-full rounded-none border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary';
+    'min-h-[42px] w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20';
 
   return (
     <Drawer

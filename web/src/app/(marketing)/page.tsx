@@ -54,10 +54,10 @@ export default async function LandingPage() {
       <header className="sticky top-0 z-30 border-b border-border bg-background/80 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
           <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center bg-primary">
-              <span className="font-display text-lg font-black leading-none text-primary-foreground">V</span>
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary">
+              <span className="font-display text-lg font-bold leading-none text-primary-foreground">V</span>
             </div>
-            <span className="font-display text-lg font-black tracking-tighter">VENTURELYX</span>
+            <span className="font-display text-lg font-bold tracking-tight">Venturelyx</span>
           </div>
           <div className="flex items-center gap-3">
             <ThemeToggle />
@@ -66,7 +66,7 @@ export default async function LandingPage() {
             </Link>
             <Link
               href="/register"
-              className="inline-flex min-h-[42px] items-center gap-1.5 bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+              className="inline-flex min-h-[42px] items-center gap-1.5 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
             >
               Get started <ArrowRight size={14} weight="bold" />
             </Link>
@@ -76,7 +76,7 @@ export default async function LandingPage() {
 
       <section className="mx-auto max-w-6xl px-6 pb-20 pt-20 sm:pt-28">
         <div className="max-w-3xl">
-          <h1 className="font-display text-4xl font-black leading-none tracking-tighter sm:text-5xl">
+          <h1 className="font-display text-4xl font-bold leading-tight tracking-tight sm:text-5xl">
             We build businesses,
             <br />
             not websites.
@@ -89,13 +89,13 @@ export default async function LandingPage() {
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
               href="/register"
-              className="inline-flex min-h-[42px] items-center gap-1.5 bg-primary px-5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+              className="inline-flex min-h-[42px] items-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
             >
               Start free <ArrowRight size={16} weight="bold" />
             </Link>
             <Link
               href="/sign-in"
-              className="inline-flex min-h-[42px] items-center border border-border px-5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+              className="inline-flex min-h-[42px] items-center rounded-lg border border-border px-5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
             >
               I have an account
             </Link>
@@ -106,7 +106,7 @@ export default async function LandingPage() {
       <section className="mx-auto max-w-6xl px-6 pb-20">
         <div className="grid gap-4 md:grid-cols-3">
           {FEATURES.map((f) => (
-            <div key={f.title} className="border border-border bg-surface p-6 transition-transform hover:-translate-y-0.5">
+            <div key={f.title} className="rounded-xl border border-border bg-surface p-6 shadow-sm transition-shadow hover:shadow-md">
               <f.icon size={24} weight="duotone" className="text-primary" />
               <h3 className="mt-4 font-display text-xl font-bold tracking-tight">{f.title}</h3>
               <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{f.copy}</p>
@@ -120,7 +120,7 @@ export default async function LandingPage() {
         <p className="mt-2 text-muted-foreground">Start with what's live. The rest is on the way.</p>
         <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {MODULES.map((m) => (
-            <div key={m.name} className="flex items-start justify-between gap-3 border border-border bg-surface p-5">
+            <div key={m.name} className="flex items-start justify-between gap-3 rounded-xl border border-border bg-surface p-5 shadow-sm">
               <div className="flex items-start gap-3">
                 <m.icon size={20} weight="duotone" className={m.live ? 'text-primary' : 'text-muted-foreground/50'} />
                 <div>
@@ -129,8 +129,8 @@ export default async function LandingPage() {
                 </div>
               </div>
               <span
-                className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider ${
-                  m.live ? 'border-primary text-primary' : 'border-border text-muted-foreground'
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                  m.live ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'
                 }`}
               >
                 {m.live ? 'Live' : 'Soon'}
@@ -140,7 +140,7 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      <footer className="border-t border-border py-8 text-center font-mono text-xs text-muted-foreground">
+      <footer className="border-t border-border py-8 text-center text-xs text-muted-foreground">
         © 2026 Venturelyx · We build businesses, not websites.
       </footer>
     </div>

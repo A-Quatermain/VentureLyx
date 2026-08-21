@@ -16,7 +16,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Skeleton, SkeletonCard } from '@/components/ui/Skeleton';
 import { CustomerDrawer } from '@/components/CustomerDrawer';
-import { toneOutline, type Tone } from '@/components/ui/tone';
+import { toneSoft, type Tone } from '@/components/ui/tone';
 import type { Lifecycle as LifecycleT } from '@/lib/types';
 
 const LIFECYCLE_TONE: Record<LifecycleT, Tone> = {
@@ -79,10 +79,10 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   if (isLoading) {
     return (
       <div className="flex flex-col gap-4 p-4">
-        <Skeleton className="h-10 w-64 rounded-none bg-muted" />
+        <Skeleton className="h-10 w-64 rounded-lg bg-muted" />
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <Skeleton className="h-64 rounded-none bg-muted lg:col-span-1" />
-          <Skeleton className="h-64 rounded-none bg-muted lg:col-span-2" />
+          <Skeleton className="h-64 rounded-xl bg-muted lg:col-span-1" />
+          <Skeleton className="h-64 rounded-xl bg-muted lg:col-span-2" />
         </div>
       </div>
     );
@@ -115,8 +115,8 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
             <CaretLeft size={14} weight="bold" /> Customers
           </Link>
           <div className="flex items-center gap-3">
-            <h1 className="font-display text-2xl font-black tracking-tight sm:text-3xl">{party.display_name}</h1>
-            <span className={`border px-1.5 py-0.5 font-mono text-[10px] uppercase ${toneOutline[LIFECYCLE_TONE[party.lifecycle]]}`}>
+            <h1 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">{party.display_name}</h1>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${toneSoft[LIFECYCLE_TONE[party.lifecycle]]}`}>
               {party.lifecycle}
             </span>
           </div>
@@ -124,12 +124,12 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {phone && (
-            <a href={`tel:${phone.value}`} className="inline-flex min-h-[38px] items-center gap-1.5 border border-border px-3 text-sm hover:bg-muted">
+            <a href={`tel:${phone.value}`} className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted">
               <Phone size={14} weight="bold" /> Call
             </a>
           )}
           {email && (
-            <a href={`mailto:${email.value}`} className="inline-flex min-h-[38px] items-center gap-1.5 border border-border px-3 text-sm hover:bg-muted">
+            <a href={`mailto:${email.value}`} className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted">
               <EnvelopeSimple size={14} weight="bold" /> Email
             </a>
           )}
@@ -159,7 +159,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="flex flex-col gap-4 lg:col-span-1">
           <Card className="p-5">
-            <p className="mb-3 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Contact</p>
+            <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Contact</p>
             {contacts.length === 0 ? (
               <p className="text-sm text-muted-foreground">No contact points on file.</p>
             ) : (
@@ -190,12 +190,12 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
 
           {party.tags.length > 0 && (
             <Card className="p-5">
-              <p className="mb-3 flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+              <p className="mb-3 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 <Tag size={13} /> Tags
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {party.tags.map((t) => (
-                  <span key={t} className="border border-border px-1.5 py-0.5 text-xs text-muted-foreground">
+                  <span key={t} className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                     {t}
                   </span>
                 ))}
@@ -205,7 +205,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
 
           {party.notes && (
             <Card className="p-5">
-              <p className="mb-3 flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
+              <p className="mb-3 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 <Note size={13} /> Notes
               </p>
               <p className="whitespace-pre-wrap text-sm text-muted-foreground">{party.notes}</p>
@@ -213,7 +213,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
           )}
 
           <Card className="p-5">
-            <p className="mb-2 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Attribution</p>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Attribution</p>
             {party.first_touch_channel ? (
               <p className="text-sm text-muted-foreground">
                 First found you through <span className="font-medium text-foreground">{party.first_touch_channel}</span>
@@ -264,12 +264,12 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
 
 function MoneyTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="border border-border bg-surface p-4">
-      <p className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">{label}</p>
-      <p data-numeric className="mt-1 font-mono text-xl font-bold">
+    <Card className="p-4">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p data-numeric className="mt-1 font-mono text-xl font-semibold tabular-nums">
         {value}
       </p>
       {sub && <p className="mt-0.5 text-xs text-muted-foreground">{sub}</p>}
-    </div>
+    </Card>
   );
 }

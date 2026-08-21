@@ -10,7 +10,7 @@ export interface BusinessProfileValues {
 }
 
 const inputCls =
-  'min-h-[42px] w-full rounded-none border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary';
+  'min-h-[42px] w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20';
 const labelCls = 'flex flex-col gap-1 text-sm text-muted-foreground';
 
 export function BusinessProfileForm({

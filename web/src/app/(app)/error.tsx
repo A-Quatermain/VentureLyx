@@ -19,7 +19,7 @@ export default function AppSegmentError({
   return (
     <div className="flex min-h-[60vh] items-center justify-center p-4">
       <Card className="w-full max-w-sm p-8 text-center">
-        <p className="font-display text-lg font-black tracking-tight">Something went wrong</p>
+        <p className="font-display text-lg font-bold tracking-tight">Something went wrong</p>
         <p className="mt-2 text-sm text-muted-foreground">
           This page hit an unexpected error — often a moment of network trouble. Nothing was lost.
         </p>

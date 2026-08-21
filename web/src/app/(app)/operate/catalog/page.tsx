@@ -59,7 +59,7 @@ export default function CatalogPage() {
     <div className="flex flex-col gap-4 p-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="font-display text-lg font-black tracking-tight">Catalog</p>
+          <p className="font-display text-lg font-bold tracking-tight">Catalog</p>
           <p className="text-sm text-muted-foreground">What the business sells — feeds job and invoice lines.</p>
         </div>
         <div className="flex items-center gap-3">
@@ -185,8 +185,8 @@ function CatalogDisplayRow({
       <td className="px-4 py-2 text-muted-foreground">{item.taxable ? 'Yes' : 'No'}</td>
       <td className="px-4 py-2">
         <span
-          className={`border px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase ${
-            item.is_active ? 'border-success text-success' : 'border-border text-muted-foreground'
+          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
+            item.is_active ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'
           }`}
         >
           {item.is_active ? 'Active' : 'Inactive'}
@@ -260,7 +260,7 @@ function CatalogFormRow({
   }
 
   const inputCls =
-    'min-h-[36px] rounded-none border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary';
+    'min-h-[36px] rounded-lg border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20';
 
   return (
     <tr className="border-b border-border bg-muted last:border-0">

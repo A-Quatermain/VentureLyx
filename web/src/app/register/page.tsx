@@ -9,7 +9,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 
 const inputCls =
-  'min-h-[42px] rounded-none border border-border bg-background px-3 text-foreground outline-none focus:border-primary';
+  'min-h-[42px] rounded-lg border border-border bg-background px-3 text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -43,7 +43,7 @@ export default function RegisterPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6">
       <Card className="w-full max-w-sm p-8">
-        <p className="font-display text-lg font-black tracking-tight">Venturelyx</p>
+        <p className="font-display text-lg font-bold tracking-tight">Venturelyx</p>
         <p className="mt-1 text-sm text-muted-foreground">Create your account</p>
 
         <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-3">

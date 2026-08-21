@@ -85,14 +85,14 @@ export default function OnboardingPage() {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background p-6">
         <Card className="w-full max-w-sm p-8 text-center">
-          <p className="font-display text-lg font-black tracking-tight">Venturelyx</p>
+          <p className="font-display text-lg font-bold tracking-tight">Venturelyx</p>
           {step === 'crawling' ? (
             <>
               <div className="mt-6 flex justify-center gap-1.5" aria-hidden>
                 {[0, 1, 2].map((i) => (
                   <span
                     key={i}
-                    className="h-2 w-2 animate-pulse bg-primary"
+                    className="h-2 w-2 animate-pulse rounded-full bg-primary"
                     style={{ animationDelay: `${i * 150}ms` }}
                   />
                 ))}
@@ -121,7 +121,7 @@ export default function OnboardingPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6">
       <Card className="w-full max-w-lg p-8">
-        <p className="font-display text-lg font-black tracking-tight">Venturelyx</p>
+        <p className="font-display text-lg font-bold tracking-tight">Venturelyx</p>
         <p className="mt-1 text-sm text-muted-foreground">Tell us about your business</p>
 
         <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-4">

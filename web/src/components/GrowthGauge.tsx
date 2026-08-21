@@ -40,8 +40,8 @@ export function GrowthGauge({ score = 0, size = 200 }: { score?: number | null; 
         })}
       </svg>
       <div className="-mt-16 text-center">
-        <div className="font-mono text-5xl font-bold tracking-tighter">{score == null ? '—' : clamped}</div>
-        <div className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Growth Score</div>
+        <div className="font-mono text-5xl font-semibold tabular-nums tracking-tight">{score == null ? '—' : clamped}</div>
+        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Growth Score</div>
       </div>
     </div>
   );
