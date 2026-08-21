@@ -26,7 +26,11 @@ services:
       DATABASE_URL: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
       SESSION_SECRET: ${SESSION_SECRET}
       VAULT_KEY: ${VAULT_KEY}
-      CORS_ORIGINS: https://app.venturelyx.com
+      # The marketing site (venturelyx.com, www) serves its own /register
+      # and /sign-in now (same web:3000 container, per Caddy's routing) —
+      # client-side fetches from those origins to the API need CORS to
+      # allow them too, not just the app subdomain.
+      CORS_ORIGINS: https://app.venturelyx.com,https://venturelyx.com,https://www.venturelyx.com
       COOKIE_DOMAIN: .venturelyx.com
       DB_POOL_MAX: 12
       LOG_LEVEL: info

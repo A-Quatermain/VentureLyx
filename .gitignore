@@ -23,3 +23,8 @@ next-env.d.ts
 *.tsbuildinfo
 
 .DS_Store
+
+# Editor swap files can contain buffer contents of whatever was open —
+# infra/.env included. Never let one land in git.
+*.swp
+*.swo
