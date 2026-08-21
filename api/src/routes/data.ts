@@ -15,7 +15,7 @@ export default async function dataRoutes(app: FastifyInstance) {
     req.requireRole('viewer');
 
     return req.db(async (q) => {
-      const [org, money, opportunities, seo, leads, work, pipeline, reputation] = await Promise.all([
+      const [org, money, opportunities, seo, leads, work, pipeline, reputation, expenses, pipelineFunnel] = await Promise.all([
         q.one<{ name: string; vertical: string | null; modules: unknown }>(
           `SELECT name, vertical, modules FROM organizations WHERE id = app.current_org()`,
         ),
@@ -84,6 +84,31 @@ export default async function dataRoutes(app: FastifyInstance) {
         q.one<{ avg_rating: string | null; review_count: number }>(
           `SELECT avg(rating)::numeric(3,1)::text AS avg_rating, count(*)::int AS review_count FROM reviews`,
         ),
+
+        q.one<{ this_month: string }>(
+          `SELECT COALESCE(sum(amount), 0)::text AS this_month
+             FROM expenses WHERE incurred_on >= date_trunc('month', now())`,
+        ),
+
+        // Sales pipeline funnel — parties.lifecycle is the real, populated
+        // field (deals.stage/value exist but nothing writes them yet), so
+        // these four stages are friendlier display labels over four of its
+        // six real values. lost/dormant are deliberately excluded from an
+        // *active* pipeline view. Dollar values still come from deals
+        // (correctly $0 today — no deal has ever been created) rather than
+        // inventing a number parties has no column for.
+        q.rows<{ stage: string; count: number; value: string }>(
+          `SELECT stages.label AS stage,
+                  count(DISTINCT p.id)::int AS count,
+                  COALESCE(sum(d.value), 0)::text AS value
+             FROM (VALUES ('New Lead',1,'new'),('Contacted',2,'working'),
+                          ('Quoted',3,'qualified'),('Won',4,'customer'))
+                    AS stages(label, ord, lifecycle)
+        LEFT JOIN parties p ON p.lifecycle = stages.lifecycle AND p.is_lead AND p.deleted_at IS NULL
+        LEFT JOIN deals d ON d.party_id = p.id AND d.status = 'open'
+            GROUP BY stages.label, stages.ord
+            ORDER BY stages.ord`,
+        ),
       ]);
 
       // Revenue by acquisition channel — the claim no single-purpose tool can make.
@@ -99,7 +124,7 @@ export default async function dataRoutes(app: FastifyInstance) {
           ORDER BY sum(p.amount) DESC`,
       );
 
-      return { org, money, channels, opportunities, seo, leads, work, pipeline, reputation };
+      return { org, money, channels, opportunities, seo, leads, work, pipeline, reputation, expenses, pipelineFunnel };
     });
   });
 

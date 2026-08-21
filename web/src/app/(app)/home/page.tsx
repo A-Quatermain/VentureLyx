@@ -2,18 +2,18 @@
 
 import { useRouter } from 'next/navigation';
 import {
-  TrendUp, Users, CurrencyDollar, MagnifyingGlass, Kanban, Sparkle, ArrowUpRight,
-  Wallet, Briefcase, Star,
+  TrendUp, Users, CurrencyDollar, MagnifyingGlass, Briefcase, Sparkle, ArrowUpRight,
+  Wallet, Star, Target, FunnelSimple,
 } from '@phosphor-icons/react';
 import { AreaChart, Area, ResponsiveContainer, Tooltip, XAxis } from 'recharts';
 import { useApi } from '@/lib/useApi';
 import type { SummaryResponse, Signal, Lead, MeResponse, Opportunity, RevenueTrendPoint } from '@/lib/types';
 import { formatMoney } from '@/lib/format';
-import { GrowthGauge } from '@/components/GrowthGauge';
 import { AIStreamPanel } from '@/components/AIStreamPanel';
 import { PageHeader, Stagger, StaggerItem } from '@/components/Primitives';
+import { Card } from '@/components/ui/Card';
 import { Skeleton, ShimmerBlock } from '@/components/ui/Skeleton';
-import { toneOutline, signalSeverityLabel, type Tone } from '@/components/ui/tone';
+import { signalSeverityLabel } from '@/components/ui/tone';
 
 function Metric({
   label,
@@ -27,13 +27,17 @@ function Metric({
   icon: typeof CurrencyDollar;
 }) {
   return (
-    <StaggerItem className="border border-border bg-surface p-5 transition-transform hover:-translate-y-0.5">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">{label}</span>
-        <Icon size={18} weight="duotone" className="text-muted-foreground" />
-      </div>
-      <div className="font-mono text-3xl font-bold tracking-tighter">{value}</div>
-      {sub && <div className="mt-1 text-xs text-muted-foreground">{sub}</div>}
+    <StaggerItem>
+      <Card className="p-5">
+        <div className="mb-3 flex items-center justify-between">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+            <Icon size={16} weight="duotone" className="text-primary" />
+          </div>
+        </div>
+        <div className="font-mono text-3xl font-semibold tabular-nums tracking-tight">{value}</div>
+        {sub && <div className="mt-1 text-xs text-muted-foreground">{sub}</div>}
+      </Card>
     </StaggerItem>
   );
 }
@@ -42,11 +46,7 @@ type Action =
   | { kind: 'opportunity'; id: string; title: string; detail: string; module: string; priority: 'high' }
   | { kind: 'signal'; id: string; title: string; detail: string; module: string; priority: 'high' | 'medium' | 'low' };
 
-const PRIORITY_TONE: Record<Action['priority'], Tone> = {
-  high: 'destructive',
-  medium: 'primary',
-  low: 'muted',
-};
+const RANK_ORDER: Record<Action['priority'], number> = { high: 0, medium: 1, low: 2 };
 
 function toActions(opportunities: Opportunity[], signals: Signal[]): Action[] {
   const fromOpportunities: Action[] = opportunities.map((o) => ({
@@ -71,8 +71,6 @@ function toActions(opportunities: Opportunity[], signals: Signal[]): Action[] {
   return [...fromOpportunities, ...fromSignals];
 }
 
-const RANK_ORDER: Record<Action['priority'], number> = { high: 0, medium: 1, low: 2 };
-
 export default function CommandCenter() {
   const router = useRouter();
   const { data: summary, error, isLoading } = useApi<SummaryResponse>('/command/summary');
@@ -85,11 +83,11 @@ export default function CommandCenter() {
 
   if (error || !summary) {
     return (
-      <div className="border border-border bg-surface p-6">
+      <Card className="p-6">
         <p className="text-sm text-destructive">
           {error instanceof Error ? error.message : 'Could not load Command Center.'}
         </p>
-      </div>
+      </Card>
     );
   }
 
@@ -97,9 +95,11 @@ export default function CommandCenter() {
   const customers = (leads ?? []).filter((l) => l.lifecycle === 'customer').length;
   const actions = toActions(summary.opportunities, signals ?? [])
     .sort((a, b) => RANK_ORDER[a.priority] - RANK_ORDER[b.priority])
-    .slice(0, 8);
+    .slice(0, 3);
 
   const hasRevenue = (revenueTrend ?? []).some((p) => Number(p.amount) > 0);
+  const funnel = summary.pipelineFunnel ?? [];
+  const funnelMax = Math.max(1, ...funnel.map((f) => f.count));
 
   return (
     <div>
@@ -109,70 +109,19 @@ export default function CommandCenter() {
         subtitle="Everything reporting into one place. Here's what's driving your growth right now."
       />
 
-      <div className="grid grid-cols-12 gap-4">
-        <div className="col-span-12 flex flex-col items-center justify-center border border-border bg-surface p-6 md:col-span-4">
-          <GrowthGauge score={summary.seo?.health ?? null} />
-          <p className="mt-4 max-w-[220px] text-center text-xs text-muted-foreground">
-            A single number for how healthy your business is across sales, reputation &amp; visibility.
-          </p>
-        </div>
-
-        <div className="col-span-12 border border-border bg-surface md:col-span-8">
-          <div className="flex items-center gap-2 border-b border-border px-6 py-4">
-            <Sparkle size={18} weight="fill" className="text-primary" />
-            <h3 className="font-display font-bold tracking-tight">Next Best Actions</h3>
-          </div>
-          {signalsLoading && !signals ? (
-            <div className="space-y-3 p-4">
-              {[0, 1, 2].map((i) => (
-                <ShimmerBlock key={i} className="h-16" />
-              ))}
-            </div>
-          ) : (
-            <div className="divide-y divide-border">
-              {actions.length === 0 && (
-                <p className="px-6 py-8 text-sm text-muted-foreground">You&apos;re all caught up. Nice work.</p>
-              )}
-              {actions.map((a, i) => (
-                <div
-                  key={`${a.kind}-${a.id}`}
-                  onClick={() => router.push(`/${a.module}`)}
-                  className="group flex cursor-pointer items-start gap-4 px-6 py-4 transition-colors hover:bg-muted"
-                >
-                  <span className="mt-0.5 w-4 font-mono text-xs text-muted-foreground">{i + 1}</span>
-                  <span className={`mt-0.5 shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase ${toneOutline[PRIORITY_TONE[a.priority]]}`}>
-                    {a.priority}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold">{a.title}</p>
-                    <p className="mt-0.5 text-sm text-muted-foreground">{a.detail}</p>
-                  </div>
-                  <ArrowUpRight
-                    size={16}
-                    weight="bold"
-                    className="mt-0.5 shrink-0 text-muted-foreground transition-colors group-hover:text-primary"
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <Stagger className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <Stagger className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Metric
-          label="Revenue (paid)"
+          label="Revenue"
           value={formatMoney(summary.money.collected)}
-          sub="this month"
+          sub="collected this month"
           icon={CurrencyDollar}
         />
-        <Metric label="Outstanding" value={formatMoney(summary.money.outstanding)} sub="unpaid invoices" icon={Wallet} />
         <Metric label="New Leads" value={String(summary.leads.new_leads)} sub={`${summary.leads.stale} stale`} icon={TrendUp} />
         <Metric label="Customers" value={String(customers)} sub="lifecycle: customer" icon={Users} />
         <Metric
-          label="Pipeline"
-          value={formatMoney(summary.pipeline.pipeline_value)}
-          sub={`${summary.pipeline.open_deals} open deal${summary.pipeline.open_deals === 1 ? '' : 's'}`}
+          label="Jobs"
+          value={String(summary.work.today_total)}
+          sub={`${summary.work.today_done} done today`}
           icon={Briefcase}
         />
         <Metric
@@ -182,68 +131,143 @@ export default function CommandCenter() {
           icon={MagnifyingGlass}
         />
         <Metric
-          label="Reputation"
+          label="Reviews"
           value={summary.reputation.avg_rating ?? '—'}
           sub={`${summary.reputation.review_count} review${summary.reputation.review_count === 1 ? '' : 's'}`}
           icon={Star}
         />
+        <Metric label="Expenses" value={formatMoney(summary.expenses.this_month)} sub="this month" icon={Wallet} />
         <Metric
-          label="Open Jobs"
-          value={String(summary.work.today_total)}
-          sub={`${summary.work.today_done} done today`}
-          icon={Kanban}
+          label="Growth Score"
+          value={summary.seo?.health != null ? String(summary.seo.health) : '—'}
+          sub="sales, reputation & visibility"
+          icon={Sparkle}
         />
       </Stagger>
 
-      <div className="mt-4 border border-border bg-surface p-6">
-        <p className="mb-4 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Revenue trend</p>
-        {!revenueTrend ? (
-          <Skeleton className="h-56 w-full rounded-none bg-muted" />
-        ) : !hasRevenue ? (
-          <div className="flex h-56 flex-col items-center justify-center text-center">
-            <p className="text-sm text-muted-foreground">No revenue recorded yet.</p>
-            <p className="mt-1 max-w-xs text-xs text-muted-foreground/70">
-              This chart fills in as payments come through Operate — nothing to show until then.
-            </p>
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card className="overflow-hidden bg-gradient-to-br from-primary to-violet-700 text-white">
+          <div className="flex items-center gap-2 border-b border-white/15 px-6 py-4">
+            <Target size={18} weight="fill" />
+            <h3 className="font-display font-semibold">Next Best Action</h3>
           </div>
-        ) : (
-          <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={revenueTrend}>
-                <defs>
-                  <linearGradient id="revenueFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.35} />
-                    <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <XAxis
-                  dataKey="month"
-                  stroke="hsl(var(--muted-fg))"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <Tooltip
-                  formatter={(value) => [formatMoney(String(value ?? 0)), 'Revenue']}
-                  contentStyle={{
-                    background: 'hsl(var(--card))',
-                    border: '1px solid var(--border)',
-                    borderRadius: 0,
-                    fontSize: 12,
-                  }}
-                  labelStyle={{ color: 'hsl(var(--fg))' }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey={(p: RevenueTrendPoint) => Number(p.amount)}
-                  stroke="hsl(var(--primary))"
-                  strokeWidth={2}
-                  fill="url(#revenueFill)"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        )}
+          {signalsLoading && !signals ? (
+            <div className="space-y-3 p-6">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="h-20 animate-pulse rounded-lg bg-white/10" />
+              ))}
+            </div>
+          ) : (
+            <div className="divide-y divide-white/10">
+              {actions.length === 0 && (
+                <p className="px-6 py-8 text-sm text-white/80">You&apos;re all caught up. Nice work.</p>
+              )}
+              {actions.map((a, i) => (
+                <div key={`${a.kind}-${a.id}`} className="flex flex-col gap-3 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-1 flex items-center gap-2">
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/15 text-[11px] font-semibold">
+                        {i + 1}
+                      </span>
+                      <p className="text-sm font-semibold">{a.title}</p>
+                    </div>
+                    <p className="text-sm text-white/75">{a.detail}</p>
+                  </div>
+                  <button
+                    onClick={() => router.push(`/${a.module}`)}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-white px-4 py-2 text-sm font-medium text-primary shadow-sm transition hover:bg-white/90"
+                  >
+                    Fix this for me
+                    <ArrowUpRight size={14} weight="bold" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        <div className="flex flex-col gap-4">
+          <Card className="p-6">
+            <p className="mb-4 text-xs font-medium uppercase tracking-wide text-muted-foreground">Monthly revenue trend</p>
+            {!revenueTrend ? (
+              <Skeleton className="h-40 w-full rounded-xl bg-muted" />
+            ) : !hasRevenue ? (
+              <div className="flex h-40 flex-col items-center justify-center text-center">
+                <p className="text-sm text-muted-foreground">No revenue recorded yet.</p>
+                <p className="mt-1 max-w-xs text-xs text-muted-foreground/70">
+                  This chart fills in as payments come through Operate.
+                </p>
+              </div>
+            ) : (
+              <div className="h-40">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={revenueTrend}>
+                    <defs>
+                      <linearGradient id="revenueFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.35} />
+                        <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <XAxis
+                      dataKey="month"
+                      stroke="hsl(var(--muted-fg))"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <Tooltip
+                      formatter={(value) => [formatMoney(String(value ?? 0)), 'Revenue']}
+                      contentStyle={{
+                        background: 'hsl(var(--card))',
+                        border: '1px solid var(--border)',
+                        borderRadius: 8,
+                        fontSize: 12,
+                      }}
+                      labelStyle={{ color: 'hsl(var(--fg))' }}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey={(p: RevenueTrendPoint) => Number(p.amount)}
+                      stroke="hsl(var(--primary))"
+                      strokeWidth={2}
+                      fill="url(#revenueFill)"
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </Card>
+
+          <Card className="p-6">
+            <div className="mb-4 flex items-center gap-2">
+              <FunnelSimple size={16} className="text-muted-foreground" />
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sales pipeline</p>
+            </div>
+            <div className="space-y-3">
+              {funnel.map((stage) => (
+                <div key={stage.stage}>
+                  <div className="mb-1 flex items-baseline justify-between">
+                    <span className="text-sm font-medium">{stage.stage}</span>
+                    <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                      {stage.count} · {formatMoney(stage.value)}
+                    </span>
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-primary"
+                      style={{ width: `${Math.max(4, (stage.count / funnelMax) * 100)}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+              {funnel.every((f) => f.count === 0) && (
+                <p className="pt-1 text-xs text-muted-foreground/70">
+                  No leads in the pipeline yet — new leads will show up here by stage.
+                </p>
+              )}
+            </div>
+          </Card>
+        </div>
       </div>
 
       <div className="mt-4">
@@ -260,17 +284,19 @@ export default function CommandCenter() {
 function CommandCenterSkeleton() {
   return (
     <div>
-      <Skeleton className="mb-8 h-10 w-64 rounded-none bg-muted" />
-      <div className="grid grid-cols-12 gap-4">
-        <Skeleton className="col-span-12 h-64 rounded-none bg-muted md:col-span-4" />
-        <ShimmerBlock className="col-span-12 h-64 md:col-span-8" />
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <Skeleton className="mb-8 h-10 w-64 rounded-lg bg-muted" />
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {Array.from({ length: 8 }).map((_, i) => (
-          <Skeleton key={i} className="h-28 rounded-none bg-muted" />
+          <Skeleton key={i} className="h-28 rounded-xl bg-muted" />
         ))}
       </div>
-      <Skeleton className="mt-4 h-64 w-full rounded-none bg-muted" />
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <ShimmerBlock className="h-64" />
+        <div className="flex flex-col gap-4">
+          <Skeleton className="h-40 w-full rounded-xl bg-muted" />
+          <Skeleton className="h-40 w-full rounded-xl bg-muted" />
+        </div>
+      </div>
     </div>
   );
 }

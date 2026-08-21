@@ -22,7 +22,7 @@ export function PageHeader({
         {eyebrow && (
           <div className="mb-2 font-mono text-xs font-medium uppercase tracking-widest text-primary">{eyebrow}</div>
         )}
-        <h1 className="font-display text-3xl font-black tracking-tighter sm:text-4xl">{title}</h1>
+        <h1 className="font-display text-3xl font-bold tracking-tight sm:text-4xl">{title}</h1>
         {subtitle && <p className="mt-2 max-w-2xl text-muted-foreground">{subtitle}</p>}
       </div>
       {actions && <div className="flex items-center gap-2">{actions}</div>}

@@ -116,6 +116,12 @@ export interface SeoSummary {
   site_url: string | null;
 }
 
+export interface PipelineFunnelStage {
+  stage: string;
+  count: number;
+  value: string;
+}
+
 export interface SummaryResponse {
   org: { name: string; vertical: string | null; modules: unknown };
   money: { collected: string; outstanding: string; last_month: string };
@@ -126,6 +132,8 @@ export interface SummaryResponse {
   work: { today_total: number; today_done: number; week: number };
   pipeline: { pipeline_value: string; open_deals: number };
   reputation: { avg_rating: string | null; review_count: number };
+  expenses: { this_month: string };
+  pipelineFunnel: PipelineFunnelStage[];
 }
 
 export interface RevenueTrendPoint {
