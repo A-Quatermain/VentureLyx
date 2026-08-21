@@ -4,12 +4,15 @@
 // deliberate, not an accident: read the request's Cookie header once here,
 // never re-implemented per page.
 import { cookies } from 'next/headers';
-import { API_BASE } from './config';
+import { INTERNAL_API_BASE } from './config';
 import type { MeResponse } from './types';
 
 async function serverFetch<T>(path: string): Promise<T> {
+  if (!INTERNAL_API_BASE) {
+    throw new Error('INTERNAL_API_BASE is not set');
+  }
   const cookieHeader = (await cookies()).toString();
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${INTERNAL_API_BASE}${path}`, {
     headers: { Cookie: cookieHeader },
     cache: 'no-store',
   });

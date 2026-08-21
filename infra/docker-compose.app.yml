@@ -60,6 +60,14 @@ services:
     networks: [venturelyx]
     environment:
       NODE_ENV: production
+      # Server components (lib/session.ts) talk to the api container
+      # directly over the shared Docker network instead of round-tripping
+      # out through Cloudflare and back — every SSR request otherwise
+      # depended on the tunnel being up even when both containers were
+      # perfectly healthy locally. Browser calls still go to
+      # NEXT_PUBLIC_API_BASE (baked in at build time, above) since the
+      # browser has no route into this network.
+      INTERNAL_API_BASE: http://api:3000/v1
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 20s

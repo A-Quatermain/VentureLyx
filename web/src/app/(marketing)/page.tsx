@@ -6,6 +6,15 @@ import {
 import { getServerSession } from '@/lib/session';
 import { ThemeToggle } from '@/components/ThemeToggle';
 
+// This page's output depends on the request's session cookie (redirects an
+// authenticated visitor away entirely), so it was never actually a static
+// page — but without this, Next.js still tries to prerender it once at
+// build time to check. That build-time call has no real request/cookie and
+// no INTERNAL_API_BASE (that's a docker-compose runtime env var; the build
+// stage has no docker network), so it always failed there for the wrong
+// reason. Forcing dynamic skips the build-time attempt entirely.
+export const dynamic = 'force-dynamic';
+
 const FEATURES = [
   {
     icon: Kanban,

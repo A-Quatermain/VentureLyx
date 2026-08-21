@@ -2,6 +2,15 @@ import { redirect } from 'next/navigation';
 import { getServerSession } from '@/lib/session';
 import { AppShell } from '@/components/AppShell';
 
+// Every route under this layout depends on the request's session cookie —
+// none of them were ever really static. Without this, Next.js still tries
+// to prerender each one once at build time regardless, and that build-time
+// call has no real cookie and no INTERNAL_API_BASE (a docker-compose
+// runtime env var; the build stage has no docker network). `dynamic` on a
+// layout propagates to its whole subtree, so this one export covers every
+// (app) page.
+export const dynamic = 'force-dynamic';
+
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const me = await getServerSession();
 
