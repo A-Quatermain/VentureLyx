@@ -1,25 +1,23 @@
 'use client';
 
-import { useState } from 'react';
 import Link from 'next/link';
+import { CalendarBlank, Percent, Receipt, Briefcase } from '@phosphor-icons/react';
 import { useApi } from '@/lib/useApi';
-import type { Lead, OperateMoneyResponse } from '@/lib/types';
+import type { Lead, OperateMoneyResponse, ScheduledJob, SummaryResponse } from '@/lib/types';
 import { formatMoney } from '@/lib/format';
+import { Card } from '@/components/ui/Card';
+import { PageHeader } from '@/components/Primitives';
 import { Skeleton } from '@/components/ui/Skeleton';
 
-// Our real parties.lifecycle values (migration 002's own documented
-// convention), not ref-1's contacted/proposal/won — those don't exist in
-// our schema.
+// Same lifecycle → display-stage mapping as Command Center's Sales Pipeline
+// funnel — real parties.lifecycle values, friendlier labels. lost/dormant
+// are deliberately excluded from this active Kanban view.
 const STAGES = [
-  { key: 'new', label: 'New' },
-  { key: 'working', label: 'Working' },
-  { key: 'qualified', label: 'Qualified' },
-  { key: 'customer', label: 'Customer' },
-  { key: 'lost', label: 'Lost' },
-  { key: 'dormant', label: 'Dormant' },
+  { key: 'new', label: 'New Lead' },
+  { key: 'working', label: 'Contacted' },
+  { key: 'qualified', label: 'Quoted' },
+  { key: 'customer', label: 'Won' },
 ] as const;
-
-const TABS = ['Pipeline', 'Money'] as const;
 
 function relativeTime(iso: string | null): string {
   if (!iso) return 'No activity yet';
@@ -30,217 +28,195 @@ function relativeTime(iso: string | null): string {
 }
 
 export default function OperatePage() {
-  const [tab, setTab] = useState<(typeof TABS)[number]>('Pipeline');
   const { data: leads, isLoading: leadsLoading } = useApi<Lead[]>('/operate/leads');
-  const { data: money, isLoading: moneyLoading } = useApi<OperateMoneyResponse>('/operate/money');
+  const { data: money } = useApi<OperateMoneyResponse>('/operate/money');
+  const { data: schedule } = useApi<ScheduledJob[]>('/operate/schedule');
+  const { data: summary } = useApi<SummaryResponse>('/command/summary');
+
+  const activeLeads = (leads ?? []).filter((l) => STAGES.some((s) => s.key === l.lifecycle));
+  const won = activeLeads.filter((l) => l.lifecycle === 'customer').length;
+  const conversionRate = activeLeads.length > 0 ? Math.round((won / activeLeads.length) * 100) : null;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="mb-1 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Operate</p>
-          <h1 className="font-display text-3xl font-black tracking-tighter sm:text-4xl">Pipeline &amp; Money</h1>
-        </div>
-        <div className="flex items-center gap-4">
-          <Link href="/operate/customers" className="text-sm text-primary">
-            Customers →
-          </Link>
-          <Link href="/operate/catalog" className="text-sm text-primary">
-            Catalog →
-          </Link>
-          <div className="flex border border-border">
-            {TABS.map((t) => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`border-r border-border px-5 py-2.5 text-sm font-medium transition-colors last:border-r-0 ${
-                  tab === t ? 'bg-foreground text-background' : 'hover:bg-muted'
-                }`}
-              >
-                {t}
-              </button>
-            ))}
+    <div>
+      <PageHeader
+        eyebrow="Operate"
+        title="Pipeline"
+        subtitle="Every lead, from first contact to won customer."
+        actions={
+          <div className="flex items-center gap-4">
+            <Link href="/operate/customers" className="text-sm font-medium text-primary hover:underline">
+              Customers →
+            </Link>
+            <Link href="/operate/catalog" className="text-sm font-medium text-primary hover:underline">
+              Catalog →
+            </Link>
           </div>
+        }
+      />
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_320px]">
+        <Kanban leads={activeLeads} loading={leadsLoading} />
+
+        <div className="flex flex-col gap-4">
+          <Card className="p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Total Pipeline Value
+              </span>
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                <Briefcase size={16} weight="duotone" className="text-primary" />
+              </div>
+            </div>
+            <div className="font-mono text-3xl font-semibold tabular-nums tracking-tight">
+              {summary ? formatMoney(summary.pipeline.pipeline_value) : '—'}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {summary ? `${summary.pipeline.open_deals} open deal${summary.pipeline.open_deals === 1 ? '' : 's'}` : ''}
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Conversion Rate</span>
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                <Percent size={16} weight="duotone" className="text-primary" />
+              </div>
+            </div>
+            <div className="font-mono text-3xl font-semibold tabular-nums tracking-tight">
+              {conversionRate != null ? `${conversionRate}%` : '—'}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {activeLeads.length > 0 ? `${won} of ${activeLeads.length} leads won` : 'No leads yet'}
+            </div>
+          </Card>
+
+          <Card className="p-0">
+            <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+              <CalendarBlank size={16} className="text-muted-foreground" />
+              <p className="text-sm font-semibold">Job Scheduling</p>
+            </div>
+            {!schedule ? (
+              <div className="space-y-2 p-4">
+                <Skeleton className="h-10 rounded-lg bg-muted" />
+                <Skeleton className="h-10 rounded-lg bg-muted" />
+              </div>
+            ) : schedule.length === 0 ? (
+              <p className="p-4 text-sm text-muted-foreground">No jobs scheduled yet.</p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {schedule.map((job) => {
+                  const d = job.scheduled_start ? new Date(job.scheduled_start) : null;
+                  return (
+                    <li key={job.id} className="flex items-center gap-3 px-4 py-3">
+                      <div className="flex w-11 shrink-0 flex-col items-center justify-center rounded-lg bg-primary/10 py-1">
+                        <span className="text-[10px] font-medium uppercase text-primary">
+                          {d ? d.toLocaleDateString(undefined, { month: 'short' }) : '—'}
+                        </span>
+                        <span className="font-mono text-sm font-semibold text-primary">{d ? d.getDate() : '—'}</span>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{job.title}</p>
+                        <p className="truncate text-xs text-muted-foreground">{job.display_name}</p>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
+
+          <Card className="p-0">
+            <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+              <Receipt size={16} className="text-muted-foreground" />
+              <p className="text-sm font-semibold">Invoices Summary</p>
+            </div>
+            {!money ? (
+              <div className="space-y-2 p-4">
+                <Skeleton className="h-10 rounded-lg bg-muted" />
+              </div>
+            ) : money.overdue.length === 0 && money.upcoming.count === 0 ? (
+              <p className="p-4 text-sm text-muted-foreground">Nothing owed right now.</p>
+            ) : (
+              <div className="divide-y divide-border">
+                {money.overdue.slice(0, 4).map((inv) => (
+                  <div key={inv.number} className="flex items-center justify-between px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{inv.display_name}</p>
+                      <p className="text-xs text-destructive">{inv.days_overdue}d overdue</p>
+                    </div>
+                    <span className="shrink-0 font-mono text-sm font-semibold tabular-nums" data-numeric>
+                      {formatMoney(inv.owed)}
+                    </span>
+                  </div>
+                ))}
+                {money.upcoming.count > 0 && (
+                  <div className="flex items-center justify-between px-4 py-3">
+                    <p className="text-sm text-muted-foreground">
+                      {money.upcoming.count} not yet due
+                    </p>
+                    <span className="shrink-0 font-mono text-sm font-semibold tabular-nums" data-numeric>
+                      {formatMoney(money.upcoming.total)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
         </div>
       </div>
-
-      {tab === 'Pipeline' ? (
-        <Pipeline leads={leads ?? []} loading={leadsLoading} />
-      ) : (
-        <Money leads={leads ?? []} money={money} leadsLoading={leadsLoading} moneyLoading={moneyLoading} />
-      )}
     </div>
   );
 }
 
-function Pipeline({ leads, loading }: { leads: Lead[]; loading: boolean }) {
+function Kanban({ leads, loading }: { leads: Lead[]; loading: boolean }) {
   if (loading) {
     return (
-      <div className="flex gap-4 overflow-x-auto pb-4">
+      <div className="flex gap-4 overflow-x-auto pb-2">
         {STAGES.map((s) => (
-          <Skeleton key={s.key} className="h-[70vh] w-72 shrink-0 rounded-none bg-muted" />
+          <Skeleton key={s.key} className="h-[70vh] w-72 shrink-0 rounded-xl bg-muted" />
         ))}
       </div>
     );
   }
 
   return (
-    <>
-      <p className="text-sm text-muted-foreground">
-        <span className="font-mono font-bold text-foreground">{leads.length}</span> leads across the pipeline
-        {/* Read-only this pass — no deal-value field exists on parties yet
-            (that's `deals`, not built), and stage-advance needs a write
-            endpoint that's deliberately not part of this rebuild. */}
-      </p>
-      <div className="flex gap-4 overflow-x-auto pb-4">
-        {STAGES.map((stage) => {
-          const items = leads.filter((l) => l.lifecycle === stage.key);
-          return (
-            <div key={stage.key} className="min-h-[70vh] w-72 shrink-0 border border-border bg-surface">
-              <div className="flex items-center justify-between border-b border-border px-4 py-3">
-                <span className="font-display text-sm font-bold uppercase tracking-wide">{stage.label}</span>
-                <span className="font-mono text-xs text-muted-foreground">{items.length}</span>
-              </div>
-              <div className="space-y-3 p-3">
-                {items.map((lead) => (
-                  <div key={lead.id} className="border border-border bg-background p-3">
+    <div className="flex gap-4 overflow-x-auto pb-2">
+      {STAGES.map((stage) => {
+        const items = leads.filter((l) => l.lifecycle === stage.key);
+        return (
+          <div key={stage.key} className="min-h-[70vh] w-72 shrink-0 rounded-xl border border-border bg-surface shadow-sm">
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <span className="text-sm font-semibold">{stage.label}</span>
+              <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-xs tabular-nums text-muted-foreground">
+                {items.length}
+              </span>
+            </div>
+            <div className="space-y-3 p-3">
+              {items.map((lead) => (
+                <div key={lead.id} className="rounded-lg border border-border bg-background p-3 shadow-sm">
+                  <div className="flex items-start justify-between gap-2">
                     <p className="text-sm font-semibold">{lead.display_name}</p>
-                    {lead.city && <p className="text-xs text-muted-foreground">{lead.city}</p>}
-                    <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
-                      <span className="text-xs text-muted-foreground">{lead.channel ?? lead.source ?? '—'}</span>
-                      <span className="text-xs text-muted-foreground">{relativeTime(lead.last_activity_at)}</span>
-                    </div>
+                    {(lead.channel ?? lead.source) && (
+                      <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase text-primary">
+                        {lead.channel ?? lead.source}
+                      </span>
+                    )}
                   </div>
-                ))}
-                {items.length === 0 && <p className="px-1 py-4 text-xs text-muted-foreground/60">Empty</p>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </>
-  );
-}
-
-function Money({
-  leads,
-  money,
-  leadsLoading,
-  moneyLoading,
-}: {
-  leads: Lead[];
-  money: OperateMoneyResponse | undefined;
-  leadsLoading: boolean;
-  moneyLoading: boolean;
-}) {
-  const stats = [
-    { label: 'Leads to work', value: String(leads.length) },
-    { label: 'Overdue invoices', value: String(money?.overdue.length ?? 0) },
-    { label: 'Upcoming', value: money ? formatMoney(money.upcoming.total) : '—' },
-  ];
-
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-4">
-        {stats.map((s) => (
-          <div key={s.label} className="border border-border bg-surface p-4 text-center">
-            <p data-numeric className="font-mono text-xl font-semibold">
-              {s.value}
-            </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">{s.label}</p>
-          </div>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 g2:grid-cols-2">
-        <div className="border border-border bg-surface">
-          <p className="p-4 pb-2 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Money owed to you</p>
-          {moneyLoading ? (
-            <div className="p-4">
-              <Skeleton className="h-20 rounded-none bg-muted" />
-            </div>
-          ) : money && (money.overdue.length > 0 || money.upcoming.count > 0) ? (
-            <div className="divide-y divide-border">
-              {money.overdue.map((inv) => (
-                <div key={inv.number} className="flex items-center justify-between px-4 py-3">
-                  <div>
-                    <p className="text-sm font-semibold">{inv.display_name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      Invoice {inv.number} · {inv.days_overdue}d overdue
-                    </p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{lead.deal_title ?? 'No service on file'}</p>
+                  <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
+                    <span className="font-mono text-xs font-medium tabular-nums" data-numeric>
+                      {lead.deal_value ? formatMoney(lead.deal_value) : '—'}
+                    </span>
+                    <span className="text-xs text-muted-foreground">{relativeTime(lead.last_activity_at)}</span>
                   </div>
-                  <span data-numeric className="font-mono text-sm font-bold">
-                    {formatMoney(inv.owed)}
-                  </span>
                 </div>
               ))}
-              {money.upcoming.count > 0 && (
-                <div className="flex items-center justify-between px-4 py-3">
-                  <div>
-                    <p className="text-sm font-semibold">
-                      {money.upcoming.count} invoice{money.upcoming.count === 1 ? '' : 's'} not yet due
-                    </p>
-                    <p className="text-xs text-muted-foreground">Due within 30 days</p>
-                  </div>
-                  <span data-numeric className="font-mono text-sm font-bold">
-                    {formatMoney(money.upcoming.total)}
-                  </span>
-                </div>
-              )}
+              {items.length === 0 && <p className="px-1 py-4 text-xs text-muted-foreground/60">Empty</p>}
             </div>
-          ) : (
-            <p className="px-4 pb-4 text-sm text-muted-foreground">Nothing owed right now.</p>
-          )}
-        </div>
-
-        <div className="border border-border bg-surface">
-          <p className="p-4 pb-2 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">
-            Where your customers are
-          </p>
-          {leadsLoading ? (
-            <div className="p-4">
-              <Skeleton className="h-20 rounded-none bg-muted" />
-            </div>
-          ) : (
-            <CityBreakdown leads={leads} />
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CityBreakdown({ leads }: { leads: Lead[] }) {
-  const counts = new Map<string, number>();
-  for (const lead of leads) {
-    if (!lead.city) continue;
-    counts.set(lead.city, (counts.get(lead.city) ?? 0) + 1);
-  }
-  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  const top = sorted.slice(0, 4);
-  const restCount = sorted.slice(4).reduce((sum, [, n]) => sum + n, 0);
-  const restAreas = sorted.length - 4;
-
-  if (sorted.length === 0) {
-    return <p className="px-4 pb-4 text-sm text-muted-foreground">No leads with a city on file yet.</p>;
-  }
-
-  return (
-    <div className="divide-y divide-border">
-      {top.map(([city, count]) => (
-        <div key={city} className="flex items-center justify-between px-4 py-3">
-          <span className="text-sm">{city}</span>
-          <span className="font-mono text-sm">{count}</span>
-        </div>
-      ))}
-      {restAreas > 0 && (
-        <div className="flex items-center justify-between px-4 py-3">
-          <span className="text-sm">
-            {restAreas} other area{restAreas === 1 ? '' : 's'}
-          </span>
-          <span className="font-mono text-sm">{restCount}</span>
-        </div>
-      )}
+          </div>
+        );
+      })}
     </div>
   );
 }

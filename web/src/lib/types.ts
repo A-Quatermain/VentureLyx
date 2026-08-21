@@ -323,6 +323,16 @@ export interface Lead {
   channel: string | null;
   source: string | null;
   phone: string | null;
+  deal_title: string | null;
+  deal_value: string | null;
+}
+
+export interface ScheduledJob {
+  id: string;
+  title: string;
+  status: string;
+  scheduled_start: string | null;
+  display_name: string;
 }
 
 export interface OverdueInvoice {

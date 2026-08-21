@@ -403,12 +403,39 @@ export default async function dataRoutes(app: FastifyInstance) {
         `SELECT p.id, p.display_name, p.lifecycle, p.city, p.last_activity_at,
                 p.first_seen_at, t.channel, t.source,
                 (SELECT value FROM party_contacts
-                  WHERE party_id = p.id AND channel = 'phone' AND is_primary LIMIT 1) AS phone
+                  WHERE party_id = p.id AND channel = 'phone' AND is_primary LIMIT 1) AS phone,
+                d.title AS deal_title, d.value::text AS deal_value
            FROM parties p
       LEFT JOIN attribution_touches t ON t.id = p.first_touch_id
+      LEFT JOIN LATERAL (
+                SELECT title, value FROM deals
+                 WHERE party_id = p.id AND status = 'open'
+                 ORDER BY created_at DESC LIMIT 1
+              ) d ON true
           WHERE p.is_lead AND p.deleted_at IS NULL
           ORDER BY p.last_activity_at NULLS FIRST, p.first_seen_at DESC
           LIMIT 500`,
+      ),
+    );
+  });
+
+  // ---- Operate: upcoming job schedule ------------------------------------
+  // Read-only, same shape as every other Operate list here — no write
+  // surface, no new table. Feeds the Job Scheduling widget on the Kanban's
+  // sidebar; work_orders has no other list endpoint today (only the
+  // today/week counts in /command/summary), so this is additive, not a
+  // replacement for anything.
+  app.get('/operate/schedule', async (req) => {
+    req.requireRole('viewer');
+    return req.db((q) =>
+      q.rows<{ id: string; title: string; status: string; scheduled_start: string | null; display_name: string }>(
+        `SELECT wo.id, wo.title, wo.status, wo.scheduled_start, p.display_name
+           FROM work_orders wo
+           JOIN parties p ON p.id = wo.party_id
+          WHERE wo.scheduled_start >= now() - interval '1 hour'
+            AND wo.status NOT IN ('cancelled')
+          ORDER BY wo.scheduled_start ASC
+          LIMIT 8`,
       ),
     );
   });
