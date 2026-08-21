@@ -3,11 +3,11 @@
 import { use, useState } from 'react';
 import Link from 'next/link';
 import { mutate } from 'swr';
-import { ChartBar, UsersThree, FilePlus, ClockCounterClockwise } from '@phosphor-icons/react';
+import { ChartBar, UsersThree, FilePlus, ClockCounterClockwise, MapPin } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import type {
-  SeoHealthDetail, SeoRanking, SeoKeyword, SeoCompetitor, SeoCrawlHistoryEntry, ContentPage,
+  SeoHealthDetail, SeoRanking, SeoKeyword, SeoCompetitor, SeoCrawlHistoryEntry, ContentPage, SummaryResponse,
 } from '@/lib/types';
 import { formatMoney } from '@/lib/format';
 import { Card } from '@/components/ui/Card';
@@ -22,6 +22,7 @@ import { AIStreamPanel } from '@/components/AIStreamPanel';
 
 const TABS = ['Scanner', 'Keywords', 'Competitors', 'AI Page Builder', 'History'] as const;
 type Tab = (typeof TABS)[number];
+type PageKind = 'service_page' | 'location_page' | 'blog_post' | 'landing_page';
 
 export default function ScaleSeoHealthPage({
   params,
@@ -30,26 +31,36 @@ export default function ScaleSeoHealthPage({
 }) {
   const { siteId } = use(params);
   const [tab, setTab] = useState<Tab>('Scanner');
+  // Seeded by a Priority Action's "Fix this for me" — jumps to the AI Page
+  // Builder with a topic already filled in, rather than a fake instant fix.
+  const [builderKind, setBuilderKind] = useState<PageKind>('service_page');
+  const [builderTopic, setBuilderTopic] = useState('');
+
+  function onFixIssue(code: string) {
+    setBuilderKind('service_page');
+    setBuilderTopic(`Fix SEO issue: ${code.replace(/_/g, ' ')}`);
+    setTab('AI Page Builder');
+  }
 
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <p className="font-display text-lg font-black tracking-tight">ScaleSEO</p>
+        <h1 className="font-display text-2xl font-bold tracking-tight">ScaleSEO</h1>
         <div className="flex items-center gap-3">
-          <Link href={`/scaleseo/${siteId}/pages`} className="text-sm text-primary">
+          <Link href={`/scaleseo/${siteId}/pages`} className="text-sm font-medium text-primary hover:underline">
             View pages →
           </Link>
           <CrawlButton siteId={siteId} />
         </div>
       </div>
 
-      <div className="flex overflow-x-auto border border-border">
+      <div className="flex w-fit gap-1 rounded-full border border-border bg-surface p-1 shadow-sm">
         {TABS.map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`whitespace-nowrap border-r border-border px-4 py-2.5 text-sm font-medium transition-colors last:border-r-0 ${
-              tab === t ? 'bg-foreground text-background' : 'hover:bg-muted'
+            className={`whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+              tab === t ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
             }`}
           >
             {t}
@@ -57,20 +68,31 @@ export default function ScaleSeoHealthPage({
         ))}
       </div>
 
-      {tab === 'Scanner' && <ScannerTab siteId={siteId} />}
+      {tab === 'Scanner' && <ScannerTab siteId={siteId} onFixIssue={onFixIssue} />}
       {tab === 'Keywords' && <KeywordsTab siteId={siteId} />}
       {tab === 'Competitors' && <CompetitorsTab siteId={siteId} />}
-      {tab === 'AI Page Builder' && <AIPageBuilderTab />}
+      {tab === 'AI Page Builder' && (
+        <AIPageBuilderTab kind={builderKind} setKind={setBuilderKind} topic={builderTopic} setTopic={setBuilderTopic} />
+      )}
       {tab === 'History' && <HistoryTab siteId={siteId} />}
     </div>
   );
 }
 
-function ScannerTab({ siteId }: { siteId: string }) {
+const SUBSCORE_LABELS = {
+  technical: 'Technical',
+  content: 'Content',
+  local_seo: 'Local SEO',
+  reviews: 'Reviews',
+  performance: 'Performance',
+} as const;
+
+function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code: string) => void }) {
   const { data, isLoading, error } = useApi<SeoHealthDetail>(`/seo/health/${siteId}`);
   const { data: rankings } = useApi<SeoRanking[]>('/seo/rankings');
+  const { data: summary } = useApi<SummaryResponse>('/command/summary');
 
-  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">Loading…</div>;
+  if (isLoading) return <p className="p-4 text-sm text-muted-foreground">Loading…</p>;
   if (error || !data) {
     return (
       <Card className="p-4">
@@ -82,25 +104,43 @@ function ScannerTab({ siteId }: { siteId: string }) {
   }
 
   const { score, issues, trend } = data;
+  const avgRating = summary?.reputation.avg_rating != null ? Number(summary.reputation.avg_rating) : null;
+  const reviewCount = summary?.reputation.review_count ?? 0;
+  const reviewsScore = reviewCount > 0 && avgRating != null ? Math.round((avgRating / 5) * 100) : null;
+
+  const subscores: Array<{ key: keyof typeof SUBSCORE_LABELS; value: number | null; sub?: string }> = [
+    { key: 'technical', value: score?.technical ?? null },
+    { key: 'content', value: score?.content ?? null },
+    { key: 'local_seo', value: score?.local_seo ?? null },
+    { key: 'reviews', value: reviewsScore, sub: reviewCount > 0 ? `${avgRating}★ · ${reviewCount} reviews` : 'no reviews yet' },
+    { key: 'performance', value: score?.performance ?? null },
+  ];
 
   return (
     <div className="flex flex-col gap-4">
-      <Card className="p-4">
+      <Card className="p-6">
         {score && score.health !== null ? (
-          <div className="flex flex-wrap items-center gap-5">
-            <Ring score={score.health} />
-            <div className="min-w-[180px] flex-1 space-y-2">
-              <Bar label="Technical" valueText={score.technical ?? '—'} percent={score.technical ?? 0} />
-              <Bar label="Content" valueText={score.content ?? '—'} percent={score.content ?? 0} />
-              <Bar label="Speed" valueText={score.performance ?? '—'} percent={score.performance ?? 0} />
-              <Bar label="Local presence" valueText={score.local_seo ?? '—'} percent={score.local_seo ?? 0} tone="primary" />
+          <div className="flex flex-col items-center gap-8 lg:flex-row lg:items-center lg:justify-center">
+            <div className="flex shrink-0 flex-col items-center">
+              <Ring score={score.health} size={196} strokeWidth={16} label="SEO Health" />
+            </div>
+            <div className="grid w-full max-w-md grid-cols-1 gap-4 sm:grid-cols-2">
+              {subscores.map((s) => (
+                <Bar
+                  key={s.key}
+                  label={SUBSCORE_LABELS[s.key]}
+                  valueText={s.value ?? '—'}
+                  percent={s.value ?? 0}
+                  sub={s.sub}
+                />
+              ))}
             </div>
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">No score yet — waiting on the first crawl.</p>
+          <p className="py-8 text-center text-sm text-muted-foreground">No score yet — waiting on the first crawl.</p>
         )}
         {score?.computed_at && (
-          <p className="mt-3 text-xs text-muted-foreground">
+          <p className="mt-6 text-center text-xs text-muted-foreground">
             Checked {new Date(score.computed_at).toLocaleString()}
           </p>
         )}
@@ -115,37 +155,73 @@ function ScannerTab({ siteId }: { siteId: string }) {
       />
 
       <Card className="p-4">
-        <p className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Health trend</p>
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Health trend</p>
         <div className="mt-2">
           <Sparkline points={trend} />
         </div>
       </Card>
 
+      <Card className="p-0">
+        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+          <p className="text-sm font-semibold">Priority Actions</p>
+        </div>
+        {issues.length === 0 ? (
+          <p className="p-4 text-sm text-muted-foreground">No open issues.</p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {issues.map((issue) => (
+              <li key={issue.code} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 flex-1 items-start gap-3">
+                  <SeverityBadge severity={issue.severity} />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">
+                      {issue.code.replace(/_/g, ' ')}
+                      <span className="text-muted-foreground"> — {issue.pages} pages</span>
+                    </p>
+                    {issue.example_detail && (
+                      <p className="mt-0.5 truncate text-xs text-muted-foreground">{issue.example_detail}</p>
+                    )}
+                  </div>
+                </div>
+                {issue.auto_fixable && (
+                  <Button variant="ai" className="shrink-0" onClick={() => onFixIssue(issue.code)}>
+                    Fix this for me
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
       <Card className="overflow-x-auto p-0">
-        <p className="p-4 pb-2 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Local rankings</p>
+        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+          <MapPin size={16} className="text-muted-foreground" />
+          <p className="text-sm font-semibold">Local Rankings</p>
+        </div>
         {!rankings || rankings.length === 0 ? (
-          <p className="px-4 pb-4 text-sm text-muted-foreground">
+          <p className="p-4 text-sm text-muted-foreground">
             No ranking data yet — this needs a rank-tracking source connected.
           </p>
         ) : (
           <table className="w-full min-w-[520px] text-left text-sm">
             <thead>
-              <tr className="border-b border-border text-xs text-muted-foreground">
+              <tr className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 <th className="px-4 py-2 font-medium">Area</th>
                 <th className="px-4 py-2 font-medium">Phrase</th>
-                <th className="px-4 py-2 font-medium">Position</th>
-                <th className="px-4 py-2 font-medium">Trend</th>
+                <th className="px-4 py-2 text-right font-medium">Position</th>
+                <th className="px-4 py-2 text-right font-medium">Trend</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-border">
               {rankings.map((r) => (
-                <tr key={`${r.phrase}-${r.location_name}`} className="border-b border-border last:border-0">
-                  <td className="px-4 py-2">{r.location_name}</td>
-                  <td className="px-4 py-2 text-muted-foreground">{r.phrase}</td>
-                  <td className="px-4 py-2 font-mono" data-numeric>
+                <tr key={`${r.phrase}-${r.location_name}`}>
+                  <td className="px-4 py-3">{r.location_name}</td>
+                  <td className="px-4 py-3 text-muted-foreground">{r.phrase}</td>
+                  <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>
                     {r.position ?? '—'}
                   </td>
-                  <td className="px-4 py-2 font-mono" data-numeric>
+                  <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>
                     {r.movement == null || r.movement === 0 ? (
                       <span className="text-muted-foreground">—</span>
                     ) : r.movement > 0 ? (
@@ -161,34 +237,11 @@ function ScannerTab({ siteId }: { siteId: string }) {
         )}
       </Card>
 
-      <Card className="p-0">
-        <p className="p-4 pb-0 font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Issues</p>
-        {issues.length === 0 ? (
-          <p className="p-4 text-sm text-muted-foreground">No open issues.</p>
-        ) : (
-          <ul className="divide-y divide-border">
-            {issues.map((issue) => (
-              <li key={issue.code} className="flex items-start gap-3 p-4">
-                <SeverityBadge severity={issue.severity} />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm">
-                    {issue.code}
-                    <span className="text-muted-foreground"> — {issue.pages} pages</span>
-                  </p>
-                  {issue.example_detail && (
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground">{issue.example_detail}</p>
-                  )}
-                  {issue.auto_fixable && (
-                    <span className="mt-1 inline-block border border-primary px-2 py-0.5 text-xs text-primary">
-                      Auto-fixable
-                    </span>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
+      <AIStreamPanel
+        path="/ai/growth-strategist/stream"
+        title="AI Recommendation"
+        triggerLabel="What should I fix first?"
+      />
     </div>
   );
 }
@@ -200,7 +253,7 @@ function KeywordsTab({ siteId }: { siteId: string }) {
     <Card className="overflow-x-auto p-0">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
         <ChartBar size={16} className="text-muted-foreground" />
-        <p className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Tracked keywords</p>
+        <p className="text-sm font-semibold">Tracked keywords</p>
       </div>
       {isLoading ? (
         <p className="p-4 text-sm text-muted-foreground">Loading…</p>
@@ -213,33 +266,33 @@ function KeywordsTab({ siteId }: { siteId: string }) {
       ) : (
         <table className="w-full min-w-[640px] text-left text-sm">
           <thead>
-            <tr className="border-b border-border text-xs text-muted-foreground">
+            <tr className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-2 font-medium">Phrase</th>
               <th className="px-4 py-2 font-medium">Intent</th>
-              <th className="px-4 py-2 font-medium">Volume</th>
-              <th className="px-4 py-2 font-medium">Difficulty</th>
-              <th className="px-4 py-2 font-medium">Position</th>
-              <th className="px-4 py-2 font-medium">Value/mo</th>
+              <th className="px-4 py-2 text-right font-medium">Volume</th>
+              <th className="px-4 py-2 text-right font-medium">Difficulty</th>
+              <th className="px-4 py-2 text-right font-medium">Position</th>
+              <th className="px-4 py-2 text-right font-medium">Value/mo</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-border">
             {data.map((k) => (
-              <tr key={k.id} className="border-b border-border last:border-0">
-                <td className="px-4 py-2">
+              <tr key={k.id}>
+                <td className="px-4 py-3">
                   {k.phrase}
                   {k.is_branded && <span className="ml-1.5 text-xs text-muted-foreground">(branded)</span>}
                 </td>
-                <td className="px-4 py-2 text-muted-foreground">{k.intent ?? '—'}</td>
-                <td className="px-4 py-2 font-mono text-muted-foreground" data-numeric>
+                <td className="px-4 py-3 text-muted-foreground">{k.intent ?? '—'}</td>
+                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
                   {k.search_volume ?? '—'}
                 </td>
-                <td className="px-4 py-2 font-mono text-muted-foreground" data-numeric>
+                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
                   {k.difficulty ?? '—'}
                 </td>
-                <td className="px-4 py-2 font-mono" data-numeric>
+                <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>
                   {k.position ?? '—'}
                 </td>
-                <td className="px-4 py-2 font-mono" data-numeric>
+                <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>
                   {k.est_value_monthly ? formatMoney(k.est_value_monthly) : '—'}
                 </td>
               </tr>
@@ -258,7 +311,7 @@ function CompetitorsTab({ siteId }: { siteId: string }) {
     <Card className="overflow-x-auto p-0">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
         <UsersThree size={16} className="text-muted-foreground" />
-        <p className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Competitors</p>
+        <p className="text-sm font-semibold">Competitors</p>
       </div>
       {isLoading ? (
         <p className="p-4 text-sm text-muted-foreground">Loading…</p>
@@ -271,25 +324,25 @@ function CompetitorsTab({ siteId }: { siteId: string }) {
       ) : (
         <table className="w-full min-w-[520px] text-left text-sm">
           <thead>
-            <tr className="border-b border-border text-xs text-muted-foreground">
+            <tr className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-2 font-medium">Name</th>
               <th className="px-4 py-2 font-medium">Domain</th>
-              <th className="px-4 py-2 font-medium">Avg. position</th>
-              <th className="px-4 py-2 font-medium">Keywords tracked</th>
+              <th className="px-4 py-2 text-right font-medium">Avg. position</th>
+              <th className="px-4 py-2 text-right font-medium">Keywords tracked</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-border">
             {data.map((c) => (
-              <tr key={c.id} className="border-b border-border last:border-0">
-                <td className="px-4 py-2">
+              <tr key={c.id}>
+                <td className="px-4 py-3">
                   {c.name}
                   {c.discovered && <span className="ml-1.5 text-xs text-muted-foreground">(auto-discovered)</span>}
                 </td>
-                <td className="px-4 py-2 text-muted-foreground">{c.domain}</td>
-                <td className="px-4 py-2 font-mono" data-numeric>
+                <td className="px-4 py-3 text-muted-foreground">{c.domain}</td>
+                <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>
                   {c.avg_position ?? '—'}
                 </td>
-                <td className="px-4 py-2 font-mono text-muted-foreground" data-numeric>
+                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
                   {c.tracked_keywords}
                 </td>
               </tr>
@@ -301,16 +354,24 @@ function CompetitorsTab({ siteId }: { siteId: string }) {
   );
 }
 
-const PAGE_KINDS = ['service_page', 'location_page', 'blog_post', 'landing_page'] as const;
+const PAGE_KINDS: PageKind[] = ['service_page', 'location_page', 'blog_post', 'landing_page'];
 const CONTENT_PAGES_KEY = '/seo/content-pages';
 
-function AIPageBuilderTab() {
+function AIPageBuilderTab({
+  kind,
+  setKind,
+  topic,
+  setTopic,
+}: {
+  kind: PageKind;
+  setKind: (k: PageKind) => void;
+  topic: string;
+  setTopic: (t: string) => void;
+}) {
   const role = useRole();
   const canEdit = atLeast(role, 'staff');
   const { data: pages, isLoading } = useApi<ContentPage[]>(CONTENT_PAGES_KEY);
 
-  const [kind, setKind] = useState<(typeof PAGE_KINDS)[number]>('service_page');
-  const [topic, setTopic] = useState('');
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -343,8 +404,8 @@ function AIPageBuilderTab() {
             Page type
             <select
               value={kind}
-              onChange={(e) => setKind(e.target.value as (typeof PAGE_KINDS)[number])}
-              className="min-h-[38px] rounded-none border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary"
+              onChange={(e) => setKind(e.target.value as PageKind)}
+              className="min-h-[42px] rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             >
               {PAGE_KINDS.map((k) => (
                 <option key={k} value={k}>
@@ -359,7 +420,7 @@ function AIPageBuilderTab() {
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               placeholder="e.g. emergency pool leak repair"
-              className="min-h-[38px] w-full rounded-none border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary"
+              className="min-h-[42px] w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           </label>
         </div>
@@ -389,7 +450,7 @@ function AIPageBuilderTab() {
       <Card className="overflow-x-auto p-0">
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <FilePlus size={16} className="text-muted-foreground" />
-          <p className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Drafted pages</p>
+          <p className="text-sm font-semibold">Drafted pages</p>
         </div>
         {isLoading ? (
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>
@@ -405,7 +466,7 @@ function AIPageBuilderTab() {
                     {p.kind.replace('_', ' ')} · {new Date(p.created_at).toLocaleDateString()}
                   </p>
                 </div>
-                <span className="shrink-0 border border-border px-1.5 py-0.5 font-mono text-[10px] uppercase text-muted-foreground">
+                <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] uppercase text-muted-foreground">
                   {p.status}
                 </span>
               </li>
@@ -424,7 +485,7 @@ function HistoryTab({ siteId }: { siteId: string }) {
     <Card className="overflow-x-auto p-0">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
         <ClockCounterClockwise size={16} className="text-muted-foreground" />
-        <p className="font-mono text-xs uppercase tracking-[0.2em] text-muted-foreground">Crawl history</p>
+        <p className="text-sm font-semibold">Crawl history</p>
       </div>
       {isLoading ? (
         <p className="p-4 text-sm text-muted-foreground">Loading…</p>
@@ -435,36 +496,36 @@ function HistoryTab({ siteId }: { siteId: string }) {
       ) : (
         <table className="w-full min-w-[600px] text-left text-sm">
           <thead>
-            <tr className="border-b border-border text-xs text-muted-foreground">
+            <tr className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-2 font-medium">Started</th>
               <th className="px-4 py-2 font-medium">Status</th>
               <th className="px-4 py-2 font-medium">Trigger</th>
-              <th className="px-4 py-2 font-medium">Pages</th>
-              <th className="px-4 py-2 font-medium">Health</th>
+              <th className="px-4 py-2 text-right font-medium">Pages</th>
+              <th className="px-4 py-2 text-right font-medium">Health</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-border">
             {data.map((c) => (
-              <tr key={c.id} className="border-b border-border last:border-0">
-                <td className="px-4 py-2">{new Date(c.started_at).toLocaleString()}</td>
-                <td className="px-4 py-2">
+              <tr key={c.id}>
+                <td className="px-4 py-3">{new Date(c.started_at).toLocaleString()}</td>
+                <td className="px-4 py-3">
                   <span
-                    className={`border px-1.5 py-0.5 font-mono text-[10px] uppercase ${
+                    className={`rounded-full px-2 py-0.5 font-mono text-[10px] uppercase ${
                       c.status === 'ok'
-                        ? 'border-success text-success'
+                        ? 'bg-success/10 text-success'
                         : c.status === 'running'
-                          ? 'border-primary text-primary'
-                          : 'border-destructive text-destructive'
+                          ? 'bg-primary/10 text-primary'
+                          : 'bg-destructive/10 text-destructive'
                     }`}
                   >
                     {c.status}
                   </span>
                 </td>
-                <td className="px-4 py-2 text-muted-foreground">{c.trigger}</td>
-                <td className="px-4 py-2 font-mono text-muted-foreground" data-numeric>
+                <td className="px-4 py-3 text-muted-foreground">{c.trigger}</td>
+                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
                   {c.pages_crawled}
                 </td>
-                <td className="px-4 py-2 font-mono" data-numeric>
+                <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>
                   {c.health ?? '—'}
                 </td>
               </tr>

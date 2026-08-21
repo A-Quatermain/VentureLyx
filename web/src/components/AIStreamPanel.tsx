@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { CircleNotch, Sparkle } from '@phosphor-icons/react';
 import { streamSSE } from '@/lib/sse';
 import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
 
 type Status = 'idle' | 'streaming' | 'done' | 'error';
 
@@ -15,13 +16,10 @@ interface Meta {
 
 const PROVIDER_LABEL: Record<string, string> = { anthropic: 'Claude', openai: 'ChatGPT' };
 
-// Reusable AI streaming panel — port of ref-1's AIStreamPanel.jsx onto our
-// SSE format (api/src/lib/ai.ts's streamEventsToSSE) and design tokens.
-// Not built on ui/Card: Tailwind's color utilities compile in
-// theme-key-insertion order (see tone.ts's comment), and `surface` is
-// declared after `foreground` in tailwind.config.ts — so Card's baked-in
-// bg-surface would always beat a caller's bg-foreground override
-// regardless of className order. A plain div sidesteps that entirely.
+// Reusable AI streaming panel, styled per design_guidelines.json's AI
+// components rule: the indigo-to-violet gradient is reserved for the
+// "Fix this for me"-style CTA (Button's `ai` variant) — the panel chrome
+// itself stays a plain white card, like every other surface.
 export function AIStreamPanel({
   path,
   body,
@@ -82,13 +80,13 @@ export function AIStreamPanel({
   }, [text]);
 
   return (
-    <div className="border border-border bg-foreground text-background">
-      <div className="flex items-center justify-between border-b border-background/20 px-4 py-2.5">
-        <span className="flex items-center gap-1.5 font-mono text-xs uppercase tracking-[0.2em] text-background/70">
-          <Sparkle size={13} weight="fill" /> {title}
+    <Card className="overflow-hidden">
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+          <Sparkle size={15} weight="fill" className="text-primary" /> {title}
         </span>
         {meta && (
-          <span className="border border-background/30 px-2 py-0.5 font-mono text-[10px]">
+          <span className="rounded-full bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary">
             {PROVIDER_LABEL[meta.provider] ?? meta.provider}
             {meta.fallback ? ' · fallback' : ''} · {meta.model}
           </span>
@@ -98,16 +96,16 @@ export function AIStreamPanel({
         ref={boxRef}
         className="min-h-[100px] max-h-[420px] overflow-y-auto whitespace-pre-wrap p-4 text-sm leading-relaxed"
       >
-        {status === 'idle' && <span className="text-background/50">Ready. Click &ldquo;{triggerLabel}&rdquo;.</span>}
+        {status === 'idle' && <span className="text-muted-foreground">Ready. Click &ldquo;{triggerLabel}&rdquo;.</span>}
         {error && <span className="text-destructive">{error}</span>}
         {text}
       </div>
-      <div className="flex items-center gap-2 border-t border-background/20 px-4 py-3">
-        <Button onClick={run} disabled={status === 'streaming'} className="inline-flex items-center gap-1.5">
+      <div className="flex items-center gap-2 border-t border-border px-4 py-3">
+        <Button variant="ai" onClick={run} disabled={status === 'streaming'} className="inline-flex items-center gap-1.5">
           {status === 'streaming' && <CircleNotch size={14} weight="bold" className="animate-spin" />}
           {status === 'streaming' ? 'Generating…' : text ? 'Regenerate' : triggerLabel}
         </Button>
       </div>
-    </div>
+    </Card>
   );
 }

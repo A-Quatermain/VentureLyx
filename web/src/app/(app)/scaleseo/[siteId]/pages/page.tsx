@@ -30,8 +30,8 @@ export default function ScaleSeoPagesPage({
   return (
     <div className="flex flex-col gap-3 p-4">
       <div className="flex items-center justify-between">
-        <p className="font-display text-lg font-black tracking-tight">Pages</p>
-        <Link href={`/scaleseo/${siteId}`} className="text-sm text-primary">
+        <h1 className="font-display text-2xl font-bold tracking-tight">Pages</h1>
+        <Link href={`/scaleseo/${siteId}`} className="text-sm font-medium text-primary hover:underline">
           ← Back to health
         </Link>
       </div>
@@ -39,36 +39,36 @@ export default function ScaleSeoPagesPage({
       <Card className="overflow-x-auto p-0">
         <table className="w-full min-w-[720px] text-left text-sm">
           <thead>
-            <tr className="border-b border-border text-xs text-muted-foreground">
+            <tr className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-2 font-medium">URL</th>
               <th className="px-4 py-2 font-medium">Status</th>
               <th className="px-4 py-2 font-medium">Title</th>
-              <th className="px-4 py-2 font-medium">Words</th>
-              <th className="px-4 py-2 font-medium">Alt-text gaps</th>
-              <th className="px-4 py-2 font-medium">Response</th>
+              <th className="px-4 py-2 text-right font-medium">Words</th>
+              <th className="px-4 py-2 text-right font-medium">Alt-text gaps</th>
+              <th className="px-4 py-2 text-right font-medium">Response</th>
               <th className="px-4 py-2 font-medium">Indexable</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-border">
             {(pages ?? []).map((p) => (
-              <tr key={p.url} className="border-b border-border last:border-0">
-                <td className="max-w-xs truncate px-4 py-2">{p.url}</td>
-                <td className="px-4 py-2 font-mono" data-numeric>
+              <tr key={p.url}>
+                <td className="max-w-xs truncate px-4 py-3">{p.url}</td>
+                <td className="px-4 py-3 font-mono tabular-nums" data-numeric>
                   <span className={p.status_code >= 400 ? 'text-destructive' : 'text-muted-foreground'}>
                     {p.status_code}
                   </span>
                 </td>
-                <td className="max-w-xs truncate px-4 py-2 text-muted-foreground">{p.title ?? '—'}</td>
-                <td className="px-4 py-2 font-mono text-muted-foreground" data-numeric>
+                <td className="max-w-xs truncate px-4 py-3 text-muted-foreground">{p.title ?? '—'}</td>
+                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
                   {p.word_count ?? '—'}
                 </td>
-                <td className="px-4 py-2 font-mono text-muted-foreground" data-numeric>
+                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
                   {p.images_no_alt ?? 0}/{p.images_total ?? 0}
                 </td>
-                <td className="px-4 py-2 font-mono text-muted-foreground" data-numeric>
+                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
                   {p.response_ms ?? '—'}ms
                 </td>
-                <td className="px-4 py-2">
+                <td className="px-4 py-3">
                   {p.indexable ? (
                     <span className="text-success">Yes</span>
                   ) : (

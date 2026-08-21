@@ -79,7 +79,7 @@ export function Sparkline({ points }: { points: SeoTrendPoint[] }) {
       ))}
       {active !== null && (
         <div
-          className="pointer-events-none absolute -translate-x-1/2 -translate-y-full border border-border bg-surface px-2 py-1 text-xs"
+          className="pointer-events-none absolute -translate-x-1/2 -translate-y-full rounded-md border border-border bg-surface px-2 py-1 text-xs shadow-sm"
           style={{
             left: `${xAt(active)}%`,
             top: `${(yAt(chrono[active]!.health) / h) * 100}%`,

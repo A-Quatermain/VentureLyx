@@ -23,17 +23,17 @@ export default function ScaleSeoSitesPage() {
 
   return (
     <div className="flex flex-col gap-3 p-4">
-      <p className="font-display text-lg font-black tracking-tight">ScaleSEO</p>
+      <h1 className="font-display text-2xl font-bold tracking-tight">ScaleSEO</h1>
       {(sites ?? []).map((site) => (
         <Link key={site.id} href={`/scaleseo/${site.id}`}>
-          <Card className="p-4 transition-colors hover:border-primary">
+          <Card className="p-4">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium">{site.name}</p>
                 <p className="text-xs text-muted-foreground">{site.url}</p>
               </div>
               <div className="text-right">
-                <p className="font-mono text-lg font-medium" data-numeric>
+                <p className="font-mono text-lg font-semibold tabular-nums" data-numeric>
                   {site.health ?? '—'}
                 </p>
                 {(site.critical_issues ?? 0) > 0 && (
