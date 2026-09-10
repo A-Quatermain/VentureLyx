@@ -24,10 +24,24 @@ services:
       LOG_LEVEL: INFO
       POLL_SECONDS: 10
       WORKER_ID: seo-worker-1
+      # Same vault key the API encrypts integrations.credential_enc with —
+      # the worker decrypts GSC refresh tokens with it, never plaintext at rest.
+      VAULT_KEY: ${VAULT_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
     depends_on:
       postgres:
         condition: service_healthy
-    mem_limit: 1g
+    # Was 1g. A headless Chromium base process plus up to 2 concurrent
+    # rendering tabs (crawler.py's render_sem) can peak near 1g on their own
+    # for render=True sites (geodynparking, atleticosoflo) — this leaves
+    # headroom so a heavy page OOM-kills the whole worker instead of just
+    # failing one job. shm_size covers the other half of the classic
+    # Docker+Chromium gotcha (crawler.py also passes --disable-dev-shm-usage
+    # as belt-and-suspenders, not redundant — either alone is a single point
+    # of failure if the other gets dropped in a future edit).
+    mem_limit: 2g
+    shm_size: 512m
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }

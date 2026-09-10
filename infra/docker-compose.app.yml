@@ -38,6 +38,14 @@ services:
       # skips a provider with no key) so this works with only one of the two set.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # routes/integrations.ts — Google Search Console OAuth. Redirect URI
+      # and post-auth landing page default to the production hosts in code;
+      # GOOGLE_OAUTH_REDIRECT_URI / APP_BASE_URL only need setting in .env
+      # to override those for a non-prod stack.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-https://api.venturelyx.com/v1/integrations/gsc/oauth/callback}
+      APP_BASE_URL: ${APP_BASE_URL:-https://app.venturelyx.com}
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 20s

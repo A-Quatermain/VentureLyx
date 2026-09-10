@@ -8,41 +8,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  getAISettings, getAIClients, getMonthlySpend, logAiUsage, streamAI, streamEventsToSSE,
-  type AIStreamEvent, type AIClients, type ProviderPreference, type Provider, type Feature,
+  logAiUsage, streamAI, streamEventsToSSE, resolveAIContext, staticEvents, CAP_MESSAGE,
 } from '../lib/ai.js';
-import type { Querier } from '../lib/db.js';
 import { HttpError } from '../plugins/context.js';
-
-async function* staticEvents(text: string): AsyncGenerator<AIStreamEvent> {
-  yield { type: 'delta', text };
-  yield { type: 'done' };
-}
-
-interface AIContext {
-  providerPreference: ProviderPreference;
-  clients: AIClients;
-  modelOverride?: { provider: Provider; model: string };
-  capExceeded: boolean;
-}
-
-async function resolveAIContext(db: Querier, orgId: string, feature: Feature): Promise<AIContext> {
-  const settings = await getAISettings(db, orgId);
-  const clients = await getAIClients(db, orgId);
-  let capExceeded = false;
-  if (settings.spendCapMonthly !== null) {
-    const spent = await getMonthlySpend(db, orgId);
-    capExceeded = spent >= settings.spendCapMonthly;
-  }
-  return {
-    providerPreference: settings.providerPreference,
-    clients,
-    modelOverride: settings.modelOverrides[feature],
-    capExceeded,
-  };
-}
-
-const CAP_MESSAGE = "AI is paused for this business — this month's spend cap has been reached. Raise it in Settings to continue.";
 
 export default async function aiRoutes(app: FastifyInstance) {
 

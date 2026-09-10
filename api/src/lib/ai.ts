@@ -19,11 +19,12 @@ export type Feature =
   | 'review_response'
   | 'next_best_action'
   | 'metric_explanation'
-  | 'business_blueprint';
+  | 'business_blueprint'
+  | 'sequence_writing';
 
 export const FEATURES: Feature[] = [
   'seo_recommendations', 'page_generation', 'review_response',
-  'next_best_action', 'metric_explanation', 'business_blueprint',
+  'next_best_action', 'metric_explanation', 'business_blueprint', 'sequence_writing',
 ];
 
 export type Provider = 'anthropic' | 'openai';
@@ -36,6 +37,7 @@ export const FEATURE_TIER: Record<Feature, Tier> = {
   next_best_action: 'primary',
   metric_explanation: 'cheap',
   business_blueprint: 'heavy',
+  sequence_writing: 'primary',
 };
 
 // claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5-20251001 are the current
@@ -357,6 +359,45 @@ export async function* streamAI(opts: StreamAIOptions): AsyncGenerator<AIStreamE
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error('All configured AI providers failed');
+}
+
+export interface AIContext {
+  providerPreference: ProviderPreference;
+  clients: AIClients;
+  modelOverride?: { provider: Provider; model: string };
+  capExceeded: boolean;
+}
+
+/** Every AI-backed route's setup boilerplate: settings, clients (shared or
+ *  BYO), and whether this org's monthly spend cap is already hit. Shared
+ *  by routes/ai.ts and routes/grow.ts's sequence-writing endpoints rather
+ *  than each re-deriving it. */
+export async function resolveAIContext(db: Querier, orgId: string, feature: Feature): Promise<AIContext> {
+  const settings = await getAISettings(db, orgId);
+  const clients = await getAIClients(db, orgId);
+  let capExceeded = false;
+  if (settings.spendCapMonthly !== null) {
+    const spent = await getMonthlySpend(db, orgId);
+    capExceeded = spent >= settings.spendCapMonthly;
+  }
+  return {
+    providerPreference: settings.providerPreference,
+    clients,
+    modelOverride: settings.modelOverrides[feature],
+    capExceeded,
+  };
+}
+
+export const CAP_MESSAGE =
+  "AI is paused for this business — this month's spend cap has been reached. Raise it in Settings to continue.";
+
+/** A canned, non-streamed "stream" — for a capped org, or a route that
+ *  decided there's nothing worth asking the model (e.g. no data to reason
+ *  over) — so callers can still hand it to streamEventsToSSE and every
+ *  consumer sees the same event shape either way. */
+export async function* staticEvents(text: string): AsyncGenerator<AIStreamEvent> {
+  yield { type: 'delta', text };
+  yield { type: 'done' };
 }
 
 // Same origin list @fastify/cors is configured with in server.ts. Duplicated

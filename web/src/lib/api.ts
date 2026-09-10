@@ -18,7 +18,13 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     // parser rejects an empty body sent with Content-Type: application/json
     // (FST_ERR_CTP_EMPTY_JSON_BODY), which silently broke every bodyless
     // POST (logout, crawl-trigger) with no visible error to the user.
-    headers: init?.body ? { 'Content-Type': 'application/json', ...init.headers } : init?.headers,
+    // FormData (file uploads) is the other exception: the browser has to
+    // compute its own multipart boundary and set Content-Type itself —
+    // forcing application/json here would send a boundary-less multipart
+    // body labeled as JSON, which Fastify can't parse either.
+    headers: init?.body && !(init.body instanceof FormData)
+      ? { 'Content-Type': 'application/json', ...init.headers }
+      : init?.headers,
   });
 
   if (!res.ok) {

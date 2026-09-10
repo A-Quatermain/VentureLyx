@@ -3,13 +3,14 @@
 import { use, useState } from 'react';
 import Link from 'next/link';
 import { mutate } from 'swr';
-import { ChartBar, UsersThree, FilePlus, ClockCounterClockwise, MapPin } from '@phosphor-icons/react';
+import { ChartBar, UsersThree, FilePlus, ClockCounterClockwise, MapPin, Target, Plug } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
+import { API_BASE } from '@/lib/config';
 import type {
-  SeoHealthDetail, SeoRanking, SeoKeyword, SeoCompetitor, SeoCrawlHistoryEntry, ContentPage, SummaryResponse,
+  SeoHealthDetail, SeoRanking, SeoCompetitor, SeoCrawlHistoryEntry, ContentPage, SummaryResponse,
+  CoverageGap, GscQueriesResponse,
 } from '@/lib/types';
-import { formatMoney } from '@/lib/format';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Ring } from '@/components/ui/Ring';
@@ -18,9 +19,10 @@ import { Sparkline } from '@/components/ui/Sparkline';
 import { SeverityBadge } from '@/components/ui/Badge';
 import { StatStrip } from '@/components/ui/StatStrip';
 import { CrawlButton } from '@/components/CrawlButton';
+import { RenderToggle } from '@/components/RenderToggle';
 import { AIStreamPanel } from '@/components/AIStreamPanel';
 
-const TABS = ['Scanner', 'Keywords', 'Competitors', 'AI Page Builder', 'History'] as const;
+const TABS = ['Scanner', 'Keywords', 'Coverage', 'Competitors', 'AI Page Builder', 'History'] as const;
 type Tab = (typeof TABS)[number];
 type PageKind = 'service_page' | 'location_page' | 'blog_post' | 'landing_page';
 
@@ -42,6 +44,12 @@ export default function ScaleSeoHealthPage({
     setTab('AI Page Builder');
   }
 
+  function onBuildGap(serviceName: string, locationName: string) {
+    setBuilderKind('location_page');
+    setBuilderTopic(`${serviceName} in ${locationName}`);
+    setTab('AI Page Builder');
+  }
+
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -50,6 +58,7 @@ export default function ScaleSeoHealthPage({
           <Link href={`/scaleseo/${siteId}/pages`} className="text-sm font-medium text-primary hover:underline">
             View pages →
           </Link>
+          <RenderToggle siteId={siteId} />
           <CrawlButton siteId={siteId} />
         </div>
       </div>
@@ -70,6 +79,7 @@ export default function ScaleSeoHealthPage({
 
       {tab === 'Scanner' && <ScannerTab siteId={siteId} onFixIssue={onFixIssue} />}
       {tab === 'Keywords' && <KeywordsTab siteId={siteId} />}
+      {tab === 'Coverage' && <CoverageTab onBuildGap={onBuildGap} />}
       {tab === 'Competitors' && <CompetitorsTab siteId={siteId} />}
       {tab === 'AI Page Builder' && (
         <AIPageBuilderTab kind={builderKind} setKind={setBuilderKind} topic={builderTopic} setTopic={setBuilderTopic} />
@@ -246,59 +256,147 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
   );
 }
 
+type GscSort = 'impressions' | 'position';
+
+// Real query-level performance straight from Google Search Console — no
+// fabricated ranking data. An org that hasn't connected GSC gets a connect
+// prompt here, never plausible-looking numbers nobody generated.
 function KeywordsTab({ siteId }: { siteId: string }) {
-  const { data, isLoading, error } = useApi<SeoKeyword[]>(`/seo/keywords/${siteId}`);
+  const [sort, setSort] = useState<GscSort>('impressions');
+  const { data, isLoading, error } = useApi<GscQueriesResponse>(`/seo/gsc-queries/${siteId}?sort=${sort}`);
+  const role = useRole();
+  const canConnect = atLeast(role, 'admin');
 
   return (
     <Card className="overflow-x-auto p-0">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <ChartBar size={16} className="text-muted-foreground" />
-        <p className="text-sm font-semibold">Tracked keywords</p>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+        <div className="flex items-center gap-2">
+          <ChartBar size={16} className="text-muted-foreground" />
+          <p className="text-sm font-semibold">Keywords (Google Search Console, last 28 days)</p>
+        </div>
+        {data?.connected && (
+          <div className="flex gap-1 text-xs">
+            {(['impressions', 'position'] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setSort(s)}
+                className={`rounded-full px-2.5 py-1 font-medium capitalize transition-colors ${
+                  sort === s ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+                }`}
+              >
+                Sort: {s}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {isLoading ? (
         <p className="p-4 text-sm text-muted-foreground">Loading…</p>
       ) : error ? (
-        <p className="p-4 text-sm text-destructive">Could not load keywords.</p>
-      ) : !data || data.length === 0 ? (
+        <p className="p-4 text-sm text-destructive">Could not load keyword data.</p>
+      ) : !data?.connected ? (
+        <div className="flex flex-col items-center gap-3 p-8 text-center">
+          <Plug size={24} className="text-muted-foreground" />
+          <p className="max-w-sm text-sm text-muted-foreground">
+            Connect Google Search Console to see real phrases this site already ranks for — actual
+            impressions, clicks and position, not estimates.
+          </p>
+          {canConnect ? (
+            <Button onClick={() => { window.location.href = `${API_BASE}/integrations/gsc/oauth/start`; }}>
+              Connect Google Search Console
+            </Button>
+          ) : (
+            <p className="text-xs text-muted-foreground/70">Ask an admin to connect it in Settings.</p>
+          )}
+        </div>
+      ) : data.rows.length === 0 ? (
         <p className="p-4 text-sm text-muted-foreground">
-          No keywords tracked yet — this needs keyword research connected for this site.
+          Connected, but no query data has landed yet — the first sync can take up to a day.
         </p>
       ) : (
         <table className="w-full min-w-[640px] text-left text-sm">
           <thead>
             <tr className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-2 font-medium">Phrase</th>
-              <th className="px-4 py-2 font-medium">Intent</th>
-              <th className="px-4 py-2 text-right font-medium">Volume</th>
-              <th className="px-4 py-2 text-right font-medium">Difficulty</th>
-              <th className="px-4 py-2 text-right font-medium">Position</th>
-              <th className="px-4 py-2 text-right font-medium">Value/mo</th>
+              <th className="px-4 py-2 font-medium">Query</th>
+              <th className="px-4 py-2 font-medium">Page</th>
+              <th className="px-4 py-2 text-right font-medium">Impressions</th>
+              <th className="px-4 py-2 text-right font-medium">Clicks</th>
+              <th className="px-4 py-2 text-right font-medium">CTR</th>
+              <th className="px-4 py-2 text-right font-medium">Avg. position</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {data.map((k) => (
-              <tr key={k.id}>
-                <td className="px-4 py-3">
-                  {k.phrase}
-                  {k.is_branded && <span className="ml-1.5 text-xs text-muted-foreground">(branded)</span>}
-                </td>
-                <td className="px-4 py-3 text-muted-foreground">{k.intent ?? '—'}</td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
-                  {k.search_volume ?? '—'}
+            {data.rows.map((k) => (
+              <tr key={`${k.query}-${k.page}`}>
+                <td className="px-4 py-3">{k.query}</td>
+                <td className="max-w-[280px] truncate px-4 py-3 text-muted-foreground">{k.page}</td>
+                <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>
+                  {k.impressions.toLocaleString()}
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
-                  {k.difficulty ?? '—'}
+                  {k.clicks.toLocaleString()}
+                </td>
+                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
+                  {k.ctr != null ? `${(Number(k.ctr) * 100).toFixed(1)}%` : '—'}
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>
                   {k.position ?? '—'}
-                </td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>
-                  {k.est_value_monthly ? formatMoney(k.est_value_monthly) : '—'}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+      )}
+    </Card>
+  );
+}
+
+// Genuine coverage gaps: catalog_items x locations, crossed into
+// market_targets server-side and marked covered/uncovered by
+// workers/seo/coverage.py matching real crawled pages — nothing invented,
+// no estimated traffic or search volume, just the gap itself. Ranked by how
+// many other services are missing in the same area, same as the signals
+// coverage.py writes into the Command Center.
+function CoverageTab({ onBuildGap }: { onBuildGap: (serviceName: string, locationName: string) => void }) {
+  const { data, isLoading, error } = useApi<CoverageGap[]>('/seo/coverage-gaps');
+  const role = useRole();
+  const canBuild = atLeast(role, 'staff');
+
+  return (
+    <Card className="overflow-x-auto p-0">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <Target size={16} className="text-muted-foreground" />
+        <p className="text-sm font-semibold">Coverage gaps</p>
+      </div>
+      {isLoading ? (
+        <p className="p-4 text-sm text-muted-foreground">Loading…</p>
+      ) : error ? (
+        <p className="p-4 text-sm text-destructive">Could not load coverage gaps.</p>
+      ) : !data || data.length === 0 ? (
+        <p className="p-4 text-sm text-muted-foreground">
+          No gaps found — either every service has a page for every place you serve, or your catalog and
+          service area aren't set up yet in Settings. A freshly-added service or location also needs a
+          crawl to run before its coverage is known.
+        </p>
+      ) : (
+        <ul className="divide-y divide-border">
+          {data.map((g) => (
+            <li key={`${g.catalog_item_id}-${g.location_id}`} className="flex items-center justify-between gap-3 p-4">
+              <p className="min-w-0 text-sm">
+                You offer <span className="font-medium">{g.service_name}</span> and serve{' '}
+                <span className="font-medium">{g.location_name}</span>, but have no page targeting it.
+                {g.uncovered_in_location > 1 && (
+                  <span className="text-muted-foreground"> ({g.uncovered_in_location} services missing here.)</span>
+                )}
+              </p>
+              {canBuild && (
+                <Button variant="ai" className="shrink-0" onClick={() => onBuildGap(g.service_name, g.location_name)}>
+                  Build this page
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </Card>
   );
@@ -319,7 +417,8 @@ function CompetitorsTab({ siteId }: { siteId: string }) {
         <p className="p-4 text-sm text-destructive">Could not load competitors.</p>
       ) : !data || data.length === 0 ? (
         <p className="p-4 text-sm text-muted-foreground">
-          No competitors tracked yet — this needs competitor tracking connected for this site.
+          Venturelyx doesn't have a data source for competitor rankings connected yet, so this tab
+          intentionally shows nothing rather than a guess. It'll populate once one is.
         </p>
       ) : (
         <table className="w-full min-w-[520px] text-left text-sm">

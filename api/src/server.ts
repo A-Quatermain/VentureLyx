@@ -5,6 +5,7 @@ import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 
 import contextPlugin from './plugins/context.js';
@@ -14,6 +15,9 @@ import operateRoutes from './routes/operate.js';
 import aiRoutes from './routes/ai.js';
 import reviewsRoutes from './routes/reviews.js';
 import settingsRoutes from './routes/settings.js';
+import locationsRoutes from './routes/locations.js';
+import integrationsRoutes from './routes/integrations.js';
+import growRoutes from './routes/grow.js';
 import { healthy, shutdown } from './lib/db.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -49,6 +53,9 @@ await app.register(cors, {
   credentials: true,
 });
 await app.register(cookie, { secret: process.env.SESSION_SECRET! });
+// Own byte cap, separate from the global JSON bodyLimit above — a contact
+// list of a few thousand rows comfortably fits in 15MB as CSV or XLSX.
+await app.register(multipart, { limits: { fileSize: 15 * 1024 * 1024, files: 1 } });
 await app.register(rateLimit, {
   max: 300,
   timeWindow: '1 minute',
@@ -75,6 +82,9 @@ await app.register(operateRoutes, { prefix: '/v1' });
 await app.register(aiRoutes, { prefix: '/v1' });
 await app.register(reviewsRoutes, { prefix: '/v1' });
 await app.register(settingsRoutes, { prefix: '/v1' });
+await app.register(locationsRoutes, { prefix: '/v1' });
+await app.register(integrationsRoutes, { prefix: '/v1' });
+await app.register(growRoutes, { prefix: '/v1' });
 
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, async () => {

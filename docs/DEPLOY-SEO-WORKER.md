@@ -127,16 +127,42 @@ back to `queued` after 30 minutes.
 **The crawler never runs as root** — it parses hostile HTML from the open
 internet. Container user is uid 10001.
 
+**`render: true` uses headless Chromium (Playwright), launched with
+`--no-sandbox`.** That's the standard mitigation for exactly this container
+shape — already non-root, already isolated by the container boundary, and only
+ever fed URLs from an operator-curated `seo_sites` list, not arbitrary
+user-supplied ones — so container-level isolation substitutes for Chromium's
+own sandbox rather than removing sandboxing outright. The image now bundles
+Chromium (`playwright install --with-deps chromium` at build time) and the
+worker container runs with `mem_limit: 2g` / `shm_size: 512m` (up from `1g` /
+the implicit 64m default) to give a live JS bundle's rendering room without
+risking an OOM kill mid-crawl.
+
 ## Known limits
 
-- **`render: true` is not yet implemented.** GeoDyn and Atlético are React sites
-  and will crawl as near-empty shells until Playwright is added. Their seeded
-  config is correct; the capability is not there yet. nppools is static and
-  crawls fully today.
+- **Rendering (`render: true`) is Chromium-only, desktop-viewport-only.**
+  GeoDyn and Atlético (React/Vite marketing sites) render correctly now; there
+  is no Firefox/WebKit engine, no mobile-viewport emulation (a mobile-first-
+  indexing parity gap, not solved here), and no auth/cookie-consent-banner
+  handling. Rendering waits for `networkidle` (no in-flight requests for
+  500ms) so it captures content a JS bundle only fetches after its first
+  paint, bounded by the site's own `timeout_s` — a page with genuinely
+  persistent background traffic (a websocket, recurring polling) fails that
+  one page with a timeout error rather than hanging the whole crawl. Render-mode
+  concurrency is capped at 2 concurrent tabs regardless of the site's
+  configured `concurrency`, so a render crawl takes meaningfully longer per
+  page than a static one. `render` itself stays ops/seed-script-controlled
+  (`scripts/seed_sites.py`) — there's no UI or API toggle for it. nppools and
+  every other `render: false` site are unaffected — they still crawl via
+  plain httpx exactly as before.
 - Non-crawled link targets are HEAD-checked to a cap of 400 per crawl.
 - Rank tracking tables exist but nothing populates them yet — that needs a SERP
   data source, which is a cost decision, not a code one.
-- `seo_gsc_daily` / `seo_ga4_daily` await Google OAuth in the credential vault.
+- `seo_gsc_daily` is now populated once an org connects Google Search Console —
+  see `docs/DEPLOY-GSC.md`. `seo_ga4_daily` still awaits GA4 OAuth.
+- Competitor tracking (`seo_competitors` / `seo_competitor_rankings`) has no
+  data source connected either — the Competitors tab says so rather than
+  showing anything.
 
 ## Parallel running
 

@@ -23,8 +23,10 @@ from psycopg.rows import dict_row
 SITES = [
     dict(slug="nppools", org="N&P Pools", vertical="pool_service",
          key="nppools", name="N&P Pools", url="https://nppools.com",
-         enabled=True, render=False, max_pages=200,
-         notes="Static marketing site. Primary ScaleSEO reference account."),
+         enabled=True, render=True, max_pages=200,
+         notes="Migrated to a client-rendered SPA (emergent.sh) after this was "
+               "seeded static — render flipped true to match. Primary ScaleSEO "
+               "reference account."),
 
     dict(slug="geodyn", org="GeoDyn Parking", vertical="parking_technology",
          key="geodynparking", name="GeoDyn Parking", url="https://geodynparking.com",

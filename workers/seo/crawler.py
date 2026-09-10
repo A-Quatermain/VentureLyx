@@ -255,6 +255,94 @@ def _blocked(url: str, rules: list[str], excludes: list[str]) -> bool:
     return any(path.startswith(r) for r in rules) or any(path.startswith(e) for e in excludes)
 
 
+async def _fetch_httpx(
+    client: httpx.AsyncClient, url: str, base: str, depth: int,
+) -> tuple[PageResult, list[LinkResult]]:
+    t0 = time.perf_counter()
+    try:
+        r = await client.get(url)
+    except Exception as e:
+        return PageResult(url=url, depth=depth, error=str(e)[:300]), []
+    elapsed = int((time.perf_counter() - t0) * 1000)
+
+    ctype = r.headers.get("content-type", "")
+    if "html" not in ctype.lower():
+        return PageResult(url=url, status_code=r.status_code, depth=depth, response_ms=elapsed), []
+
+    page, links = parse_page(str(r.url), r.text, base, depth)
+    page.status_code = r.status_code
+    page.response_ms = elapsed
+    page.redirect_hops = len(r.history)
+    if r.history:
+        page.redirect_to = str(r.url)
+        page.url = url  # record the requested URL, not the destination
+    return page, links
+
+
+# Render-path only (SiteConfig.render). Blocking these resource types cuts
+# memory/bandwidth for a live JS bundle without touching content extraction —
+# stylesheets and scripts stay on since some frameworks gate content visibility
+# behind CSS, and script execution is the entire point of rendering.
+BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+
+
+async def _route_filter(route):
+    if route.request.resource_type in BLOCKED_RESOURCE_TYPES:
+        await route.abort()
+    else:
+        await route.continue_()
+
+
+async def _fetch_rendered(
+    context, url: str, timeout_s: int, base: str, depth: int,
+) -> tuple[PageResult, list[LinkResult]]:
+    t0 = time.perf_counter()
+    page = await context.new_page()
+    try:
+        await page.route("**/*", _route_filter)
+        try:
+            # networkidle (no in-flight requests for 500ms) rather than a
+            # fixed settle after domcontentloaded — waits for the actual JS
+            # bundle to finish fetching data instead of guessing a delay. A
+            # site with truly persistent background traffic (a websocket,
+            # recurring analytics polling) can make this never resolve; the
+            # existing timeout_s still bounds it, so that page fails with a
+            # per-page error rather than hanging the whole crawl.
+            resp = await page.goto(url, wait_until="networkidle", timeout=timeout_s * 1000)
+        except Exception as e:
+            return PageResult(url=url, depth=depth, error=str(e)[:300]), []
+        if resp is None:
+            return PageResult(url=url, depth=depth, error="no response from goto"), []
+
+        elapsed = int((time.perf_counter() - t0) * 1000)
+
+        ctype = resp.headers.get("content-type", "")
+        if "html" not in ctype.lower():
+            return PageResult(url=url, status_code=resp.status, depth=depth, response_ms=elapsed), []
+
+        html = await page.content()
+        final_url = resp.url
+
+        # Playwright has no httpx-style .history list; walk the redirect chain
+        # backwards via redirected_from to get the same hop-count semantics.
+        hops = 0
+        req = resp.request
+        while req.redirected_from is not None:
+            req = req.redirected_from
+            hops += 1
+
+        result, links = parse_page(final_url, html, base, depth)
+        result.status_code = resp.status
+        result.response_ms = elapsed
+        result.redirect_hops = hops
+        if hops:
+            result.redirect_to = final_url
+            result.url = url  # record the requested URL, not the destination
+        return result, links
+    finally:
+        await page.close()
+
+
 async def crawl_site(cfg: SiteConfig, on_progress=None) -> CrawlOutput:
     out = CrawlOutput(rendered=cfg.render)
     base = cfg.url.rstrip("/")
@@ -263,44 +351,52 @@ async def crawl_site(cfg: SiteConfig, on_progress=None) -> CrawlOutput:
     headers = {"User-Agent": cfg.user_agent, "Accept": "text/html,application/xhtml+xml"}
     limits = httpx.Limits(max_connections=cfg.concurrency, max_keepalive_connections=cfg.concurrency)
 
-    async with httpx.AsyncClient(
-        headers=headers, timeout=cfg.timeout_s, follow_redirects=True,
-        limits=limits, verify=True,
-    ) as client:
+    # Playwright only spins up for render=True sites — kept out of the import
+    # graph and process footprint of every other crawl. One Browser + one
+    # BrowserContext live for the whole crawl (cheap, and gives a real SPA
+    # cookie/localStorage continuity across pages it might expect); only the
+    # Page is per-URL. render_sem is deliberately capped independently of
+    # cfg.concurrency: a live React/Vite tab can run 150-300MB+ under load,
+    # so 2 concurrent tabs is the ceiling that keeps the worker container
+    # inside its memory budget (see infra/docker-compose.workers.yml).
+    pw = browser = browser_ctx = render_sem = None
+    if cfg.render:
+        from playwright.async_api import async_playwright
+        pw = await async_playwright().start()
+        browser = await pw.chromium.launch(
+            headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        browser_ctx = await browser.new_context(
+            user_agent=cfg.user_agent, viewport={"width": 1366, "height": 900},
+        )
+        render_sem = asyncio.Semaphore(max(1, min(cfg.concurrency, 2)))
 
-        robots = await _fetch_robots(client, base) if cfg.respect_robots else []
-        queue: asyncio.Queue = asyncio.Queue()
-        await queue.put((start, 0))
-        seen: set[str] = {_dedupe_key(start)}
-        sem = asyncio.Semaphore(cfg.concurrency)
-        done = 0
+    try:
+        async with httpx.AsyncClient(
+            headers=headers, timeout=cfg.timeout_s, follow_redirects=True,
+            limits=limits, verify=True,
+        ) as client:
 
-        async def fetch_one(url: str, depth: int):
-            nonlocal done
-            async with sem:
-                if cfg.delay_ms:
-                    await asyncio.sleep(cfg.delay_ms / 1000)
-                t0 = time.perf_counter()
-                try:
-                    r = await client.get(url)
-                except Exception as e:
-                    out.pages.append(PageResult(url=url, depth=depth, error=str(e)[:300]))
-                    return
-                elapsed = int((time.perf_counter() - t0) * 1000)
+            robots = await _fetch_robots(client, base) if cfg.respect_robots else []
+            queue: asyncio.Queue = asyncio.Queue()
+            await queue.put((start, 0))
+            seen: set[str] = {_dedupe_key(start)}
+            sem = asyncio.Semaphore(cfg.concurrency)
+            done = 0
 
-                ctype = r.headers.get("content-type", "")
-                if "html" not in ctype.lower():
-                    out.pages.append(PageResult(url=url, status_code=r.status_code,
-                                                depth=depth, response_ms=elapsed))
-                    return
+            async def fetch_one(url: str, depth: int):
+                nonlocal done
+                if cfg.render:
+                    async with render_sem:
+                        if cfg.delay_ms:
+                            await asyncio.sleep(cfg.delay_ms / 1000)
+                        page, links = await _fetch_rendered(browser_ctx, url, cfg.timeout_s, base, depth)
+                else:
+                    async with sem:
+                        if cfg.delay_ms:
+                            await asyncio.sleep(cfg.delay_ms / 1000)
+                        page, links = await _fetch_httpx(client, url, base, depth)
 
-                page, links = parse_page(str(r.url), r.text, base, depth)
-                page.status_code = r.status_code
-                page.response_ms = elapsed
-                page.redirect_hops = len(r.history)
-                if r.history:
-                    page.redirect_to = str(r.url)
-                    page.url = url  # record the requested URL, not the destination
                 out.pages.append(page)
                 out.links.extend(links)
 
@@ -321,35 +417,46 @@ async def crawl_site(cfg: SiteConfig, on_progress=None) -> CrawlOutput:
                         seen.add(key)
                         await queue.put((l.to_url, depth + 1))
 
-        while not queue.empty():
-            batch = []
-            while not queue.empty() and len(batch) < cfg.concurrency * 2:
-                url, depth = await queue.get()
-                batch.append(fetch_one(url, depth))
-            await asyncio.gather(*batch, return_exceptions=True)
+            while not queue.empty():
+                batch = []
+                while not queue.empty() and len(batch) < cfg.concurrency * 2:
+                    url, depth = await queue.get()
+                    batch.append(fetch_one(url, depth))
+                await asyncio.gather(*batch, return_exceptions=True)
 
-        # Resolve link targets we never crawled (external + excluded internal),
-        # so broken-link detection covers the whole graph, not just the crawl set.
-        crawled = {p.url: p.status_code for p in out.pages}
-        targets = {l.to_url for l in out.links if l.to_url not in crawled}
-        checked: dict[str, int | None] = {}
+            # Resolve link targets we never crawled (external + excluded internal),
+            # so broken-link detection covers the whole graph, not just the crawl
+            # set. Status-code only, so this stays httpx even in render mode.
+            crawled = {p.url: p.status_code for p in out.pages}
+            targets = {l.to_url for l in out.links if l.to_url not in crawled}
+            checked: dict[str, int | None] = {}
 
-        async def head_one(u: str):
-            async with sem:
-                try:
-                    r = await client.head(u, timeout=10)
-                    if r.status_code in (405, 501):  # HEAD unsupported
-                        r = await client.get(u, timeout=10)
-                    checked[u] = r.status_code
-                except Exception:
-                    checked[u] = None
+            async def head_one(u: str):
+                async with sem:
+                    try:
+                        r = await client.head(u, timeout=10)
+                        if r.status_code in (405, 501):  # HEAD unsupported
+                            r = await client.get(u, timeout=10)
+                        checked[u] = r.status_code
+                    except Exception:
+                        checked[u] = None
 
-        targets = list(targets)[:400]  # bound the tail; enough to catch real rot
-        for i in range(0, len(targets), cfg.concurrency * 2):
-            await asyncio.gather(*(head_one(u) for u in targets[i:i + cfg.concurrency * 2]),
-                                 return_exceptions=True)
+            targets = list(targets)[:400]  # bound the tail; enough to catch real rot
+            for i in range(0, len(targets), cfg.concurrency * 2):
+                await asyncio.gather(*(head_one(u) for u in targets[i:i + cfg.concurrency * 2]),
+                                     return_exceptions=True)
 
-        for l in out.links:
-            l.status_code = crawled.get(l.to_url, checked.get(l.to_url))
+            for l in out.links:
+                l.status_code = crawled.get(l.to_url, checked.get(l.to_url))
+    finally:
+        # A crawl that raises mid-way must not leak the browser — worker.py
+        # is one long-lived process handling job after job, so an unclosed
+        # Chromium here outlives this job and eats memory for every job after.
+        if browser_ctx is not None:
+            await browser_ctx.close()
+        if browser is not None:
+            await browser.close()
+        if pw is not None:
+            await pw.stop()
 
     return out

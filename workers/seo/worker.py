@@ -19,7 +19,9 @@ import traceback
 
 import psycopg
 
+import coverage
 import db
+import gsc
 from crawler import SiteConfig, crawl_site
 from scoring import compute_scores, detect_issues, signal_rows
 
@@ -29,7 +31,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("vx.worker")
 
-KINDS = ["seo.crawl"]
+KINDS = ["seo.crawl", "seo.gsc_sync"]
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "10"))
 _stop = False
 
@@ -96,9 +98,15 @@ def persist(conn, org_id: str, site: dict, out, issues, scores, job_id: int, tri
                 link_rows,
             )
 
+        # Recomputes market_targets coverage from this crawl's pages and
+        # returns signal rows for the top gaps — see coverage.py. Runs after
+        # seo_pages/links so it's working from what this crawl actually
+        # found, still inside the same atomic transaction as the rest.
+        gap_rows = coverage.sync(cur, out.pages)
+
         # Signals first, so issues can carry signal_id.
         sig_ids: dict[str, int] = {}
-        for row in signal_rows(issues, str(site_id), site["name"]):
+        for row in signal_rows(issues, str(site_id), site["name"]) + gap_rows:
             cur.execute(
                 """INSERT INTO signals (org_id, module, signal_type, severity, entity_type,
                                         entity_id, summary, detail, dedupe_key)
@@ -163,6 +171,13 @@ def persist(conn, org_id: str, site: dict, out, issues, scores, job_id: int, tri
 
 
 def run_job(conn, job: dict) -> None:
+    if job["kind"] == "seo.gsc_sync":
+        gsc.run(conn, job)
+        return
+    run_crawl_job(conn, job)
+
+
+def run_crawl_job(conn, job: dict) -> None:
     org_id = str(job["org_id"])
     payload = job["payload"] or {}
     site_id = payload.get("site_id")

@@ -2,16 +2,19 @@
 
 import { useEffect, useState } from 'react';
 import { mutate } from 'swr';
-import { Cpu, Key, ChartBar, CaretDown } from '@phosphor-icons/react';
+import { Cpu, Key, ChartBar, CaretDown, MapPin, MagnifyingGlass } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
+import { API_BASE } from '@/lib/config';
 import type {
   OrgProfile, AISettingsResponse, AIProviderPreference, AIFeature, AIModelOverride, AIProvider,
+  ServiceArea, GscStatus,
 } from '@/lib/types';
 import { PageHeader } from '@/components/Primitives';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { BusinessProfileForm, type BusinessProfileValues } from '@/components/BusinessProfileForm';
+import { ServiceAreaForm, BLANK_CITY, realCities, type ServiceAreaValues } from '@/components/ServiceAreaForm';
 
 const ORG_KEY = '/orgs/current';
 const AI_SETTINGS_KEY = '/settings/ai';
@@ -23,6 +26,7 @@ const FEATURE_LABEL: Record<AIFeature, string> = {
   next_best_action: 'Next best action',
   metric_explanation: 'Metric explanations',
   business_blueprint: 'Business blueprint',
+  sequence_writing: 'Grow sequence writing',
 };
 
 export default function SettingsPage() {
@@ -38,6 +42,8 @@ export default function SettingsPage() {
       />
       <div className="flex max-w-3xl flex-col gap-6">
         <BusinessCard canEdit={canEdit} />
+        <ServiceAreaCard canEdit={canEdit} />
+        <GscCard canEdit={canEdit} />
         <AICard canEdit={canEdit} />
       </div>
     </div>
@@ -104,6 +110,171 @@ function BusinessCard({ canEdit }: { canEdit: boolean }) {
             </div>
           )}
         </>
+      )}
+    </Card>
+  );
+}
+
+const SERVICE_AREA_KEY = '/service-area';
+
+function ServiceAreaCard({ canEdit }: { canEdit: boolean }) {
+  const { data, isLoading } = useApi<ServiceArea>(SERVICE_AREA_KEY);
+  const [draft, setDraft] = useState<ServiceAreaValues | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!data) return;
+    const cities = data.locations
+      .filter((l) => l.radius_miles == null)
+      .map((l) => ({ name: l.name, region: l.region ?? '', isPrimary: l.is_primary }));
+    setDraft({
+      mode: data.service_area_mode,
+      cities: cities.length > 0 ? cities : [{ ...BLANK_CITY }],
+      address_line1: data.address_line1 ?? '',
+      address_line2: data.address_line2 ?? '',
+      city: data.city ?? '',
+      region: data.region ?? '',
+      postal_code: data.postal_code ?? '',
+      radiusMiles: data.service_radius_miles ?? '',
+    });
+  }, [data]);
+
+  async function onSave() {
+    if (!draft) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const body =
+        draft.mode === 'cities'
+          ? {
+              mode: 'cities' as const,
+              cities: realCities(draft.cities).map((c) => ({
+                name: c.name, region: c.region.trim() || null, isPrimary: c.isPrimary,
+              })),
+            }
+          : {
+              mode: 'radius' as const,
+              address_line1: draft.address_line1,
+              address_line2: draft.address_line2 || null,
+              city: draft.city,
+              region: draft.region || null,
+              postal_code: draft.postal_code || null,
+              radiusMiles: Number(draft.radiusMiles),
+            };
+      await apiFetch(SERVICE_AREA_KEY, { method: 'PUT', body: JSON.stringify(body) });
+      await mutate(SERVICE_AREA_KEY);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not save your service area.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card className="p-6">
+      <div className="mb-1 flex items-center gap-2">
+        <MapPin size={18} className="text-primary" />
+        <p className="font-display text-lg font-bold tracking-tight">Service area</p>
+      </div>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Where you work. This drives the coverage-gap report in ScaleSEO — every service you offer is
+        checked against every place you serve.
+      </p>
+      {isLoading || !draft ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : (
+        <>
+          <fieldset disabled={!canEdit} className="contents">
+            <ServiceAreaForm values={draft} onChange={setDraft} />
+          </fieldset>
+          {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+          {canEdit && (
+            <div className="mt-4 flex items-center gap-3">
+              <Button onClick={onSave} disabled={saving}>
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+              {saved && <span className="text-sm text-success">Saved.</span>}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
+const GSC_STATUS_KEY = '/integrations/gsc/status';
+
+function GscCard({ canEdit }: { canEdit: boolean }) {
+  const { data, isLoading } = useApi<GscStatus>(GSC_STATUS_KEY);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // The OAuth flow ends in a full-page redirect back to this route with
+  // ?gsc=connected or ?gsc=error&reason=... — read once on mount, then strip
+  // it from the URL so a refresh doesn't re-show a stale banner.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const gsc = params.get('gsc');
+    if (!gsc) return;
+    if (gsc === 'connected') {
+      setNotice('Google Search Console connected. Data will appear within a few minutes.');
+      mutate(GSC_STATUS_KEY);
+    } else if (gsc === 'error') {
+      setNotice(`Could not connect Google Search Console (${params.get('reason') ?? 'unknown error'}).`);
+    }
+    window.history.replaceState(null, '', window.location.pathname);
+  }, []);
+
+  async function onDisconnect() {
+    setBusy(true);
+    try {
+      await apiFetch('/integrations/gsc/disconnect', { method: 'POST' });
+      await mutate(GSC_STATUS_KEY);
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : 'Could not disconnect.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="p-6">
+      <div className="mb-1 flex items-center gap-2">
+        <MagnifyingGlass size={18} className="text-primary" />
+        <p className="font-display text-lg font-bold tracking-tight">Google Search Console</p>
+      </div>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Powers the Keywords tab in ScaleSEO with real query-level performance — no connection, no
+        keyword data.
+      </p>
+      {notice && <p className="mb-3 text-sm text-muted-foreground">{notice}</p>}
+      {isLoading || !data ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : data.connected ? (
+        <div className="flex items-center justify-between rounded-lg border border-border p-3">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium">{data.propertyUrl}</p>
+            <p className="text-xs text-muted-foreground">
+              {data.lastSyncAt ? `Last synced ${new Date(data.lastSyncAt).toLocaleString()}` : 'Not synced yet'}
+              {data.lastError ? ` · ${data.lastError}` : ''}
+            </p>
+          </div>
+          {canEdit && (
+            <Button variant="ghost" onClick={onDisconnect} disabled={busy} className="shrink-0 text-destructive">
+              Disconnect
+            </Button>
+          )}
+        </div>
+      ) : (
+        canEdit && (
+          <Button onClick={() => { window.location.href = `${API_BASE}/integrations/gsc/oauth/start`; }}>
+            Connect Google Search Console
+          </Button>
+        )
       )}
     </Card>
   );

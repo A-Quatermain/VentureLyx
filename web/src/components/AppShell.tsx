@@ -24,7 +24,7 @@ const MODULES = [
   { href: '/source', label: 'Source', icon: Package, locked: true },
   { href: '/operate', label: 'Operate', icon: Kanban, locked: false },
   { href: '/scaleseo', label: 'ScaleSEO', icon: MagnifyingGlass, locked: false },
-  { href: '/grow', label: 'Grow', icon: TrendUp, locked: true },
+  { href: '/grow', label: 'Grow', icon: TrendUp, locked: false },
   { href: '/ai-team', label: 'AI Team', icon: Robot, locked: false },
 ] as const;
 

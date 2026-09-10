@@ -65,8 +65,6 @@ queries carry no `org_id` filter and must not add one.
 ## Backlog
 
 - Off-box backups (dumps currently share a disk with the database)
-- Playwright rendering — `render: true` is set but unimplemented; React sites
-  crawl as near-empty shells
 - Rank tracking: tables exist, no data source yet
 - Google Search Console / GA4 import (awaits OAuth in the credential vault)
 - Auto-fix flow: `seo_issues.auto_fixable` is set but nothing acts on it

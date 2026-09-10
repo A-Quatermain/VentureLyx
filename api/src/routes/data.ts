@@ -7,6 +7,8 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { audit } from '../lib/auth.js';
+import { HttpError } from '../plugins/context.js';
 
 export default async function dataRoutes(app: FastifyInstance) {
 
@@ -185,6 +187,53 @@ export default async function dataRoutes(app: FastifyInstance) {
     );
   });
 
+  // ---- ScaleSEO: single site config (crawler settings, not health) ------
+  app.get('/seo/sites/:siteId', async (req) => {
+    req.requireRole('viewer');
+    const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
+    return req.db(async (q) => {
+      const site = await q.one(
+        `SELECT id, key, name, url, enabled, render, max_pages, concurrency,
+                delay_ms, timeout_s, respect_robots, crawl_schedule
+           FROM seo_sites WHERE id = $1`,
+        [siteId],
+      );
+      if (!site) throw new HttpError(404, 'Site not found', 'not_found');
+      return site;
+    });
+  });
+
+  // ---- ScaleSEO: toggle rendering for a site -----------------------------
+  // `render` decides whether workers/seo/crawler.py fetches this site with a
+  // headless browser (client-rendered SPAs) or plain HTTP (static sites) —
+  // previously only settable by re-running scripts/seed_sites.py by hand
+  // (see nppools.com, which migrated to a client-rendered platform after
+  // being seeded static). Admin-gated like other technical/ops toggles
+  // (PATCH /orgs/current, PUT /service-area), not a day-to-day edit.
+  const seoSiteUpdateInput = z.object({ render: z.boolean() });
+
+  app.patch('/seo/sites/:siteId', async (req) => {
+    req.requireRole('admin');
+    const sess = req.requireAuth();
+    const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
+    const body = seoSiteUpdateInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const site = await q.one(
+        `UPDATE seo_sites SET render = $1 WHERE id = $2
+         RETURNING id, key, name, url, enabled, render, max_pages, concurrency,
+                   delay_ms, timeout_s, respect_robots, crawl_schedule`,
+        [body.render, siteId],
+      );
+      if (!site) throw new HttpError(404, 'Site not found', 'not_found');
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'seo.site.update',
+        entityType: 'seo_sites', entityId: siteId, ip: req.ip, diff: body,
+      });
+      return site;
+    });
+  });
+
   // ---- ScaleSEO: health detail -----------------------------------------
   app.get('/seo/health/:siteId', async (req) => {
     req.requireRole('viewer');
@@ -304,6 +353,78 @@ export default async function dataRoutes(app: FastifyInstance) {
         [siteId],
       ),
     );
+  });
+
+  // ---- ScaleSEO: coverage gaps ----------------------------------------------
+  // catalog_items x locations, crossed into market_targets whenever either
+  // side changes (see lib/marketTargets.ts). "Covered" isn't guessed here —
+  // workers/seo/coverage.py sets market_targets.status = 'published' after
+  // each crawl, and only when a crawled page's URL or title actually
+  // contains both the service name and the location name. A gap is anything
+  // still short of that (or, defensively, a combination that predates the
+  // crossing and has no row at all), ranked by how many other services are
+  // missing in the same area — a location missing several services is the
+  // more urgent pattern to act on, which is also how the top gaps get
+  // chosen for the signals workers/seo/coverage.py writes.
+  app.get('/seo/coverage-gaps', async (req) => {
+    req.requireRole('viewer');
+    return req.db((q) =>
+      q.rows(
+        `SELECT catalog_item_id, service_name, location_id, location_name,
+                market_target_id, status,
+                count(*) OVER (PARTITION BY location_id)::int AS uncovered_in_location
+           FROM (
+                SELECT ci.id AS catalog_item_id, ci.name AS service_name,
+                       l.id AS location_id, l.name AS location_name,
+                       mt.id AS market_target_id, mt.status
+                  FROM catalog_items ci
+                  JOIN locations l ON l.org_id = ci.org_id AND l.is_active
+             LEFT JOIN market_targets mt ON mt.catalog_item_id = ci.id AND mt.location_id = l.id
+                 WHERE ci.is_active AND ci.kind = 'service'
+                   AND (mt.id IS NULL OR (mt.is_served AND mt.status <> 'published'))
+              ) gaps
+          ORDER BY uncovered_in_location DESC, location_name, service_name`,
+      ),
+    );
+  });
+
+  // ---- ScaleSEO: Google Search Console queries ------------------------------
+  // Real query-level performance, straight from seo_gsc_daily (daily.sync
+  // populates it once Google Search Console is connected — see
+  // routes/integrations.ts). No GSC connection means no data to show, and
+  // this deliberately returns an empty/disconnected shape rather than
+  // anything resembling ranking numbers — the frontend's job is to show a
+  // connect prompt, never to fill the gap with plausible-looking numbers.
+  app.get('/seo/gsc-queries/:siteId', async (req) => {
+    req.requireRole('viewer');
+    const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
+    const { sort } = z.object({ sort: z.enum(['impressions', 'position']).default('impressions') })
+      .parse(req.query);
+
+    return req.db(async (q) => {
+      const integration = await q.one<{ status: string }>(
+        `SELECT status FROM integrations
+          WHERE org_id = app.current_org() AND provider = 'google_search_console'`,
+      );
+      if (integration?.status !== 'connected') {
+        return { connected: false, rows: [] };
+      }
+
+      const order = sort === 'position' ? 'position ASC NULLS LAST' : 'impressions DESC';
+      const rows = await q.rows(
+        `SELECT query, page, sum(clicks)::int AS clicks, sum(impressions)::int AS impressions,
+                CASE WHEN sum(impressions) > 0
+                     THEN round(sum(clicks)::numeric / sum(impressions), 4) ELSE NULL END AS ctr,
+                round(avg(position), 1) AS position
+           FROM seo_gsc_daily
+          WHERE site_id = $1 AND date >= current_date - 28 AND query <> ''
+          GROUP BY query, page
+          ORDER BY ${order}
+          LIMIT 200`,
+        [siteId],
+      );
+      return { connected: true, rows };
+    });
   });
 
   // ---- ScaleSEO: competitors -----------------------------------------------

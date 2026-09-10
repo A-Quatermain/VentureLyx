@@ -12,6 +12,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../lib/auth.js';
 import type { Querier } from '../lib/db.js';
+import { syncMarketTargets } from '../lib/marketTargets.js';
 import { slugify } from '../lib/slug.js';
 import { HttpError } from '../plugins/context.js';
 
@@ -429,6 +430,10 @@ export default async function operateRoutes(app: FastifyInstance) {
           body.duration_min ?? null, body.is_active, body.priority,
         ],
       );
+      // A new service immediately crosses with every active location — the
+      // Coverage tab should show it (as a gap, until a page is built) the
+      // moment it's added, not only after the next service-area edit.
+      await syncMarketTargets(q);
       await audit(q, {
         orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'operate.catalog.create',
         entityType: 'catalog_items', entityId: (item as { id: string }).id, ip: req.ip,
@@ -472,6 +477,8 @@ export default async function operateRoutes(app: FastifyInstance) {
         values,
       );
       if (!item) throw new HttpError(404, 'Catalog item not found', 'not_found');
+      // Toggling is_active (or kind) changes what counts as a coverage gap.
+      await syncMarketTargets(q);
       await audit(q, {
         orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'operate.catalog.update',
         entityType: 'catalog_items', entityId: id, ip: req.ip, diff: body,

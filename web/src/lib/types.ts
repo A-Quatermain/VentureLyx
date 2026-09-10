@@ -19,7 +19,7 @@ export interface OrgProfile {
 
 export type AIFeature =
   | 'seo_recommendations' | 'page_generation' | 'review_response'
-  | 'next_best_action' | 'metric_explanation' | 'business_blueprint';
+  | 'next_best_action' | 'metric_explanation' | 'business_blueprint' | 'sequence_writing';
 
 export type AIProvider = 'anthropic' | 'openai';
 export type AIProviderPreference = 'auto' | AIProvider;
@@ -175,6 +175,22 @@ export interface SeoSite {
   pages: number | null;
   critical_issues: number | null;
   high_issues: number | null;
+}
+
+// ---- GET/PATCH /seo/sites/:siteId — crawler config, not health ------------
+export interface SeoSiteConfig {
+  id: string;
+  key: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+  render: boolean;
+  max_pages: number;
+  concurrency: number;
+  delay_ms: number;
+  timeout_s: number;
+  respect_robots: boolean;
+  crawl_schedule: string | null;
 }
 
 export interface SeoScoreDetail {
@@ -424,6 +440,65 @@ export interface TimelineEvent {
   occurred_at: string;
 }
 
+// ---- Service area / market_targets --------------------------------------
+export interface ServiceLocation {
+  id: string;
+  name: string;
+  slug: string;
+  region: string | null;
+  country?: string;
+  radius_miles: string | null;
+  is_primary: boolean;
+  priority: number;
+}
+
+export type ServiceAreaMode = 'cities' | 'radius';
+
+export interface ServiceArea {
+  service_area_mode: ServiceAreaMode;
+  service_radius_miles: string | null;
+  address_line1: string | null;
+  address_line2: string | null;
+  city: string | null;
+  region: string | null;
+  postal_code: string | null;
+  country: string;
+  locations: ServiceLocation[];
+}
+
+export interface CoverageGap {
+  catalog_item_id: string;
+  service_name: string;
+  location_id: string;
+  location_name: string;
+  market_target_id: string | null;
+  status: string | null;
+  uncovered_in_location: number;
+}
+
+// ---- Google Search Console ------------------------------------------------
+export interface GscStatus {
+  connected: boolean;
+  propertyUrl: string | null;
+  status: string;
+  lastSyncAt: string | null;
+  lastError: string | null;
+}
+
+export interface GscQueryRow {
+  query: string;
+  page: string;
+  clicks: number;
+  impressions: number;
+  ctr: string | null;
+  position: string | null;
+}
+
+export interface GscQueriesResponse {
+  connected: boolean;
+  rows: GscQueryRow[];
+}
+
 export type CatalogKind = 'service' | 'product' | 'package' | 'fee';
 
 export interface CatalogItem {
@@ -440,4 +515,185 @@ export interface CatalogItem {
   duration_min: number | null;
   is_active: boolean;
   priority: number;
+}
+
+// ---- Grow ----------------------------------------------------------------
+
+export type GrowCampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'done';
+
+export interface GrowCampaign {
+  id: string;
+  name: string;
+  status: GrowCampaignStatus;
+  timezone: string;
+  window_start: string;
+  window_end: string;
+  weekdays_only: boolean;
+  daily_target: number;
+  pause_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GrowSequenceStep {
+  id: string;
+  campaign_id: string;
+  step_no: number;
+  delay_days: number;
+  applies_to_rank: number | null;
+  subject_tmpl: string;
+  body_tmpl: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GrowGeneratedStep {
+  step_no: number;
+  delay_days: number;
+  applies_to_rank: number | null;
+  subject_tmpl: string;
+  body_tmpl: string;
+}
+
+export interface GrowSequenceGenerateResponse {
+  steps: GrowGeneratedStep[];
+}
+
+export type GrowAssistInstruction = 'rewrite' | 'shorten' | 'tone' | 'direct';
+
+export type GrowEnrollmentState =
+  | 'active' | 'replied' | 'bounced' | 'unsubscribed' | 'completed' | 'held' | 'failed';
+
+export interface GrowContactListItem {
+  id: string;
+  email: string;
+  first_name: string | null;
+  contact_name: string | null;
+  role: string | null;
+  contact_rank: number;
+  entity_name: string | null;
+  region: string | null;
+  city: string | null;
+  state: string | null;
+  recipient_domain: string;
+  tier: string | null;
+  is_chain: boolean;
+  domain_rank: number | null;
+  source_profile: string | null;
+  created_at: string;
+  latest_enrollment_state: GrowEnrollmentState | null;
+}
+
+export interface GrowContactPreview {
+  contact_id: string;
+  campaign_id: string;
+  campaign_name: string;
+  enrollment_id: string;
+  step_no: number;
+  to: string;
+  subject: string;
+  body: string;
+  unsubscribe_url: string;
+  refused: boolean;
+  refusal_reason: string | null;
+}
+
+export type GrowMessageStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'bounced' | 'cancelled';
+
+export interface GrowMessage {
+  id: string;
+  campaign_id: string;
+  contact_id: string;
+  mailbox_id: string;
+  step_no: number;
+  recipient_domain: string;
+  subject: string;
+  status: GrowMessageStatus;
+  scheduled_at: string;
+  sent_at: string | null;
+  attempts: number;
+  error: string | null;
+}
+
+export interface GrowMailboxCapacity {
+  id: string;
+  address: string;
+  status: string;
+  cap: number;
+  sent_today: number;
+  remaining: number;
+}
+
+export interface GrowDomainCapacity {
+  domain: string;
+  daily_cap: number;
+  sent_today: number;
+  remaining: number;
+}
+
+export interface GrowStats {
+  sent_today: number;
+  queue_depth: number;
+  contacts_enrolled: number;
+  bounce_rate: number;
+  bounce_threshold: number;
+  complaint_rate: number;
+  complaint_threshold: number;
+  mailbox_capacity: GrowMailboxCapacity[];
+  domain_capacity: GrowDomainCapacity[];
+}
+
+// ---- Grow contacts import --------------------------------------------------
+
+export interface GrowImportSlotMapping {
+  label: string;
+  rank: number | null;
+  fields: Record<string, string | null>;
+}
+
+export interface GrowImportMapping {
+  format: 'long' | 'wide';
+  shared: Record<string, string | null>;
+  slots: GrowImportSlotMapping[];
+}
+
+export interface GrowImportInspectResponse {
+  headers: string[];
+  rowCount: number;
+  sampleRows: Record<string, string>[];
+  suggestedMapping: GrowImportMapping;
+  hasSavedProfile: boolean;
+  usedSavedProfile: boolean;
+  note: string | null;
+}
+
+export interface GrowImportRejectionExample {
+  line: number;
+  email: string;
+  detail: string;
+}
+
+export interface GrowImportRejectionGroup {
+  code: string;
+  count: number;
+  examples: GrowImportRejectionExample[];
+}
+
+export interface GrowImportSummary {
+  totalRows: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  byTier: Array<{ tier: string; count: number }>;
+  uniqueDomains: number;
+  rejectionsByCode: GrowImportRejectionGroup[];
+}
+
+export interface GrowImportPreviewResponse extends GrowImportSummary {
+  note: string | null;
+}
+
+export interface GrowImportCommitResponse extends GrowImportSummary {
+  note?: string | null;
+  inserted: number;
+  alreadyExisted: number;
 }

@@ -6,11 +6,18 @@ import { apiFetch, ApiError } from '@/lib/api';
 import type { CreateOrgResponse, SeoHealthDetail } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { BusinessProfileForm, type BusinessProfileValues } from '@/components/BusinessProfileForm';
+import { ServiceAreaForm, BLANK_SERVICE_AREA, realCities, type ServiceAreaValues } from '@/components/ServiceAreaForm';
 import { VideoHero } from '@/components/VideoHero';
 
 type Step = 'form' | 'crawling' | 'done';
 
 const BLANK_PROFILE: BusinessProfileValues = { name: '', website_url: '', vertical: '', service_area: '' };
+
+// Where they work is optional at this step (matches "Skip for now" further
+// down) — filled in here if they have it handy, in Settings otherwise.
+function hasServiceAreaInput(v: ServiceAreaValues): boolean {
+  return v.mode === 'cities' ? realCities(v.cities).length > 0 : v.address_line1.trim() !== '' && v.radiusMiles.trim() !== '';
+}
 
 // Same split treatment as sign-in — video panel left (sign-in uses a still
 // photo instead), wizard content right.
@@ -43,6 +50,7 @@ function OnboardingLayout({ children, wide = false }: { children: ReactNode; wid
 export default function OnboardingPage() {
   const router = useRouter();
   const [profile, setProfile] = useState<BusinessProfileValues>(BLANK_PROFILE);
+  const [serviceArea, setServiceArea] = useState<ServiceAreaValues>(BLANK_SERVICE_AREA);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState<Step>('form');
@@ -63,6 +71,34 @@ export default function OnboardingPage() {
           service_area: profile.service_area.trim() || null,
         }),
       });
+
+      // Best-effort — the owner can always set this in Settings later, and a
+      // failure here shouldn't block onboarding from completing.
+      if (hasServiceAreaInput(serviceArea)) {
+        try {
+          const body =
+            serviceArea.mode === 'cities'
+              ? {
+                  mode: 'cities' as const,
+                  cities: realCities(serviceArea.cities).map((c) => ({
+                    name: c.name, region: c.region.trim() || null, isPrimary: c.isPrimary,
+                  })),
+                }
+              : {
+                  mode: 'radius' as const,
+                  address_line1: serviceArea.address_line1,
+                  address_line2: serviceArea.address_line2 || null,
+                  city: serviceArea.city,
+                  region: serviceArea.region || null,
+                  postal_code: serviceArea.postal_code || null,
+                  radiusMiles: Number(serviceArea.radiusMiles),
+                };
+          await apiFetch('/service-area', { method: 'PUT', body: JSON.stringify(body) });
+        } catch {
+          // Swallowed on purpose — see comment above.
+        }
+      }
+
       if (org.crawlQueued && org.siteId) {
         setSiteId(org.siteId);
         setStep('crawling');
@@ -152,6 +188,11 @@ export default function OnboardingPage() {
 
         <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-4">
           <BusinessProfileForm values={profile} onChange={setProfile} />
+
+          <div className="border-t border-border pt-4">
+            <p className="mb-3 text-sm font-medium">Where do you work? (optional)</p>
+            <ServiceAreaForm values={serviceArea} onChange={setServiceArea} />
+          </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
 
