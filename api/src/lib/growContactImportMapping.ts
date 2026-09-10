@@ -1,9 +1,10 @@
 /**
  * Venturelyx :: Grow contacts import — column mapping & wide-format unpivot.
  *
- * growContactImport.js (js + hand-written .d.ts) is the canonical row
- * validator, shared unchanged with scripts/import-contacts.js. This file is
- * everything upstream of that: turning an arbitrary uploaded file's own
+ * growContactImport.ts is the canonical row validator, shared unchanged
+ * with scripts/import-contacts.js (which imports the compiled output at
+ * api/dist/lib/growContactImport.js). This file is everything upstream of
+ * that: turning an arbitrary uploaded file's own
  * column names into the canonical record shape toContact() expects, and
  * — for a "wide" file (one row per organization, several contact-shaped
  * column groups) — unpivoting one source row into several candidate

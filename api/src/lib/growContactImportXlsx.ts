@@ -4,7 +4,7 @@
  * Turns an uploaded file's raw bytes into {headers, records} — records
  * keyed by the file's OWN column names, ready for
  * growContactImportMapping.ts's applyMapping(). CSV goes straight through
- * growContactImport.js's parser; XLSX goes through SheetJS with two
+ * growContactImport.ts's parser; XLSX goes through SheetJS with two
  * fallbacks for real-world messy spreadsheets:
  *
  *   1. Wrong sheet / banner rows: picks the sheet with the most non-empty

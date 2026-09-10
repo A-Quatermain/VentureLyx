@@ -6,15 +6,24 @@
 //
 // Loads a normalized CSV (the shape /opt/outreach/data/contacts_normalized.csv
 // is in) into grow_contacts for one org. All row parsing/validation lives in
-// api/src/lib/growContactImport.js — this file is just the CLI shell around
+// api/src/lib/growContactImport.ts — this file is just the CLI shell around
 // it (arg parsing, file reading, DB connection, report printing) so the
 // web upload endpoint (POST /v1/grow/contacts/import/*) can use the exact
 // same rules without a second implementation to drift out of sync.
 //
+// growContactImport.ts is a real TypeScript source (part of the API's own
+// build), so this script imports the *compiled* output at
+// api/dist/lib/growContactImport.js rather than the .ts file directly —
+// plain Node can't execute TypeScript. Run `npm run build` in api/ first
+// if that file doesn't exist yet; main() below checks and says so plainly
+// rather than letting the import fail with a raw module-not-found error.
+//
 // --dry-run parses and validates the file and prints the report below, but
 // never opens a database connection — the `pg` client is only imported once
 // an actual write is about to happen, so a dry run has no dependency on
-// pg being installed or the database being reachable at all.
+// the database being reachable (it still needs the API's build output,
+// same as a real run — that part is just parsing/validation code, not a
+// database connection).
 //
 // Idempotent: INSERT ... ON CONFLICT (org_id, email) DO NOTHING, so
 // re-running the same file (or a file with overlapping rows) is safe.
@@ -23,10 +32,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { INSERT_COLUMNS, processRows, summarize } from '../api/src/lib/growContactImport.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
+const GROW_CONTACT_IMPORT_PATH = path.join(ROOT, 'api', 'dist', 'lib', 'growContactImport.js');
 
 // ---- CLI args ---------------------------------------------------------------
 
@@ -177,8 +186,24 @@ async function insertContacts(org, contacts) {
 
 // ---- Main -----------------------------------------------------------------
 
+// Populated by loadGrowContactImport() before anything below uses them —
+// insertContacts() (further up) closes over these same module-level
+// bindings, since it's only ever called after that import has resolved.
+let INSERT_COLUMNS, processRows, summarize;
+
+async function loadGrowContactImport() {
+  if (!fs.existsSync(GROW_CONTACT_IMPORT_PATH)) {
+    throw new Error(
+      `${GROW_CONTACT_IMPORT_PATH} not found. Run "npm run build" in api/ first — this script uses ` +
+      "the API's own compiled row-validation logic (api/src/lib/growContactImport.ts), not a separate copy of it.",
+    );
+  }
+  ({ INSERT_COLUMNS, processRows, summarize } = await import(GROW_CONTACT_IMPORT_PATH));
+}
+
 async function main() {
   const { org, file, dryRun } = parseCliArgs();
+  await loadGrowContactImport();
   const text = fs.readFileSync(file, 'utf8');
   const { totalRows, accepted, rejections } = processRows(text, org);
   const summary = summarize({ totalRows, accepted, rejections });

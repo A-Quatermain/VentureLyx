@@ -623,7 +623,7 @@ export default async function growRoutes(app: FastifyInstance) {
   // suggested mapping) -> preview (dry run against the finalized mapping,
   // no write) -> commit (inserts, and saves the mapping as this org's
   // reusable profile). Every accepted row still goes through
-  // growContactImport.js's toContact()/processRecords() completely
+  // growContactImport.ts's toContact()/processRecords() completely
   // unchanged — the files in this section only turn an arbitrary upload
   // into the canonical record shape that function already expects, the
   // same as scripts/import-contacts.js's own known-shape CSV always was.
