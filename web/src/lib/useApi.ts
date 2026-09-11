@@ -2,7 +2,9 @@ import useSWR from 'swr';
 import { apiFetch } from './api';
 import type { MeResponse } from './types';
 
-export function useApi<T>(path: string) {
+// path: null skips the request entirely (SWR's own convention) — for a
+// fetch that's only sometimes wanted, e.g. a search box with no query yet.
+export function useApi<T>(path: string | null) {
   return useSWR<T>(path, (p: string) => apiFetch<T>(p));
 }
 

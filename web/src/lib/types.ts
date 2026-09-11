@@ -530,6 +530,13 @@ export interface GrowCampaign {
   window_end: string;
   weekdays_only: boolean;
   daily_target: number;
+  start_date: string | null;
+  end_date: string | null;
+  // Computed read-time, not stored — true once end_date has passed in the
+  // campaign's own timezone. Nothing auto-transitions `status` (no worker
+  // exists to do that); the UI uses this to show "Ended" instead of
+  // leaving a running/paused campaign looking like it's just sitting idle.
+  past_end_date: boolean;
   pause_reason: string | null;
   created_at: string;
   updated_at: string;
@@ -631,6 +638,10 @@ export interface GrowMailbox {
   last_health_at: string | null;
   created_at: string;
   updated_at: string;
+  // True if any grow_messages row references this mailbox — the UI uses
+  // this to explain up front why the address field is locked, rather than
+  // only surfacing it after a failed save.
+  has_message_history: boolean;
 }
 
 export interface GrowSmtpTestResult {
@@ -655,6 +666,22 @@ export interface GrowSendingReadiness {
   hasVerifiedDomain: boolean;
   hasActiveMailbox: boolean;
   ready: boolean;
+}
+
+// Campaign "Send test" (with merge) — distinct from GrowTestSendResponse
+// above, which is the sending-setup mailbox connectivity check. This one
+// renders a real sequence step for a real or hypothetical contact and
+// sends it through a real mailbox, but writes nothing and touches no
+// enrollment.
+export interface GrowCampaignTestSendRenderResponse {
+  subject: string;
+  body: string;
+  refused: boolean;
+  refusal_reason: string | null;
+}
+
+export interface GrowCampaignTestSendResponse extends GrowCampaignTestSendRenderResponse {
+  smtp: GrowSmtpTestResult | null;
 }
 
 export type GrowEnrollmentState =
@@ -695,6 +722,25 @@ export interface GrowContactListItem {
 export interface GrowContactIdsResponse {
   ids: string[];
   truncated: boolean;
+}
+
+export interface GrowContactCreateResponse {
+  id: string;
+  email: string;
+  first_name: string | null;
+  contact_name: string | null;
+  role: string | null;
+  contact_rank: number;
+  entity_name: string | null;
+  region: string | null;
+  city: string | null;
+  state: string | null;
+  recipient_domain: string;
+  tier: string | null;
+  is_chain: boolean;
+  domain_rank: number | null;
+  source_profile: string | null;
+  created_at: string;
 }
 
 export interface GrowBulkDeleteContactsResponse {
@@ -813,9 +859,24 @@ export interface GrowScheduleDay {
 export interface GrowScheduleProjection {
   completion_date: string | null;
   horizon_exceeded: boolean;
+  // True when the campaign's own end_date was reached with sends still
+  // remaining — a real deadline missed, distinct from horizon_exceeded
+  // (this projection's own 180-day simulation cap).
+  deadline_exceeded: boolean;
   remaining_sends: number;
   blocked_reason: 'no_mailbox_capacity' | 'no_domain_capacity' | null;
   days: GrowScheduleDay[];
+  start_date: string | null;
+  end_date: string | null;
+  // null when end_date isn't set — there's no deadline to be on/off track
+  // against. false means completion_date is null or falls after end_date.
+  on_track: boolean | null;
+  // Smallest daily_target that would finish by end_date under the same
+  // mailbox ramp and domain caps, only computed when on_track is false.
+  // Null either when there's no deadline, or when even an unlimited
+  // daily_target can't finish in time — meaning capacity itself, not the
+  // target, is the real constraint.
+  needed_daily_target: number | null;
 }
 
 export interface GrowCircuitBreaker {

@@ -20,22 +20,13 @@ import { ImapFlow } from 'imapflow';
 
 const CONNECT_TIMEOUT_MS = 10_000;
 
-export interface SmtpTestResult {
-  ok: boolean;
-  messageId: string | null;
-  response: string | null;
-  error: string | null;
-}
+type TestMailbox = {
+  smtp_host: string; smtp_port: number; username: string;
+  address: string; from_name: string; reply_to: string | null;
+};
 
-export async function sendTestEmail(
-  mailbox: {
-    smtp_host: string; smtp_port: number; username: string;
-    address: string; from_name: string; reply_to: string | null;
-  },
-  password: string,
-  to: string,
-): Promise<SmtpTestResult> {
-  const transporter = nodemailer.createTransport({
+function createTransport(mailbox: TestMailbox, password: string) {
+  return nodemailer.createTransport({
     host: mailbox.smtp_host,
     port: mailbox.smtp_port,
     secure: mailbox.smtp_port === 465,
@@ -44,6 +35,21 @@ export async function sendTestEmail(
     greetingTimeout: CONNECT_TIMEOUT_MS,
     socketTimeout: CONNECT_TIMEOUT_MS,
   });
+}
+
+export interface SmtpTestResult {
+  ok: boolean;
+  messageId: string | null;
+  response: string | null;
+  error: string | null;
+}
+
+export async function sendTestEmail(
+  mailbox: TestMailbox,
+  password: string,
+  to: string,
+): Promise<SmtpTestResult> {
+  const transporter = createTransport(mailbox, password);
   try {
     const info = await transporter.sendMail({
       from: `"${mailbox.from_name}" <${mailbox.address}>`,
@@ -51,6 +57,41 @@ export async function sendTestEmail(
       to,
       subject: 'Venturelyx Grow — test send',
       text: `This is a test message from ${mailbox.address}, sent from Venturelyx Grow's mailbox setup check.`,
+    });
+    return {
+      ok: true,
+      messageId: info.messageId || null,
+      response: typeof info.response === 'string' ? info.response : null,
+      error: null,
+    };
+  } catch (err) {
+    return { ok: false, messageId: null, response: null, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    transporter.close();
+  }
+}
+
+/** Same real SMTP path as sendTestEmail(), but for a specific sequence
+ *  step's own rendered subject/body — a test send with merge fields
+ *  resolved, sent through this mailbox for real, rather than a generic
+ *  "is this mailbox connected" probe. Caller is responsible for the
+ *  [TEST] subject prefix and for never writing a grow_messages row for
+ *  this — this function only ever talks to SMTP. */
+export async function sendRenderedTestEmail(
+  mailbox: TestMailbox,
+  password: string,
+  to: string,
+  subject: string,
+  text: string,
+): Promise<SmtpTestResult> {
+  const transporter = createTransport(mailbox, password);
+  try {
+    const info = await transporter.sendMail({
+      from: `"${mailbox.from_name}" <${mailbox.address}>`,
+      replyTo: mailbox.reply_to || undefined,
+      to,
+      subject,
+      text,
     });
     return {
       ok: true,

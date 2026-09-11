@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { mutate } from 'swr';
 import {
   CaretLeft, Copy, Check, CheckCircle, WarningCircle, XCircle, Play, Pause,
-  PaperPlaneTilt, EnvelopeSimple, Globe, Plus, X,
+  PaperPlaneTilt, EnvelopeSimple, Globe, Plus, X, PencilSimple, Trash,
 } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -213,8 +213,10 @@ function AddDomainForm({ canEdit }: { canEdit: boolean }) {
   );
 }
 
-function TestSendRow({ mailbox, canEdit }: { mailbox: GrowMailbox; canEdit: boolean }) {
-  const [open, setOpen] = useState(false);
+function TestSendRow({
+  mailbox, canEdit, defaultOpen = false,
+}: { mailbox: GrowMailbox; canEdit: boolean; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   const [to, setTo] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<GrowTestSendResponse | null>(null);
@@ -305,6 +307,8 @@ const MAILBOX_STATUS_TONE: Record<string, Tone> = {
 function MailboxRow({ mailbox, canEdit }: { mailbox: GrowMailbox; canEdit: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   async function toggleStatus() {
     const next = mailbox.status === 'paused' ? 'active' : 'paused';
@@ -317,6 +321,20 @@ function MailboxRow({ mailbox, canEdit }: { mailbox: GrowMailbox; canEdit: boole
       setError(err instanceof ApiError ? err.message : 'Could not update this mailbox.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function onDelete() {
+    if (!window.confirm(`Delete ${mailbox.address}? This can't be undone.`)) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await apiFetch(`/grow/mailboxes/${mailbox.id}`, { method: 'DELETE' });
+      await mutate(MAILBOXES_KEY);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not delete this mailbox.');
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -341,6 +359,11 @@ function MailboxRow({ mailbox, canEdit }: { mailbox: GrowMailbox; canEdit: boole
           <span className={`rounded-full px-2.5 py-1 text-xs font-medium uppercase tracking-wide ${toneSoft[MAILBOX_STATUS_TONE[mailbox.status] ?? 'muted']}`}>
             {mailbox.status}
           </span>
+          {canEdit && (
+            <Button variant="ghost" onClick={() => setEditing(true)}>
+              <PencilSimple size={14} weight="bold" className="mr-1 inline" /> Edit
+            </Button>
+          )}
           {canEdit && (mailbox.status === 'paused' || mailbox.status === 'active' || mailbox.status === 'warming') && (
             <Button variant="ghost" onClick={toggleStatus} disabled={busy}>
               {mailbox.status === 'paused'
@@ -348,10 +371,16 @@ function MailboxRow({ mailbox, canEdit }: { mailbox: GrowMailbox; canEdit: boole
                 : <><Pause size={14} weight="bold" className="mr-1 inline" /> Pause</>}
             </Button>
           )}
+          {canEdit && (
+            <Button variant="ghost" onClick={onDelete} disabled={deleting} className="text-destructive hover:bg-destructive/10">
+              <Trash size={14} weight="bold" className="mr-1 inline" /> {deleting ? 'Deleting…' : 'Delete'}
+            </Button>
+          )}
         </div>
       </div>
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
       <TestSendRow mailbox={mailbox} canEdit={canEdit} />
+      {canEdit && <EditMailboxDrawer mailbox={mailbox} open={editing} onOpenChange={setEditing} />}
     </li>
   );
 }
@@ -480,6 +509,191 @@ function AddMailboxDrawer({
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>Cancel</Button>
           <Button onClick={onSave} disabled={busy}>{busy ? 'Adding…' : 'Add mailbox'}</Button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function EditMailboxDrawer({
+  mailbox, open, onOpenChange,
+}: {
+  mailbox: GrowMailbox;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const formFromMailbox = () => ({
+    address: mailbox.address, from_name: mailbox.from_name, reply_to: mailbox.reply_to ?? '',
+    smtp_host: mailbox.smtp_host, smtp_port: String(mailbox.smtp_port),
+    imap_host: mailbox.imap_host ?? '', imap_port: String(mailbox.imap_port ?? 993),
+    username: mailbox.username, password: '',
+  });
+  const [form, setForm] = useState(formFromMailbox);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  if (!open) return null;
+
+  const addressChanged = form.address.trim().toLowerCase() !== mailbox.address;
+  const addressLocked = mailbox.has_message_history;
+  const passwordChanged = form.password.length > 0;
+
+  function close() {
+    setForm(formFromMailbox());
+    setError(null);
+    setSaved(false);
+    onOpenChange(false);
+  }
+
+  async function onSave() {
+    if (!form.address || !form.from_name || !form.smtp_host || !form.username) {
+      setError('Fill in every required field.');
+      return;
+    }
+    if (addressChanged && addressLocked) {
+      setError(`${mailbox.address} has sent messages — its address can't be changed. Pause it and add a new mailbox instead.`);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/grow/mailboxes/${mailbox.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          address: form.address.trim(),
+          from_name: form.from_name.trim(),
+          reply_to: form.reply_to.trim() || null,
+          smtp_host: form.smtp_host.trim(),
+          smtp_port: Number(form.smtp_port),
+          imap_host: form.imap_host.trim() || null,
+          imap_port: form.imap_host.trim() ? Number(form.imap_port) : null,
+          username: form.username.trim(),
+          ...(form.password ? { password: form.password } : {}),
+        }),
+      });
+      await mutate(MAILBOXES_KEY);
+      // After a password change, stay open with "Send test" on offer —
+      // bad credentials should surface right now, not silently at whatever
+      // point a (future) worker first tries to use this mailbox.
+      if (passwordChanged) {
+        setSaved(true);
+        setForm((f) => ({ ...f, password: '' }));
+      } else {
+        close();
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not save this mailbox.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-foreground/40" onClick={close} />
+      <div className="relative flex h-full w-full max-w-md flex-col overflow-y-auto border-l border-border bg-surface p-6 shadow-xl">
+        <div className="mb-6 flex items-center justify-between">
+          <p className="font-display text-lg font-bold">Edit mailbox</p>
+          <button onClick={close} className="text-muted-foreground hover:text-foreground">
+            <X size={16} weight="bold" />
+          </button>
+        </div>
+
+        {saved ? (
+          <div className="flex flex-1 flex-col gap-4">
+            <div className="rounded-lg bg-success/5 p-3 text-sm text-success">Credentials updated.</div>
+            <p className="text-sm text-muted-foreground">
+              Send a test now to confirm the new credentials actually authenticate, rather than finding out later.
+            </p>
+            <TestSendRow mailbox={mailbox} canEdit defaultOpen />
+            <div className="mt-auto flex justify-end border-t border-border pt-4">
+              <Button onClick={close}>Done</Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-1 flex-col gap-4">
+              <div className="grid grid-cols-2 gap-3">
+                <label className={labelCls}>
+                  Address<span className="text-primary"> *</span>
+                  <input
+                    type="email"
+                    value={form.address}
+                    disabled={addressLocked}
+                    onChange={(e) => setForm({ ...form, address: e.target.value })}
+                    className={`${inputCls} disabled:opacity-60`}
+                  />
+                  {addressLocked && (
+                    <span className="text-xs text-muted-foreground/70">
+                      Locked — this mailbox has sent messages. Pause it and add a new one instead.
+                    </span>
+                  )}
+                </label>
+                <label className={labelCls}>
+                  From name<span className="text-primary"> *</span>
+                  <input value={form.from_name} onChange={(e) => setForm({ ...form, from_name: e.target.value })} className={inputCls} />
+                </label>
+              </div>
+              <label className={labelCls}>
+                Reply-to
+                <input type="email" value={form.reply_to} onChange={(e) => setForm({ ...form, reply_to: e.target.value })} className={inputCls} />
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className={labelCls}>
+                  SMTP host<span className="text-primary"> *</span>
+                  <input value={form.smtp_host} onChange={(e) => setForm({ ...form, smtp_host: e.target.value })} className={inputCls} />
+                </label>
+                <label className={labelCls}>
+                  SMTP port
+                  <input type="number" value={form.smtp_port} onChange={(e) => setForm({ ...form, smtp_port: e.target.value })} className={`${inputCls} font-mono tabular-nums`} />
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className={labelCls}>
+                  IMAP host
+                  <input value={form.imap_host} onChange={(e) => setForm({ ...form, imap_host: e.target.value })} className={inputCls} />
+                </label>
+                <label className={labelCls}>
+                  IMAP port
+                  <input type="number" value={form.imap_port} onChange={(e) => setForm({ ...form, imap_port: e.target.value })} className={`${inputCls} font-mono tabular-nums`} />
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className={labelCls}>
+                  Username<span className="text-primary"> *</span>
+                  <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} className={inputCls} />
+                </label>
+                <label className={labelCls}>
+                  Password
+                  <input
+                    type="password"
+                    value={form.password}
+                    onChange={(e) => setForm({ ...form, password: e.target.value })}
+                    placeholder="Leave blank to keep the current password"
+                    className={inputCls}
+                    autoComplete="new-password"
+                  />
+                </label>
+              </div>
+
+              {addressChanged && !addressLocked && (
+                <div className="flex items-start gap-2 rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">
+                  <WarningCircle size={14} weight="fill" className="mt-0.5 shrink-0" />
+                  <p>
+                    Changing the address restarts warmup — this mailbox has no sending history under{' '}
+                    <span className="font-medium">{form.address}</span> yet, so it goes back to{' '}
+                    <span className="font-mono">warming</span> and today&apos;s ramp, same as a brand-new mailbox.
+                  </p>
+                </div>
+              )}
+              {error && <p className="text-xs text-destructive">{error}</p>}
+            </div>
+            <div className="mt-6 flex justify-end gap-2 border-t border-border pt-4">
+              <Button variant="ghost" onClick={close} disabled={busy}>Cancel</Button>
+              <Button onClick={onSave} disabled={busy}>{busy ? 'Saving…' : 'Save'}</Button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

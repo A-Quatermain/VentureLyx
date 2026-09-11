@@ -23,28 +23,30 @@ interface Draft {
   window_end: string;
   weekdays_only: boolean;
   daily_target: number;
+  start_date: string;
+  end_date: string;
 }
 
-export function GrowSendWindowCard({ campaign, canEdit }: { campaign: GrowCampaign; canEdit: boolean }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<Draft>({
+function draftFromCampaign(campaign: GrowCampaign): Draft {
+  return {
     timezone: campaign.timezone,
     window_start: campaign.window_start.slice(0, 5),
     window_end: campaign.window_end.slice(0, 5),
     weekdays_only: campaign.weekdays_only,
     daily_target: campaign.daily_target,
-  });
+    start_date: campaign.start_date ?? '',
+    end_date: campaign.end_date ?? '',
+  };
+}
+
+export function GrowSendWindowCard({ campaign, canEdit }: { campaign: GrowCampaign; canEdit: boolean }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Draft>(draftFromCampaign(campaign));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function startEditing() {
-    setDraft({
-      timezone: campaign.timezone,
-      window_start: campaign.window_start.slice(0, 5),
-      window_end: campaign.window_end.slice(0, 5),
-      weekdays_only: campaign.weekdays_only,
-      daily_target: campaign.daily_target,
-    });
+    setDraft(draftFromCampaign(campaign));
     setError(null);
     setEditing(true);
   }
@@ -58,10 +60,21 @@ export function GrowSendWindowCard({ campaign, canEdit }: { campaign: GrowCampai
       setError('Window end must be after window start');
       return;
     }
+    if (draft.start_date && draft.end_date && draft.end_date < draft.start_date) {
+      setError('End date must be on or after the start date');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      await apiFetch(`/grow/campaigns/${campaign.id}`, { method: 'PATCH', body: JSON.stringify(draft) });
+      await apiFetch(`/grow/campaigns/${campaign.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          ...draft,
+          start_date: draft.start_date || null,
+          end_date: draft.end_date || null,
+        }),
+      });
       await mutate(CAMPAIGNS_KEY);
       setEditing(false);
     } catch (err) {
@@ -71,13 +84,7 @@ export function GrowSendWindowCard({ campaign, canEdit }: { campaign: GrowCampai
     }
   }
 
-  const view = editing ? draft : {
-    timezone: campaign.timezone,
-    window_start: campaign.window_start.slice(0, 5),
-    window_end: campaign.window_end.slice(0, 5),
-    weekdays_only: campaign.weekdays_only,
-    daily_target: campaign.daily_target,
-  };
+  const view = editing ? draft : draftFromCampaign(campaign);
 
   const minutes = windowMinutes(view.window_start, view.window_end);
   const tooShort = minutes > 0 && minutes < 120;
@@ -138,6 +145,26 @@ export function GrowSendWindowCard({ campaign, canEdit }: { campaign: GrowCampai
                 className={inputCls}
               />
             </label>
+            <label className={labelCls}>
+              Start date
+              <input
+                type="date"
+                value={draft.start_date}
+                onChange={(e) => setDraft({ ...draft, start_date: e.target.value })}
+                className={inputCls}
+              />
+              <span className="text-xs text-muted-foreground/70">Optional — leave blank to start as soon as it's running.</span>
+            </label>
+            <label className={labelCls}>
+              End date
+              <input
+                type="date"
+                value={draft.end_date}
+                onChange={(e) => setDraft({ ...draft, end_date: e.target.value })}
+                className={inputCls}
+              />
+              <span className="text-xs text-muted-foreground/70">Optional — nothing sends after this date.</span>
+            </label>
           </div>
           <label className="flex items-center gap-2 text-sm text-muted-foreground">
             <input
@@ -183,6 +210,14 @@ export function GrowSendWindowCard({ campaign, canEdit }: { campaign: GrowCampai
           <p className="text-xs text-muted-foreground">
             {view.weekdays_only ? 'Weekdays only' : 'Every day'} · target{' '}
             <span className="font-mono tabular-nums" data-numeric>{view.daily_target}</span>/day
+            {(view.start_date || view.end_date) && (
+              <>
+                {' · '}
+                {view.start_date ? view.start_date : 'no start date'}
+                {' → '}
+                {view.end_date ? view.end_date : 'no end date'}
+              </>
+            )}
           </p>
           {(tooShort || offHours) && (
             <div className="mt-1 flex items-start gap-2 rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">

@@ -30,9 +30,11 @@ import {
   firstUnrenderedPlaceholder, hasUnrenderedPlaceholder, render, renderSenderFields,
   renderUnsubscribeFooter, type RenderableContact, type SenderProfile,
 } from '../lib/growTemplate.js';
-import { checkImapConnectivity, sendTestEmail } from '../lib/growMailboxTest.js';
+import { checkImapConnectivity, sendRenderedTestEmail, sendTestEmail } from '../lib/growMailboxTest.js';
 import { mailboxCapOnDate, rampPoints, steadyCapDate } from '../lib/growMailboxWarmup.js';
-import { DEFAULT_FALLBACK_CAP, isConsumerDomain, projectSchedule } from '../lib/growSchedule.js';
+import {
+  DEFAULT_FALLBACK_CAP, isConsumerDomain, neededDailyTargetForDeadline, projectSchedule,
+} from '../lib/growSchedule.js';
 import {
   buildExpectedRecords, verifyDomain, type SendingDomainProvider,
 } from '../lib/growSendingDomain.js';
@@ -68,6 +70,51 @@ async function getSenderProfile(q: Querier): Promise<SenderProfile & { mailing_a
   };
 }
 
+interface RenderedStep {
+  subject: string;
+  body: string;
+  unsubscribe_url: string;
+  refused: boolean;
+  refusal_reason: string | null;
+}
+
+/** The one render path both /contacts/:id/preview and the campaign
+ *  test-send endpoints go through — same render()/renderSenderFields()/
+ *  renderUnsubscribeFooter()/hasUnrenderedPlaceholder() sequence either
+ *  way, so a test send genuinely shows what the (not-yet-built) worker
+ *  would produce, not a second, divergent implementation of the same idea.
+ *  Does NOT check grow_suppressions — that's specific to a real contact's
+ *  own email being the actual send target, which only the real preview
+ *  endpoint is; a test send's destination is whatever address the caller
+ *  typed in, unrelated to any contact's suppression status. */
+async function renderStepForContact(
+  q: Querier,
+  step: { subject_tmpl: string; body_tmpl: string },
+  contact: RenderableContact,
+): Promise<RenderedStep> {
+  const senderProfile = await getSenderProfile(q);
+  const subject = renderSenderFields(render(step.subject_tmpl, contact), senderProfile);
+  const bodyAfterMerge = renderSenderFields(render(step.body_tmpl, contact), senderProfile);
+
+  const token = randomBytes(18).toString('hex');
+  const unsubscribeUrl = `${GROW_BASE_URL}/u/${token}`;
+  const body = renderUnsubscribeFooter(bodyAfterMerge, {
+    mailingAddress: senderProfile.mailing_address ?? '',
+    unsubscribeUrl,
+  });
+
+  const subjectUnresolved = hasUnrenderedPlaceholder(subject);
+  const bodyUnresolved = hasUnrenderedPlaceholder(body);
+  const refused = subjectUnresolved || bodyUnresolved;
+  const refusalReason = refused
+    ? `refused to send: unrendered placeholder ${
+        firstUnrenderedPlaceholder(subjectUnresolved ? subject : body)
+      } in ${subjectUnresolved ? 'subject' : 'body'}`
+    : null;
+
+  return { subject, body, unsubscribe_url: unsubscribeUrl, refused, refusal_reason: refusalReason };
+}
+
 // Same circuit-breaker thresholds as scheduler.js's circuitBreaker()
 // (/opt/outreach/src) — the worker isn't built here, but the dashboard
 // needs the same numbers the (future) worker will pause campaigns at, so
@@ -84,8 +131,25 @@ const MIN_SAMPLE = 50;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const timeField = () => z.string().regex(TIME_RE, 'Use HH:MM (24-hour)');
 
+// past_end_date is computed, not stored — "today" per the campaign's own
+// timezone, same convention as everywhere else a campaign's own local date
+// matters. Nothing here ever writes it; it's purely a read-time signal so
+// the UI can show "ended" instead of leaving a campaign looking like it's
+// just quietly not running, with no real automatic status transition since
+// there's no worker to run one.
+// start_date/end_date cast to text: node-postgres otherwise hands a `date`
+// column back as a JS Date, which every consumer here — the plain string
+// comparisons in this file, and <input type="date"> on the frontend, which
+// silently rejects anything that isn't exactly "YYYY-MM-DD" — needs to not
+// be. A `date` cast to text in Postgres is already exactly "YYYY-MM-DD",
+// no time component to strip, so this is the one place to fix it for
+// every response this constant appears in.
 const CAMPAIGN_FIELDS = `id, name, status, timezone, window_start, window_end,
-  weekdays_only, daily_target, pause_reason, created_at, updated_at`;
+  weekdays_only, daily_target, start_date::text, end_date::text, pause_reason, created_at, updated_at,
+  (end_date IS NOT NULL AND end_date < (now() AT TIME ZONE timezone)::date) AS past_end_date`;
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const dateField = () => z.string().regex(DATE_RE, 'Use YYYY-MM-DD');
 
 const STEP_FIELDS = `id, campaign_id, step_no, delay_days, applies_to_rank,
   subject_tmpl, body_tmpl, created_at, updated_at`;
@@ -100,6 +164,8 @@ const campaignInput = z.object({
   window_end: timeField().default('15:30'),
   weekdays_only: z.boolean().default(true),
   daily_target: z.number().int().min(1).default(100),
+  start_date: dateField().nullable().optional(),
+  end_date: dateField().nullable().optional(),
 });
 
 const campaignPatch = z.object({
@@ -110,8 +176,20 @@ const campaignPatch = z.object({
   window_end: timeField().optional(),
   weekdays_only: z.boolean().optional(),
   daily_target: z.number().int().min(1).optional(),
+  start_date: dateField().nullable().optional(),
+  end_date: dateField().nullable().optional(),
   pause_reason: z.string().nullable().optional(),
 });
+
+/** Both the DB (grow_campaigns_date_range_check) and this route enforce
+ *  end_date >= start_date — the DB so it can never be violated no matter
+ *  what writes the row, this check so a bad PATCH gets a clear 400 instead
+ *  of a raw constraint-violation error. */
+function assertValidDateRange(start: string | null | undefined, end: string | null | undefined): void {
+  if (start && end && end < start) {
+    throw new HttpError(400, 'End date must be on or after the start date', 'invalid_date_range');
+  }
+}
 
 const stepInput = z.object({
   step_no: z.number().int().min(1),
@@ -147,7 +225,23 @@ const mailboxInput = z.object({
   steady_cap: z.number().int().min(1).max(1000).default(25),
 });
 
-const mailboxStatusPatch = z.object({ status: z.enum(['active', 'paused']) });
+// Every field editable after creation. All optional — a PATCH only touches
+// what it actually includes. password is the one exception to "present
+// means set": an empty/omitted password means "leave the stored credential
+// alone," never "wipe it," since there's no way to tell "didn't type one"
+// from "wants no password" and the second isn't a real option here anyway.
+const mailboxPatch = z.object({
+  address: z.string().trim().toLowerCase().email().optional(),
+  from_name: z.string().trim().min(1).max(100).optional(),
+  reply_to: z.string().trim().toLowerCase().email().nullable().optional(),
+  smtp_host: z.string().trim().min(1).optional(),
+  smtp_port: z.number().int().min(1).max(65535).optional(),
+  imap_host: z.string().trim().min(1).nullable().optional(),
+  imap_port: z.number().int().min(1).max(65535).nullable().optional(),
+  username: z.string().trim().min(1).optional(),
+  password: z.string().min(1).max(500).optional(),
+  status: z.enum(['active', 'paused']).optional(),
+});
 
 const testSendInput = z.object({ to: z.string().trim().toLowerCase().email() });
 
@@ -388,16 +482,21 @@ const contactFilterQuery = z.object({
   // what "remove from campaign" needs to act on unambiguously.
   campaign_id: z.string().uuid().optional(),
   suppressed: z.coerce.boolean().optional(),
+  // Free-text search for the test-send picker's "any existing contact"
+  // search box — email or name, not a structured filter, so it's kept
+  // separate from the rest even though it shares the same $-position
+  // scheme below.
+  q: z.string().trim().min(1).max(200).optional(),
 });
 
 const contactListQuery = contactFilterQuery.extend({
   page: z.coerce.number().int().min(1).default(1),
 });
 
-// Fixed positions $1-$6 shared by every query below that filters the
+// Fixed positions $1-$7 shared by every query below that filters the
 // contacts list — the paginated list, the "select all matching this
 // filter" id export, and (implicitly) anything future that needs the same
-// filter. Query-specific params (e.g. LIMIT/OFFSET) start at $7.
+// filter. Query-specific params (e.g. LIMIT/OFFSET) start at $8.
 const CONTACT_JOIN_SQL = `
   LEFT JOIN LATERAL (
     SELECT e.id, e.state, e.campaign_id FROM grow_enrollments e
@@ -417,11 +516,13 @@ const CONTACT_FILTER_SQL = `
          WHERE e2.contact_id = c.id AND e2.state = $4
            AND ($5::uuid IS NULL OR e2.campaign_id = $5)))
   AND ($6::boolean IS NULL OR (s.id IS NOT NULL) = $6)
+  AND ($7::text IS NULL OR c.email ILIKE '%' || $7 || '%' OR c.contact_name ILIKE '%' || $7 || '%'
+       OR c.first_name ILIKE '%' || $7 || '%')
 `;
 
 function contactFilterParams(f: z.infer<typeof contactFilterQuery>): unknown[] {
   return [f.tier ?? null, f.region ?? null, f.contact_rank ?? null, f.enrollment_state ?? null,
-    f.campaign_id ?? null, f.suppressed ?? null];
+    f.campaign_id ?? null, f.suppressed ?? null, f.q ?? null];
 }
 
 const bulkIdsInput = z.object({ ids: z.array(z.string().uuid()).min(1).max(5000) });
@@ -498,15 +599,17 @@ export default async function growRoutes(app: FastifyInstance) {
     req.requireRole('staff');
     const sess = req.requireAuth();
     const body = campaignInput.parse(req.body);
+    assertValidDateRange(body.start_date, body.end_date);
 
     return req.db(async (q) => {
       const campaign = await q.one(
         `INSERT INTO grow_campaigns
-           (org_id, name, timezone, window_start, window_end, weekdays_only, daily_target)
-         VALUES (app.current_org(), $1,$2,$3,$4,$5,$6)
+           (org_id, name, timezone, window_start, window_end, weekdays_only, daily_target,
+            start_date, end_date)
+         VALUES (app.current_org(), $1,$2,$3,$4,$5,$6,$7,$8)
          RETURNING ${CAMPAIGN_FIELDS}`,
         [body.name, body.timezone, body.window_start, body.window_end,
-         body.weekdays_only, body.daily_target],
+         body.weekdays_only, body.daily_target, body.start_date ?? null, body.end_date ?? null],
       );
       const c = campaign as { id: string };
       await audit(q, {
@@ -526,6 +629,7 @@ export default async function growRoutes(app: FastifyInstance) {
     if (Object.keys(body).length === 0) {
       throw new HttpError(400, 'Nothing to update', 'invalid_input');
     }
+    assertValidDateRange(body.start_date, body.end_date);
 
     const fields: string[] = [];
     const values: unknown[] = [];
@@ -550,6 +654,27 @@ export default async function growRoutes(app: FastifyInstance) {
             !readiness.hasActiveMailbox ? 'no active mailbox' : null,
           ].filter(Boolean).join(' and ');
           throw new HttpError(400, `Can't start this campaign — this org has ${missing} yet.`, 'not_ready_to_send');
+        }
+      }
+
+      // assertValidDateRange above only catches a patch that sets both
+      // dates inconsistently in the same request; changing just one against
+      // the other's existing value needs the current row to check against,
+      // so a bad combination gets this clean 400 instead of a raw
+      // grow_campaigns_date_range_check violation surfacing as a 500.
+      if (('start_date' in body) !== ('end_date' in body)) {
+        // ::text, same reason CAMPAIGN_FIELDS casts it above — a bare
+        // `date` column comes back as a JS Date, which compares against a
+        // plain "YYYY-MM-DD" string with neither a throw nor sensible
+        // coercion, just a silent, always-false result.
+        const current = await q.one<{ start_date: string | null; end_date: string | null }>(
+          `SELECT start_date::text, end_date::text FROM grow_campaigns WHERE id = $1`, [id],
+        );
+        if (current) {
+          assertValidDateRange(
+            'start_date' in body ? body.start_date : current.start_date,
+            'end_date' in body ? body.end_date : current.end_date,
+          );
         }
       }
 
@@ -687,6 +812,158 @@ export default async function growRoutes(app: FastifyInstance) {
       });
       return steps;
     });
+  });
+
+  // ---- Test send (with merge) ----------------------------------------------------
+  //
+  // Exercises the exact same render path a real send would (renderStepForContact,
+  // shared with /contacts/:id/preview above), against either a real contact
+  // or hand-entered merge values for a hypothetical one, through a real
+  // mailbox's real SMTP — but never writes grow_messages and never touches
+  // an enrollment, so it can't count against a mailbox's daily cap or show
+  // up in the send log. [TEST] is prefixed onto the subject at both the
+  // render and the send step, so what's shown before sending is exactly
+  // what goes out.
+
+  const testSendManualFields = z.object({
+    first_name: z.string().trim().max(100).optional(),
+    contact_name: z.string().trim().max(200).optional(),
+    role: z.string().trim().max(200).optional(),
+    entity_name: z.string().trim().max(200).optional(),
+    region: z.string().trim().max(100).optional(),
+    city: z.string().trim().max(100).optional(),
+    enrollment: z.string().trim().max(50).optional(),
+  });
+
+  const testSendRenderInput = z.object({
+    step_id: z.string().uuid(),
+    // Neither required: omitting both renders against an entirely blank
+    // hypothetical contact (render()'s own blank-field fallbacks apply —
+    // "there" for a missing first_name, '' for everything else).
+    contact_id: z.string().uuid().optional(),
+    manual: testSendManualFields.optional(),
+  });
+
+  async function resolveTestSendContact(
+    q: Querier, body: z.infer<typeof testSendRenderInput>,
+  ): Promise<RenderableContact> {
+    if (body.contact_id) {
+      const c = await q.one<RenderableContact>(
+        `SELECT email, first_name, contact_name, role, entity_name, region, city, enrollment,
+                recipient_domain, is_free_provider, contact_rank, attrs
+           FROM grow_contacts WHERE id = $1`,
+        [body.contact_id],
+      );
+      if (!c) throw new HttpError(404, 'Contact not found', 'not_found');
+      return c;
+    }
+    const m = body.manual ?? {};
+    return {
+      first_name: m.first_name ?? null,
+      contact_name: m.contact_name ?? null,
+      role: m.role ?? null,
+      entity_name: m.entity_name ?? null,
+      region: m.region ?? null,
+      city: m.city ?? null,
+      enrollment: m.enrollment ?? null,
+      recipient_domain: 'example.com',
+      is_free_provider: false,
+      contact_rank: 1,
+      attrs: {},
+    };
+  }
+
+  async function loadTestSendStep(q: Querier, campaignId: string, stepId: string) {
+    const campaign = await q.one(`SELECT id FROM grow_campaigns WHERE id = $1`, [campaignId]);
+    if (!campaign) throw new HttpError(404, 'Campaign not found', 'not_found');
+    const step = await q.one<{ subject_tmpl: string; body_tmpl: string }>(
+      `SELECT subject_tmpl, body_tmpl FROM grow_sequence_steps WHERE id = $1 AND campaign_id = $2`,
+      [stepId, campaignId],
+    );
+    if (!step) throw new HttpError(404, 'Sequence step not found on this campaign', 'not_found');
+    return step;
+  }
+
+  app.post('/grow/campaigns/:id/test-send/render', async (req) => {
+    req.requireRole('staff');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const body = testSendRenderInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const step = await loadTestSendStep(q, id, body.step_id);
+      const contact = await resolveTestSendContact(q, body);
+      const rendered = await renderStepForContact(q, step, contact);
+      return { subject: `[TEST] ${rendered.subject}`, body: rendered.body, refused: rendered.refused, refusal_reason: rendered.refusal_reason };
+    });
+  });
+
+  const campaignTestSendInput = testSendRenderInput.extend({
+    mailbox_id: z.string().uuid(),
+    to: z.string().trim().toLowerCase().email(),
+  });
+
+  app.post('/grow/campaigns/:id/test-send', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const body = campaignTestSendInput.parse(req.body);
+
+    const prep = await req.db(async (q) => {
+      const step = await loadTestSendStep(q, id, body.step_id);
+      const contact = await resolveTestSendContact(q, body);
+      const stepRendered = await renderStepForContact(q, step, contact);
+      const rendered = {
+        subject: `[TEST] ${stepRendered.subject}`, body: stepRendered.body,
+        refused: stepRendered.refused, refusal_reason: stepRendered.refusal_reason,
+      };
+
+      // A template that refuses to render (unresolved merge/sender field,
+      // or {{unsubscribe_footer}} itself somehow missing) refuses to send
+      // here too, same as everywhere else — never mind that this is only a
+      // test, it would still be a real SMTP send of a broken email.
+      if (rendered.refused) {
+        return { rendered, mailbox: null, password: null };
+      }
+
+      const mailboxRow = await q.one<{
+        id: string; address: string; from_name: string; reply_to: string | null;
+        smtp_host: string; smtp_port: number; username: string; integration_id: string;
+      }>(
+        `SELECT id, address, from_name, reply_to, smtp_host, smtp_port, username, integration_id
+           FROM grow_mailboxes WHERE id = $1`,
+        [body.mailbox_id],
+      );
+      if (!mailboxRow) throw new HttpError(404, 'Mailbox not found', 'not_found');
+      const cred = await q.one<{ credential_enc: Buffer; credential_iv: Buffer; credential_tag: Buffer }>(
+        `SELECT credential_enc, credential_iv, credential_tag FROM integrations WHERE id = $1`,
+        [mailboxRow.integration_id],
+      );
+      if (!cred?.credential_enc) {
+        throw new HttpError(409, 'No stored credential for this mailbox — re-add it', 'no_credential');
+      }
+      return {
+        rendered, mailbox: mailboxRow,
+        password: decryptSecret(cred.credential_enc, cred.credential_iv, cred.credential_tag),
+      };
+    });
+
+    if (!prep.mailbox || !prep.password) {
+      return { ...prep.rendered, smtp: null };
+    }
+
+    const smtp = await sendRenderedTestEmail(prep.mailbox, prep.password, body.to, prep.rendered.subject, prep.rendered.body);
+
+    // No grow_messages row, no enrollment touched — audited the same way
+    // the sending-setup "Send test email" button is, so there's still a
+    // record of who fired a real SMTP send and to where, without it
+    // looking anywhere like a real queued/sent message.
+    await req.db((q) => audit(q, {
+      orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_campaigns.test_send',
+      entityType: 'grow_campaigns', entityId: id, ip: req.ip,
+      diff: { to: body.to, mailbox_id: body.mailbox_id, step_id: body.step_id, smtp_ok: smtp.ok },
+    }));
+
+    return { ...prep.rendered, smtp };
   });
 
   // Drafts a starting sequence grounded in this org's own profile — what it
@@ -925,13 +1202,14 @@ export default async function growRoutes(app: FastifyInstance) {
         smtp_host: string; smtp_port: number; imap_host: string | null; imap_port: number | null;
         username: string; warmup_started_on: string | null; steady_cap: number; status: string;
         last_health_at: string | null; created_at: string; updated_at: string;
-        domain: string; daily_cap: number;
+        domain: string; daily_cap: number; has_message_history: boolean;
       }>(
         `SELECT m.id, m.domain_id, m.address, m.from_name, m.reply_to, m.smtp_host, m.smtp_port,
                 m.imap_host, m.imap_port, m.username, m.warmup_started_on, m.steady_cap, m.status,
                 m.last_health_at, m.created_at, m.updated_at,
                 d.domain,
-                grow_mailbox_daily_cap(m.*, CURRENT_DATE) AS daily_cap
+                grow_mailbox_daily_cap(m.*, CURRENT_DATE) AS daily_cap,
+                EXISTS (SELECT 1 FROM grow_messages msg WHERE msg.mailbox_id = m.id) AS has_message_history
            FROM grow_mailboxes m
            JOIN grow_sending_domains d ON d.id = m.domain_id
           ORDER BY m.created_at`,
@@ -994,19 +1272,137 @@ export default async function growRoutes(app: FastifyInstance) {
     req.requireRole('staff');
     const sess = req.requireAuth();
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
-    const body = mailboxStatusPatch.parse(req.body);
+    const body = mailboxPatch.parse(req.body);
+
+    if (Object.keys(body).length === 0) {
+      throw new HttpError(400, 'Nothing to update', 'invalid_input');
+    }
 
     return req.db(async (q) => {
-      const mailbox = await q.one(
-        `UPDATE grow_mailboxes SET status = $2 WHERE id = $1 RETURNING ${MAILBOX_FIELDS}`,
-        [id, body.status],
+      const current = await q.one<{ address: string; integration_id: string }>(
+        `SELECT address, integration_id FROM grow_mailboxes WHERE id = $1`, [id],
       );
+      if (!current) throw new HttpError(404, 'Mailbox not found', 'not_found');
+
+      const addressChanging = body.address !== undefined && body.address !== current.address;
+      if (addressChanging) {
+        // grow_messages.mailbox_id has no cascade or default — every row
+        // it's ever pointed at stays attributed to whatever address was
+        // used to send it, which is the whole point of a send log. Renaming
+        // out from under that would make the log lie about who sent what;
+        // pausing and adding a new mailbox is the correct move instead.
+        const hasHistory = await q.one(`SELECT 1 FROM grow_messages WHERE mailbox_id = $1 LIMIT 1`, [id]);
+        if (hasHistory) {
+          throw new HttpError(
+            409,
+            `${current.address} has message history — changing its address would misattribute that send log. Pause it and add a new mailbox instead.`,
+            'has_message_history',
+          );
+        }
+      }
+
+      const fields: string[] = [];
+      const values: unknown[] = [];
+      let i = 1;
+      const setField = (col: string, val: unknown) => { fields.push(`${col} = $${i}`); values.push(val); i += 1; };
+
+      if (body.address !== undefined) setField('address', body.address);
+      if (body.from_name !== undefined) setField('from_name', body.from_name);
+      if ('reply_to' in body) setField('reply_to', body.reply_to ?? null);
+      if (body.smtp_host !== undefined) setField('smtp_host', body.smtp_host);
+      if (body.smtp_port !== undefined) setField('smtp_port', body.smtp_port);
+      if ('imap_host' in body) setField('imap_host', body.imap_host ?? null);
+      if ('imap_port' in body) setField('imap_port', body.imap_port ?? null);
+      if (body.username !== undefined) setField('username', body.username);
+
+      // A changed address always wins over an explicit status in the same
+      // request — there's no sending history under the new identity, so
+      // 'warming' is the only status that's actually true, no matter what
+      // was asked for.
+      const finalStatus = addressChanging ? 'warming' : body.status;
+      if (finalStatus !== undefined) setField('status', finalStatus);
+      if (addressChanging) fields.push('warmup_started_on = CURRENT_DATE');
+
+      const mailbox = fields.length > 0
+        ? await q.one(
+            `UPDATE grow_mailboxes SET ${fields.join(', ')} WHERE id = $${i} RETURNING ${MAILBOX_FIELDS}`,
+            [...values, id],
+          )
+        : await q.one(`SELECT ${MAILBOX_FIELDS} FROM grow_mailboxes WHERE id = $1`, [id]);
       if (!mailbox) throw new HttpError(404, 'Mailbox not found', 'not_found');
+
+      // Re-encrypts through the same integrations vault row POST created —
+      // never a second row, never a bare env var. A blank/omitted password
+      // leaves the stored credential untouched; there's no "clear the
+      // password" operation, since a mailbox with none can't send at all.
+      if (body.password) {
+        const { enc, iv, tag } = encryptSecret(body.password);
+        await q.exec(
+          `UPDATE integrations SET credential_enc = $2, credential_iv = $3, credential_tag = $4 WHERE id = $1`,
+          [current.integration_id, enc, iv, tag],
+        );
+      }
+      // Keeps integrations.external_id (its UNIQUE (org_id, provider,
+      // external_id) key) in step with the mailbox's own address — so a
+      // renamed mailbox doesn't leave a stale row squatting on the old
+      // address, blocking it from ever being reused by a real future one.
+      if (addressChanging) {
+        await q.exec(
+          `UPDATE integrations SET external_id = $2, display_name = $2 WHERE id = $1`,
+          [current.integration_id, body.address],
+        );
+      }
+
       await audit(q, {
         orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_mailboxes.update',
-        entityType: 'grow_mailboxes', entityId: id, ip: req.ip, diff: body,
+        entityType: 'grow_mailboxes', entityId: id, ip: req.ip,
+        diff: { ...body, password: body.password ? '(changed)' : undefined },
       });
       return mailbox;
+    });
+  });
+
+  // Refused, not archived, the same as a contact with send history — there's
+  // no softer "keep it but retire it" state for a mailbox the way archiving
+  // is for a campaign; pausing already covers "stop using this," so delete
+  // only ever means delete.
+  app.delete('/grow/mailboxes/:id', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const mailbox = await q.one<{ address: string; integration_id: string }>(
+        `SELECT address, integration_id FROM grow_mailboxes WHERE id = $1`, [id],
+      );
+      if (!mailbox) throw new HttpError(404, 'Mailbox not found', 'not_found');
+
+      const hasSent = await q.one(
+        `SELECT 1 FROM grow_messages WHERE mailbox_id = $1 AND status = 'sent' LIMIT 1`, [id],
+      );
+      if (hasSent) {
+        throw new HttpError(
+          409,
+          `${mailbox.address} has sent messages — deleting it would break that send log. Pause it instead.`,
+          'has_sent_messages',
+        );
+      }
+
+      // grow_messages.mailbox_id has no ON DELETE cascade, so any row still
+      // pointing here — sent or not — would fail this DELETE at the
+      // database level regardless of the check above; nothing today
+      // actually inserts one for a mailbox that's never sent, since the
+      // only writer of grow_messages would be the (not yet built) worker.
+      await q.exec(`DELETE FROM grow_mailboxes WHERE id = $1`, [id]);
+      // integrations is the credential vault row this mailbox owned —
+      // nothing else references it once the mailbox is gone.
+      await q.exec(`DELETE FROM integrations WHERE id = $1`, [mailbox.integration_id]);
+
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_mailboxes.delete',
+        entityType: 'grow_mailboxes', entityId: id, ip: req.ip, diff: { address: mailbox.address },
+      });
+      return { deleted: true };
     });
   });
 
@@ -1239,10 +1635,17 @@ export default async function growRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
 
     return req.db(async (q) => {
+      // start_date/end_date cast to text for the same reason CAMPAIGN_FIELDS
+      // does — a bare `date` column comes back from node-postgres as a JS
+      // Date, and this endpoint needs a plain "YYYY-MM-DD" string both to
+      // compare against completion_date (itself a plain string) and to
+      // hand to new Date() below without a second, redundant conversion.
       const campaign = await q.one<{
         timezone: string; weekdays_only: boolean; daily_target: number;
+        start_date: string | null; end_date: string | null;
       }>(
-        `SELECT timezone, weekdays_only, daily_target FROM grow_campaigns WHERE id = $1`,
+        `SELECT timezone, weekdays_only, daily_target, start_date::text, end_date::text
+           FROM grow_campaigns WHERE id = $1`,
         [id],
       );
       if (!campaign) throw new HttpError(404, 'Campaign not found', 'not_found');
@@ -1278,15 +1681,41 @@ export default async function growRoutes(app: FastifyInstance) {
         steadyCap: m.steady_cap,
       }));
 
+      const startDateStr = campaign.start_date;
+      const endDateStr = campaign.end_date;
+      const startDate = startDateStr ? new Date(startDateStr) : null;
+      const endDate = endDateStr ? new Date(endDateStr) : null;
+      const domainRemaining = new Map(remainingByDomain.map((r) => [r.domain, r.n]));
+
       const projection = projectSchedule({
         mailboxes,
-        domainRemaining: new Map(remainingByDomain.map((r) => [r.domain, r.n])),
+        domainRemaining,
         domainCaps,
         fallbackCap,
         dailyTarget: campaign.daily_target,
         weekdaysOnly: campaign.weekdays_only,
         timezone: campaign.timezone,
+        startDate,
+        endDate,
       });
+
+      // Only meaningful once end_date is actually set — with none, there's
+      // no deadline to be on or off track against, and asking "what target
+      // would finish it in time" doesn't mean anything.
+      // remaining_sends === 0 means there's nothing left to project at all
+      // (already fully sent) — trivially on track regardless of what
+      // completion_date reads, not "off track" just because nothing ran.
+      const onTrack = !endDateStr
+        ? null
+        : projection.remaining_sends === 0
+          ? true
+          : projection.completion_date !== null && projection.completion_date <= endDateStr;
+      const neededDailyTarget = endDate && onTrack === false
+        ? neededDailyTargetForDeadline({
+            mailboxes, domainRemaining, domainCaps, fallbackCap,
+            weekdaysOnly: campaign.weekdays_only, timezone: campaign.timezone, startDate, endDate,
+          })
+        : null;
 
       // Circuit breaker, scoped to this campaign specifically — same
       // definitions as scheduler.js's circuitBreaker() (WHERE campaign_id =
@@ -1323,7 +1752,13 @@ export default async function growRoutes(app: FastifyInstance) {
           complaint_rate: complaintRate, complaint_threshold: COMPLAINT_PAUSE_RATE,
           sample_size_met: sent >= MIN_SAMPLE, min_sample: MIN_SAMPLE,
         },
-        projection,
+        projection: {
+          ...projection,
+          start_date: startDateStr,
+          end_date: endDateStr,
+          on_track: onTrack,
+          needed_daily_target: neededDailyTarget,
+        },
         mailbox_ramps: mailboxesForChart.map((m) => ({
           id: m.id, address: m.address, status: m.status, steady_cap: m.steady_cap,
           warmup_started_on: m.warmup_started_on,
@@ -1360,7 +1795,7 @@ export default async function growRoutes(app: FastifyInstance) {
            ${CONTACT_JOIN_SQL}
           WHERE ${CONTACT_FILTER_SQL}
           ORDER BY c.created_at DESC
-          LIMIT 50 OFFSET $7`,
+          LIMIT 50 OFFSET $8`,
         [...contactFilterParams(filter), offset],
       ),
     );
@@ -1383,11 +1818,62 @@ export default async function growRoutes(app: FastifyInstance) {
            ${CONTACT_JOIN_SQL}
           WHERE ${CONTACT_FILTER_SQL}
           ORDER BY c.created_at DESC
-          LIMIT $7`,
+          LIMIT $8`,
         [...contactFilterParams(filter), CONTACT_IDS_LIMIT + 1],
       );
       const truncated = rows.length > CONTACT_IDS_LIMIT;
       return { ids: rows.slice(0, CONTACT_IDS_LIMIT).map((r) => r.id), truncated };
+    });
+  });
+
+  const contactCreateInput = z.object({
+    email: z.string().trim().toLowerCase().email(),
+    first_name: z.string().trim().min(1).max(100).optional(),
+    contact_name: z.string().trim().min(1).max(200).optional(),
+    role: z.string().trim().min(1).max(200).optional(),
+    entity_name: z.string().trim().min(1).max(200).optional(),
+    region: z.string().trim().min(1).max(100).optional(),
+    city: z.string().trim().min(1).max(100).optional(),
+    state: z.string().trim().min(1).max(100).optional(),
+    contact_rank: z.number().int().min(1).default(1),
+    tier: z.string().trim().min(1).max(50).optional(),
+  });
+
+  // One-at-a-time create — for a test contact, not a replacement for the
+  // CSV/XLSX import flow above (growContactImport.ts is still the only
+  // path that understands wide-format unpivoting, scholarship flags, and
+  // the rest of the real import shape). recipient_domain and
+  // is_free_provider are required, typed columns on grow_contacts (not
+  // attrs) same as an imported row, so they're derived here rather than
+  // left for the caller to get wrong — recipient_domain from the email
+  // itself, is_free_provider from the same consumer-domain list the
+  // per-domain caps table already flags.
+  app.post('/grow/contacts', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const body = contactCreateInput.parse(req.body);
+    const recipientDomain = body.email.split('@')[1]!;
+
+    return req.db(async (q) => {
+      const contact = await q.one(
+        `INSERT INTO grow_contacts
+           (org_id, email, first_name, contact_name, role, entity_name, region, city, state,
+            recipient_domain, is_free_provider, contact_rank, tier, source_profile)
+         VALUES (app.current_org(), $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'manual')
+         ON CONFLICT (org_id, email) DO NOTHING
+         RETURNING id, email, first_name, contact_name, role, contact_rank, entity_name, region, city, state,
+                   recipient_domain, tier, is_chain, domain_rank, source_profile, created_at`,
+        [body.email, body.first_name ?? null, body.contact_name ?? null, body.role ?? null,
+         body.entity_name ?? null, body.region ?? null, body.city ?? null, body.state ?? null,
+         recipientDomain, isConsumerDomain(recipientDomain), body.contact_rank, body.tier ?? null],
+      );
+      if (!contact) throw new HttpError(409, `${body.email} already exists`, 'duplicate_contact');
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_contacts.create',
+        entityType: 'grow_contacts', entityId: (contact as { id: string }).id, ip: req.ip,
+        diff: { email: body.email },
+      });
+      return contact;
     });
   });
 
@@ -1772,13 +2258,15 @@ export default async function growRoutes(app: FastifyInstance) {
       const enrolled = await q.one<{
         contact_id: string; email: string; first_name: string | null;
         contact_name: string | null; role: string | null; entity_name: string | null;
+        region: string | null; city: string | null; enrollment: number | null;
         recipient_domain: string; is_free_provider: boolean; contact_rank: number;
         attrs: Record<string, unknown>;
         enrollment_id: string; campaign_id: string; campaign_name: string;
         current_step: number;
       }>(
         `SELECT c.id AS contact_id, c.email, c.first_name, c.contact_name, c.role,
-                c.entity_name, c.recipient_domain, c.is_free_provider, c.contact_rank, c.attrs,
+                c.entity_name, c.region, c.city, c.enrollment,
+                c.recipient_domain, c.is_free_provider, c.contact_rank, c.attrs,
                 e.id AS enrollment_id, e.campaign_id, cp.name AS campaign_name, e.current_step
            FROM grow_contacts c
            JOIN grow_enrollments e ON e.contact_id = c.id
@@ -1826,6 +2314,9 @@ export default async function growRoutes(app: FastifyInstance) {
         contact_name: enrolled.contact_name,
         role: enrolled.role,
         entity_name: enrolled.entity_name,
+        region: enrolled.region,
+        city: enrolled.city,
+        enrollment: enrolled.enrollment,
         recipient_domain: enrolled.recipient_domain,
         is_free_provider: enrolled.is_free_provider,
         contact_rank: enrolled.contact_rank,
@@ -1845,38 +2336,11 @@ export default async function growRoutes(app: FastifyInstance) {
         [enrolled.email],
       );
 
-      const senderProfile = await getSenderProfile(q);
-
-      // Sender fields resolve in both subject and body — unlike
-      // unsubscribe_footer (body-only by design), a subject line like
-      // "Support for {{entity_name}} — {{product_url:TestGuard}}" is a
-      // real, valid use of a sender field.
-      const subject = renderSenderFields(render(step.subject_tmpl, contactForRender), senderProfile);
-      const bodyAfterMerge = renderSenderFields(render(step.body_tmpl, contactForRender), senderProfile);
-
-      const previewToken = randomBytes(18).toString('hex');
-      const unsubscribeUrl = `${GROW_BASE_URL}/u/${previewToken}`;
-      const body = renderUnsubscribeFooter(bodyAfterMerge, {
-        mailingAddress: senderProfile.mailing_address ?? '',
-        unsubscribeUrl,
-      });
-
-      // A sender field that never resolved — the org hasn't set a website/
-      // phone, or the step names a product_url label the org doesn't have
-      // — is caught here exactly like an unresolved unsubscribe_footer
-      // would be: hasUnrenderedPlaceholder() now matches the widened
-      // PLACEHOLDER_RE (growTemplate.ts), which includes the colon in
-      // {{product_url:Label}}.
-      const subjectUnresolved = hasUnrenderedPlaceholder(subject);
-      const bodyUnresolved = hasUnrenderedPlaceholder(body);
-      const refused = !!suppression || subjectUnresolved || bodyUnresolved;
+      const rendered = await renderStepForContact(q, step, contactForRender);
+      const refused = !!suppression || rendered.refused;
       const refusalReason = suppression
         ? `refused to send: ${enrolled.email} is suppressed (${suppression.reason})`
-        : refused
-          ? `refused to send: unrendered placeholder ${
-              firstUnrenderedPlaceholder(subjectUnresolved ? subject : body)
-            } in ${subjectUnresolved ? 'subject' : 'body'}`
-          : null;
+        : rendered.refusal_reason;
 
       return {
         contact_id: enrolled.contact_id,
@@ -1885,9 +2349,9 @@ export default async function growRoutes(app: FastifyInstance) {
         enrollment_id: enrolled.enrollment_id,
         step_no: step.step_no,
         to: enrolled.email,
-        subject,
-        body,
-        unsubscribe_url: unsubscribeUrl,
+        subject: rendered.subject,
+        body: rendered.body,
+        unsubscribe_url: rendered.unsubscribe_url,
         refused,
         refusal_reason: refusalReason,
       };

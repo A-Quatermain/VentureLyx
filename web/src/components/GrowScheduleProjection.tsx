@@ -205,11 +205,30 @@ export function GrowScheduleProjection({ campaignId, pauseReason }: { campaignId
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Remaining sends</p>
                 <p className="font-mono text-lg font-semibold tabular-nums" data-numeric>{projection.remaining_sends}</p>
               </div>
+              {projection.end_date && (
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">End date</p>
+                  <p className="text-lg font-semibold">{projection.end_date}</p>
+                </div>
+              )}
             </div>
             {projection.horizon_exceeded && (
               <p className={`mt-2 rounded-lg px-2.5 py-1.5 text-xs ${toneSoft.warning}`}>
                 Won&apos;t finish within the next 180 sending days at current capacity and caps.
               </p>
+            )}
+            {projection.on_track === false && (
+              <div className="mt-2 flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                <WarningCircle size={14} weight="fill" className="mt-0.5 shrink-0" />
+                <p>
+                  {projection.deadline_exceeded
+                    ? `Won't finish by ${projection.end_date} at the current daily target and domain caps.`
+                    : `Projected completion (${projection.completion_date ?? 'beyond the horizon'}) falls after the ${projection.end_date} end date.`}{' '}
+                  {projection.needed_daily_target !== null
+                    ? `A daily target of at least ${projection.needed_daily_target}/day would finish in time.`
+                    : "Raising the daily target won't help — mailbox warmup or domain caps are the binding constraint through the end date."}
+                </p>
+              </div>
             )}
             <div className="mt-4">
               <BindingTimeline days={projection.days} />

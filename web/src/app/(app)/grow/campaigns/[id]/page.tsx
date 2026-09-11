@@ -21,6 +21,7 @@ import { SequenceAssistBar } from '@/components/SequenceAssistBar';
 import { GrowSendWindowCard } from '@/components/GrowSendWindowCard';
 import { GrowDomainCapsTable } from '@/components/GrowDomainCapsTable';
 import { GrowScheduleProjection } from '@/components/GrowScheduleProjection';
+import { GrowTestSendCard } from '@/components/GrowTestSendCard';
 import { toneSoft, type Tone } from '@/components/ui/tone';
 
 const CAMPAIGN_STATUS_TONE: Record<GrowCampaign['status'], Tone> = {
@@ -307,11 +308,23 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
         </Card>
       )}
 
+      {campaign.past_end_date && campaign.status !== 'archived' && campaign.status !== 'done' && (
+        <Card className="flex items-start gap-3 border-muted bg-muted/40 p-4">
+          <WarningCircle size={20} weight="fill" className="mt-0.5 shrink-0 text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">
+            This campaign&apos;s end date ({campaign.end_date}) has passed — nothing further will send, even
+            though it&apos;s still marked <span className="font-medium">{campaign.status}</span>.
+          </p>
+        </Card>
+      )}
+
       <GrowSendWindowCard campaign={campaign} canEdit={canEdit} />
 
       <GrowScheduleProjection campaignId={id} pauseReason={campaign.pause_reason} />
 
       <GrowDomainCapsTable campaignId={id} canEdit={canEdit} />
+
+      {canEdit && <GrowTestSendCard campaignId={id} />}
 
       <Card className="p-0">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { mutate } from 'swr';
-import { MagnifyingGlass, UploadSimple, Trash, ProhibitInset, X } from '@phosphor-icons/react';
+import { MagnifyingGlass, UploadSimple, UserPlus, Trash, ProhibitInset, X } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import type {
@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/Button';
 import { SkeletonCard } from '@/components/ui/Skeleton';
 import { toneSoft, type Tone } from '@/components/ui/tone';
 import { GrowClearAllContactsDialog } from '@/components/GrowClearAllContactsDialog';
+import { GrowNewContactDrawer } from '@/components/GrowNewContactDrawer';
 
 const ENROLLMENT_STATES: GrowEnrollmentState[] =
   ['active', 'replied', 'bounced', 'unsubscribed', 'completed', 'held', 'failed'];
@@ -56,6 +57,7 @@ export default function GrowContactsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [noticeTone, setNoticeTone] = useState<Tone>('muted');
   const [clearAllOpen, setClearAllOpen] = useState(false);
+  const [creatingContact, setCreatingContact] = useState(false);
 
   const params = new URLSearchParams();
   if (tier.trim()) params.set('tier', tier.trim());
@@ -257,6 +259,11 @@ export default function GrowContactsPage() {
           <Link href="/grow" className="text-sm font-medium text-primary hover:underline">
             ← Grow
           </Link>
+          {canEdit && (
+            <Button variant="ghost" onClick={() => setCreatingContact(true)}>
+              <UserPlus size={14} weight="bold" className="mr-1.5 inline" /> New contact
+            </Button>
+          )}
           {canEdit && (
             <Link href="/grow/contacts/import">
               <Button variant="ghost">
@@ -547,6 +554,15 @@ export default function GrowContactsPage() {
           }}
         />
       )}
+
+      <GrowNewContactDrawer
+        open={creatingContact}
+        onOpenChange={setCreatingContact}
+        onCreated={(contact) => {
+          refresh();
+          say(`Created ${contact.email}.`, 'success');
+        }}
+      />
     </div>
   );
 }

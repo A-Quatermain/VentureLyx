@@ -376,6 +376,14 @@ export default function GrowPage() {
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-3">
+                    {c.past_end_date && c.status !== 'archived' && c.status !== 'done' && (
+                      <span
+                        title={`End date (${c.end_date}) has passed`}
+                        className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                      >
+                        Ended
+                      </span>
+                    )}
                     <span
                       className={`rounded-full px-2.5 py-1 text-xs font-medium uppercase tracking-wide ${toneSoft[CAMPAIGN_STATUS_TONE[c.status]]}`}
                     >

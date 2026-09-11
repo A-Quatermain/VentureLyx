@@ -85,15 +85,16 @@ export interface ProjectionDay {
 export interface ProjectionResult {
   completion_date: string | null;
   horizon_exceeded: boolean;
+  // Distinct from horizon_exceeded: this means the campaign's own end_date
+  // was reached with sends still remaining — a real, user-set deadline
+  // wasn't met, not just this projection's own 180-day safety cap.
+  deadline_exceeded: boolean;
   remaining_sends: number;
   blocked_reason: 'no_mailbox_capacity' | 'no_domain_capacity' | null;
   days: ProjectionDay[];
 }
 
-const HORIZON_DAYS = 180;
-const STUCK_DAY_LIMIT = 14;
-
-export function projectSchedule(params: {
+export interface ProjectionInput {
   mailboxes: ProjectionMailbox[];
   domainRemaining: Map<string, number>;
   domainCaps: Map<string, number>;
@@ -101,17 +102,30 @@ export function projectSchedule(params: {
   dailyTarget: number;
   weekdaysOnly: boolean;
   timezone: string;
-}): ProjectionResult {
-  const { mailboxes, domainCaps, fallbackCap, dailyTarget, weekdaysOnly, timezone } = params;
+  // Both UTC-midnight Dates, matching todayInTimezone()'s own convention.
+  // Null/undefined means "no bound" — the projection behaves exactly as it
+  // did before either existed.
+  startDate?: Date | null;
+  endDate?: Date | null;
+}
+
+const HORIZON_DAYS = 180;
+const STUCK_DAY_LIMIT = 14;
+
+export function projectSchedule(params: ProjectionInput): ProjectionResult {
+  const { mailboxes, domainCaps, fallbackCap, dailyTarget, weekdaysOnly, timezone, startDate, endDate } = params;
   const remaining = new Map(params.domainRemaining);
   let totalRemaining = [...remaining.values()].reduce((s, n) => s + n, 0);
 
   if (totalRemaining === 0) {
-    return { completion_date: null, horizon_exceeded: false, remaining_sends: 0, blocked_reason: null, days: [] };
+    return {
+      completion_date: null, horizon_exceeded: false, deadline_exceeded: false,
+      remaining_sends: 0, blocked_reason: null, days: [],
+    };
   }
   if (!mailboxes.some((m) => m.status === 'active' || m.status === 'warming')) {
     return {
-      completion_date: null, horizon_exceeded: false, remaining_sends: totalRemaining,
+      completion_date: null, horizon_exceeded: false, deadline_exceeded: false, remaining_sends: totalRemaining,
       blocked_reason: 'no_mailbox_capacity', days: [],
     };
   }
@@ -120,9 +134,15 @@ export function projectSchedule(params: {
 
   const days: ProjectionDay[] = [];
   let date = todayInTimezone(timezone);
+  if (startDate && startDate.getTime() > date.getTime()) date = startDate;
   let stuckDays = 0;
+  let stoppedAtDeadline = false;
 
   while (totalRemaining > 0 && days.length < HORIZON_DAYS) {
+    if (endDate && date.getTime() > endDate.getTime()) {
+      stoppedAtDeadline = true;
+      break;
+    }
     if (weekdaysOnly && isWeekend(date, timezone)) {
       date = addDays(date, 1);
       continue;
@@ -172,7 +192,7 @@ export function projectSchedule(params: {
     stuckDays = sentToday === 0 ? stuckDays + 1 : 0;
     if (stuckDays >= STUCK_DAY_LIMIT) {
       return {
-        completion_date: null, horizon_exceeded: false, remaining_sends: totalRemaining,
+        completion_date: null, horizon_exceeded: false, deadline_exceeded: false, remaining_sends: totalRemaining,
         blocked_reason: mailboxCapToday === 0 ? 'no_mailbox_capacity' : 'no_domain_capacity',
         days,
       };
@@ -183,9 +203,34 @@ export function projectSchedule(params: {
 
   return {
     completion_date: totalRemaining === 0 ? days[days.length - 1]!.date : null,
-    horizon_exceeded: totalRemaining > 0,
+    horizon_exceeded: totalRemaining > 0 && !stoppedAtDeadline,
+    deadline_exceeded: totalRemaining > 0 && stoppedAtDeadline,
     remaining_sends: totalRemaining,
     blocked_reason: null,
     days,
   };
+}
+
+/** Binary-searches the smallest daily_target that would finish by
+ *  `base.endDate` under the exact same mailbox ramp and domain caps —
+ *  answering "what target would be needed" rather than just "it won't
+ *  make it." Returns null when even an effectively unlimited daily_target
+ *  can't finish in time, meaning the real constraint is mailbox/domain
+ *  capacity, not the target — raising daily_target wouldn't help at all. */
+export function neededDailyTargetForDeadline(base: Omit<ProjectionInput, 'dailyTarget'>): number | null {
+  if (!base.endDate) return null;
+  const totalRemaining = [...base.domainRemaining.values()].reduce((s, n) => s + n, 0);
+  if (totalRemaining === 0) return 0;
+
+  const unlimited = projectSchedule({ ...base, dailyTarget: totalRemaining });
+  if (unlimited.completion_date === null) return null;
+
+  let lo = 1;
+  let hi = totalRemaining;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const result = projectSchedule({ ...base, dailyTarget: mid });
+    if (result.completion_date !== null) hi = mid; else lo = mid + 1;
+  }
+  return lo;
 }
