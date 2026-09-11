@@ -21,7 +21,7 @@ import { SequenceAssistBar } from '@/components/SequenceAssistBar';
 import { GrowSendWindowCard } from '@/components/GrowSendWindowCard';
 import { GrowDomainCapsTable } from '@/components/GrowDomainCapsTable';
 import { GrowScheduleProjection } from '@/components/GrowScheduleProjection';
-import { GrowTestSendCard } from '@/components/GrowTestSendCard';
+import { GrowTestSendCard, stepSignature } from '@/components/GrowTestSendCard';
 import { toneSoft, type Tone } from '@/components/ui/tone';
 
 const CAMPAIGN_STATUS_TONE: Record<GrowCampaign['status'], Tone> = {
@@ -324,7 +324,13 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
 
       <GrowDomainCapsTable campaignId={id} canEdit={canEdit} />
 
-      {canEdit && <GrowTestSendCard campaignId={id} />}
+      {canEdit && (
+        <GrowTestSendCard
+          campaignId={id}
+          draftSteps={draft}
+          savedStepSignatures={new Set((steps ?? []).map(stepSignature))}
+        />
+      )}
 
       <Card className="p-0">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">

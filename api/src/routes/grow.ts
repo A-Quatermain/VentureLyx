@@ -54,17 +54,39 @@ import { HttpError } from '../plugins/context.js';
 // db/migrations/011_grow_sender_profiles.sql), fetched per org below.
 const GROW_BASE_URL = process.env.GROW_BASE_URL || 'http://localhost:8080';
 
+// The first real test send showed exactly what this guards against: no
+// GROW_BASE_URL set anywhere in the deployed environment meant every
+// unsubscribe link — preview, test send, and (eventually) a real one — was
+// silently built against the http://localhost:8080 fallback above. A
+// localhost link is unreachable for a real recipient and, for a real send,
+// means there's no working unsubscribe mechanism at all. Checked once
+// against whatever GROW_BASE_URL actually resolved to at process start,
+// not per-request — either the whole deployment is configured correctly or
+// it isn't.
+function isDevBaseUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === 'localhost' || hostname === '127.0.0.1';
+  } catch {
+    return true; // unparseable is exactly as unusable as localhost
+  }
+}
+const GROW_BASE_URL_USABLE = !isDevBaseUrl(GROW_BASE_URL);
+
 async function getSenderProfile(q: Querier): Promise<SenderProfile & { mailing_address: string | null }> {
   const row = await q.one<{
-    website_url: string | null; phone: string | null; mailing_address: string | null;
+    sender_name: string | null; website_url: string | null; phone: string | null;
+    contact_email: string | null; mailing_address: string | null;
     product_urls: Array<{ label: string; url: string }>;
   }>(
-    `SELECT website_url, phone, mailing_address, product_urls
+    `SELECT sender_name, website_url, phone, contact_email, mailing_address, product_urls
        FROM grow_sender_profiles WHERE org_id = app.current_org()`,
   );
   return {
+    sender_name: row?.sender_name ?? null,
     website_url: row?.website_url ?? null,
     phone: row?.phone ?? null,
+    contact_email: row?.contact_email ?? null,
     mailing_address: row?.mailing_address ?? null,
     product_urls: row?.product_urls ?? [],
   };
@@ -98,19 +120,28 @@ async function renderStepForContact(
 
   const token = randomBytes(18).toString('hex');
   const unsubscribeUrl = `${GROW_BASE_URL}/u/${token}`;
-  const body = renderUnsubscribeFooter(bodyAfterMerge, {
-    mailingAddress: senderProfile.mailing_address ?? '',
-    unsubscribeUrl,
-  });
+  // Still splice in the real URL string for display below (so a refusal
+  // shows exactly what's misconfigured, not a blank), but only when
+  // GROW_BASE_URL is unusable, don't actually resolve the token — leaving
+  // {{unsubscribe_footer}} in place is what makes hasUnrenderedPlaceholder()
+  // catch it below, the same mechanism every other unresolved field uses.
+  const body = GROW_BASE_URL_USABLE
+    ? renderUnsubscribeFooter(bodyAfterMerge, {
+        mailingAddress: senderProfile.mailing_address ?? '',
+        unsubscribeUrl,
+      })
+    : bodyAfterMerge;
 
   const subjectUnresolved = hasUnrenderedPlaceholder(subject);
   const bodyUnresolved = hasUnrenderedPlaceholder(body);
-  const refused = subjectUnresolved || bodyUnresolved;
-  const refusalReason = refused
-    ? `refused to send: unrendered placeholder ${
-        firstUnrenderedPlaceholder(subjectUnresolved ? subject : body)
-      } in ${subjectUnresolved ? 'subject' : 'body'}`
-    : null;
+  const refused = !GROW_BASE_URL_USABLE || subjectUnresolved || bodyUnresolved;
+  const refusalReason = !GROW_BASE_URL_USABLE
+    ? `refused to send: GROW_BASE_URL is still "${GROW_BASE_URL}" — set it to this deployment's real public URL before any Grow email can send`
+    : refused
+      ? `refused to send: unrendered placeholder ${
+          firstUnrenderedPlaceholder(subjectUnresolved ? subject : body)
+        } in ${subjectUnresolved ? 'subject' : 'body'}`
+      : null;
 
   return { subject, body, unsubscribe_url: unsubscribeUrl, refused, refusal_reason: refusalReason };
 }
@@ -300,13 +331,16 @@ async function checkSendingReadiness(q: Querier): Promise<SendingReadiness> {
 // it must never invent, remove, or alter. Matches growTemplate.ts's
 // render() — first_name/contact_name/entity_name/role/region/city/
 // enrollment are the grow_contacts columns worth addressing someone by.
-// sender_website/sender_phone/unsubscribe_footer/product_url:<label> are
-// all resolved later (renderSenderFields()/renderUnsubscribeFooter(), at
-// preview or send time) against data this prompt doesn't have direct
-// access to — the model only ever emits the token, never a real value.
+// sender_name/sender_website/sender_phone/sender_email/unsubscribe_footer/
+// product_url:<label> are all resolved later (renderSenderFields()/
+// renderUnsubscribeFooter(), at preview or send time) against data this
+// prompt doesn't have direct access to — the model only ever emits the
+// token, never a real value.
 const MERGE_FIELDS = ['first_name', 'contact_name', 'entity_name', 'role', 'region', 'city', 'enrollment'] as const;
 const UNSUBSCRIBE_TOKEN = '{{unsubscribe_footer}}';
-const RESERVED_TOKEN_NAMES = new Set<string>(['unsubscribe_footer', 'sender_website', 'sender_phone']);
+const RESERVED_TOKEN_NAMES = new Set<string>([
+  'unsubscribe_footer', 'sender_name', 'sender_website', 'sender_phone', 'sender_email',
+]);
 const VALID_TOKEN_NAMES = new Set<string>([...MERGE_FIELDS, ...RESERVED_TOKEN_NAMES]);
 const PRODUCT_URL_TOKEN_RE = /\{\{\s*product_url:([^{}]+?)\s*\}\}/g;
 
@@ -380,16 +414,21 @@ function buildSequenceGenerationPrompt(
   org: { name: string; vertical: string | null } | null,
   catalogItems: Array<{ name: string; description: string | null }>,
   locations: Array<{ name: string; region: string | null }>,
-  senderProfile: { website_url: string | null; phone: string | null; product_urls: Array<{ label: string; url: string }> },
+  senderProfile: {
+    sender_name: string | null; website_url: string | null; phone: string | null;
+    contact_email: string | null; product_urls: Array<{ label: string; url: string }>;
+  },
   skeleton: SequenceSkeletonStep[],
 ): { system: string; user: string } {
   // Only ever offer a sender token the org has actually filled in — an
-  // empty website/phone or an empty product_urls list means that field
-  // just isn't mentioned as available at all, so there's nothing for the
-  // model to reach for and invent a value around.
+  // empty field or an empty product_urls list means that field just isn't
+  // mentioned as available at all, so there's nothing for the model to
+  // reach for and invent a value around.
   const senderFields = [
+    senderProfile.sender_name ? '{{sender_name}}' : null,
     senderProfile.website_url ? '{{sender_website}}' : null,
     senderProfile.phone ? '{{sender_phone}}' : null,
+    senderProfile.contact_email ? '{{sender_email}}' : null,
     ...senderProfile.product_urls.map((p) => `{{product_url:${p.label}}}`),
   ].filter((f): f is string => f !== null);
 
@@ -406,14 +445,16 @@ function buildSequenceGenerationPrompt(
       `${senderFields.length > 0 ? `, or one of these sender fields: ${senderFields.join(', ')}` : ''}. ` +
       'Never invent a merge field name, a {{product_url:...}} label not listed above, or use a sender field not listed as available.',
     senderFields.length > 0
-      ? '- Sender fields are optional, not required — use one only where it genuinely fits a sentence ' +
-        '(e.g. "check it out at {{sender_website}}", "ask about {{product_url:Widget}}"). Never append a ' +
-        '"Links:" list, a signature block of URLs, or any bullet list of links at the end of the email — weave ' +
-        'at most one sender field into the body naturally, in one sentence, or use none at all.'
-      : '- No sender fields (website, phone, product links) are available for this org yet — do not reference ' +
-        'a website, phone number, or product link at all.',
-    `- End every email body with the literal token ${UNSUBSCRIBE_TOKEN} on its own line, exactly once, unchanged.`,
-    '- Each email: 80-150 words, plain text, no markdown, no "Subject:" label inside the body.',
+      ? '- Sender fields belong in a short, natural closing signature at the end of the body, after the last ' +
+        'sentence and before the unsubscribe token — something like "Best,\\n{{sender_name}}" optionally followed ' +
+        'by one line with a phone, email, or website (e.g. "{{sender_phone}} · {{sender_website}}"). Use only the ' +
+        'fields actually available, and only ones that make sense in a signature — never invent a "Links:" list, ' +
+        'a bullet list, or multiple mid-paragraph mentions of the same field.'
+      : '- No sender fields (name, website, phone, email, product links) are available for this org yet — do not ' +
+        'invent a signature block or reference any of them.',
+    `- End every email body with the literal token ${UNSUBSCRIBE_TOKEN} on its own line, exactly once, unchanged, ` +
+      'after the signature (if any).',
+    '- Each email: 80-150 words including any signature, plain text, no markdown, no "Subject:" label inside the body.',
     'Respond with ONLY valid JSON — no markdown fences, no commentary — matching exactly this shape:',
     '{"emails":[{"subject":"...","body":"..."}, ...]}',
     `The array must have exactly ${skeleton.length} entries, in the exact order listed below.`,
@@ -836,7 +877,15 @@ export default async function growRoutes(app: FastifyInstance) {
   });
 
   const testSendRenderInput = z.object({
-    step_id: z.string().uuid(),
+    // The template text itself, not a step_id — the editor can hold
+    // AI-generated or hand-edited steps that were never saved (nothing
+    // gets a grow_sequence_steps row until "Save changes"), and this needs
+    // to render exactly what's on screen right now, not whatever last made
+    // it to the database. Whoever calls this owns getting the right text
+    // here; there's no campaign_id/step ownership to check against a
+    // template that was never a row in the first place.
+    subject_tmpl: z.string().min(1),
+    body_tmpl: z.string().min(1),
     // Neither required: omitting both renders against an entirely blank
     // hypothetical contact (render()'s own blank-field fallbacks apply —
     // "there" for a missing first_name, '' for everything else).
@@ -873,15 +922,9 @@ export default async function growRoutes(app: FastifyInstance) {
     };
   }
 
-  async function loadTestSendStep(q: Querier, campaignId: string, stepId: string) {
+  async function assertCampaignExists(q: Querier, campaignId: string): Promise<void> {
     const campaign = await q.one(`SELECT id FROM grow_campaigns WHERE id = $1`, [campaignId]);
     if (!campaign) throw new HttpError(404, 'Campaign not found', 'not_found');
-    const step = await q.one<{ subject_tmpl: string; body_tmpl: string }>(
-      `SELECT subject_tmpl, body_tmpl FROM grow_sequence_steps WHERE id = $1 AND campaign_id = $2`,
-      [stepId, campaignId],
-    );
-    if (!step) throw new HttpError(404, 'Sequence step not found on this campaign', 'not_found');
-    return step;
   }
 
   app.post('/grow/campaigns/:id/test-send/render', async (req) => {
@@ -890,9 +933,11 @@ export default async function growRoutes(app: FastifyInstance) {
     const body = testSendRenderInput.parse(req.body);
 
     return req.db(async (q) => {
-      const step = await loadTestSendStep(q, id, body.step_id);
+      await assertCampaignExists(q, id);
       const contact = await resolveTestSendContact(q, body);
-      const rendered = await renderStepForContact(q, step, contact);
+      const rendered = await renderStepForContact(
+        q, { subject_tmpl: body.subject_tmpl, body_tmpl: body.body_tmpl }, contact,
+      );
       return { subject: `[TEST] ${rendered.subject}`, body: rendered.body, refused: rendered.refused, refusal_reason: rendered.refusal_reason };
     });
   });
@@ -909,9 +954,11 @@ export default async function growRoutes(app: FastifyInstance) {
     const body = campaignTestSendInput.parse(req.body);
 
     const prep = await req.db(async (q) => {
-      const step = await loadTestSendStep(q, id, body.step_id);
+      await assertCampaignExists(q, id);
       const contact = await resolveTestSendContact(q, body);
-      const stepRendered = await renderStepForContact(q, step, contact);
+      const stepRendered = await renderStepForContact(
+        q, { subject_tmpl: body.subject_tmpl, body_tmpl: body.body_tmpl }, contact,
+      );
       const rendered = {
         subject: `[TEST] ${stepRendered.subject}`, body: stepRendered.body,
         refused: stepRendered.refused, refusal_reason: stepRendered.refusal_reason,
@@ -960,7 +1007,7 @@ export default async function growRoutes(app: FastifyInstance) {
     await req.db((q) => audit(q, {
       orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_campaigns.test_send',
       entityType: 'grow_campaigns', entityId: id, ip: req.ip,
-      diff: { to: body.to, mailbox_id: body.mailbox_id, step_id: body.step_id, smtp_ok: smtp.ok },
+      diff: { to: body.to, mailbox_id: body.mailbox_id, subject_tmpl: body.subject_tmpl, smtp_ok: smtp.ok },
     }));
 
     return { ...prep.rendered, smtp };

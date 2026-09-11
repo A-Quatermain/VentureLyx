@@ -8,8 +8,10 @@ import type { GrowProductUrl } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 
 export interface GrowSenderProfileValues {
+  sender_name: string;
   website_url: string;
   phone: string;
+  contact_email: string;
   mailing_address: string;
   product_urls: GrowProductUrl[];
 }
@@ -17,8 +19,10 @@ export interface GrowSenderProfileValues {
 export const BLANK_PRODUCT_URL: GrowProductUrl = { label: '', url: '' };
 
 export const BLANK_SENDER_PROFILE: GrowSenderProfileValues = {
+  sender_name: '',
   website_url: '',
   phone: '',
+  contact_email: '',
   mailing_address: '',
   product_urls: [{ ...BLANK_PRODUCT_URL }],
 };
@@ -56,6 +60,21 @@ export function GrowSenderProfileForm({
 
   return (
     <div className="flex flex-col gap-4">
+      <label className={labelCls}>
+        Sender / brand name
+        <input
+          placeholder="CampusPath"
+          value={values.sender_name}
+          onChange={(e) => onChange({ ...values, sender_name: e.target.value })}
+          className={inputCls}
+        />
+        <span className="text-xs text-muted-foreground/70">
+          Resolves {'{{sender_name}}'} — the product name people should recognize, not necessarily this org&apos;s
+          full registered name. Each mailbox&apos;s own From name (Sending setup) is what actually shows in a
+          recipient&apos;s inbox; set that to match.
+        </span>
+      </label>
+
       <div className="grid gap-4 sm:grid-cols-2">
         <label className={labelCls}>
           Website
@@ -80,6 +99,21 @@ export function GrowSenderProfileForm({
           <span className="text-xs text-muted-foreground/70">Resolves {'{{sender_phone}}'}.</span>
         </label>
       </div>
+
+      <label className={labelCls}>
+        Contact email
+        <input
+          type="email"
+          placeholder="hello@example.com"
+          value={values.contact_email}
+          onChange={(e) => onChange({ ...values, contact_email: e.target.value })}
+          className={inputCls}
+        />
+        <span className="text-xs text-muted-foreground/70">
+          Resolves {'{{sender_email}}'} — a reply-to style address to put in body copy, separate from whichever
+          mailbox actually sends the message.
+        </span>
+      </label>
 
       <label className={labelCls}>
         Mailing address<span className="text-primary"> *</span>

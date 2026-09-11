@@ -25,8 +25,15 @@ const productUrlInput = z.object({
 });
 
 const growSenderProfileInput = z.object({
+  // The brand/product name that reads on a "who is this from" glance —
+  // {{sender_name}} — distinct from organizations.name, which is this
+  // app's own label for the org (can be a longer legal-ish name like
+  // "CampusPath Education" rather than the shorter "CampusPath" people
+  // actually reply to).
+  sender_name: z.string().trim().max(100).nullable().optional(),
   website_url: z.string().trim().url().nullable().optional(),
   phone: z.string().trim().max(40).nullable().optional(),
+  contact_email: z.string().trim().toLowerCase().email().nullable().optional(),
   // CAN-SPAM §7704(a)(5): a real physical postal address is legally
   // required in every commercial email, not optional metadata — free text
   // since it's rendered as-is into the unsubscribe footer, never parsed.
@@ -95,15 +102,18 @@ export default async function settingsRoutes(app: FastifyInstance) {
     req.requireRole('viewer');
     return req.db(async (q) => {
       const row = await q.one<{
-        website_url: string | null; phone: string | null; mailing_address: string | null;
+        sender_name: string | null; website_url: string | null; phone: string | null;
+        contact_email: string | null; mailing_address: string | null;
         product_urls: Array<{ label: string; url: string }>;
       }>(
-        `SELECT website_url, phone, mailing_address, product_urls
+        `SELECT sender_name, website_url, phone, contact_email, mailing_address, product_urls
            FROM grow_sender_profiles WHERE org_id = app.current_org()`,
       );
       return {
+        sender_name: row?.sender_name ?? null,
         website_url: row?.website_url ?? null,
         phone: row?.phone ?? null,
+        contact_email: row?.contact_email ?? null,
         mailing_address: row?.mailing_address ?? null,
         product_urls: row?.product_urls ?? [],
       };
@@ -117,13 +127,17 @@ export default async function settingsRoutes(app: FastifyInstance) {
 
     return req.db(async (q) => {
       const profile = await q.one(
-        `INSERT INTO grow_sender_profiles (org_id, website_url, phone, mailing_address, product_urls)
-         VALUES (app.current_org(), $1, $2, $3, $4)
+        `INSERT INTO grow_sender_profiles (org_id, sender_name, website_url, phone, contact_email, mailing_address, product_urls)
+         VALUES (app.current_org(), $1, $2, $3, $4, $5, $6)
          ON CONFLICT (org_id) DO UPDATE
-           SET website_url = EXCLUDED.website_url, phone = EXCLUDED.phone,
-               mailing_address = EXCLUDED.mailing_address, product_urls = EXCLUDED.product_urls
-         RETURNING website_url, phone, mailing_address, product_urls`,
-        [body.website_url ?? null, body.phone ?? null, body.mailing_address ?? null, JSON.stringify(body.product_urls)],
+           SET sender_name = EXCLUDED.sender_name, website_url = EXCLUDED.website_url, phone = EXCLUDED.phone,
+               contact_email = EXCLUDED.contact_email, mailing_address = EXCLUDED.mailing_address,
+               product_urls = EXCLUDED.product_urls
+         RETURNING sender_name, website_url, phone, contact_email, mailing_address, product_urls`,
+        [
+          body.sender_name ?? null, body.website_url ?? null, body.phone ?? null,
+          body.contact_email ?? null, body.mailing_address ?? null, JSON.stringify(body.product_urls),
+        ],
       );
       await audit(q, {
         orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_sender_profiles.update',

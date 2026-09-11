@@ -46,6 +46,13 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-https://api.venturelyx.com/v1/integrations/gsc/oauth/callback}
       APP_BASE_URL: ${APP_BASE_URL:-https://app.venturelyx.com}
+      # routes/grow.ts — base for the unsubscribe link ({GROW_BASE_URL}/u/:token).
+      # Was defaulting to http://localhost:8080 with no override anywhere in
+      # this file, so every Grow send — test or real — built an unreachable
+      # localhost unsubscribe link. grow.ts now refuses to send at all while
+      # this still resolves to localhost/127.0.0.1, so a stack missing this
+      # var fails loudly instead of shipping a broken compliance link.
+      GROW_BASE_URL: ${GROW_BASE_URL:-https://app.venturelyx.com}
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 20s

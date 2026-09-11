@@ -223,8 +223,10 @@ function GrowSenderProfileCard({ canEdit }: { canEdit: boolean }) {
   useEffect(() => {
     if (!data) return;
     setDraft({
+      sender_name: data.sender_name ?? '',
       website_url: data.website_url ?? '',
       phone: data.phone ?? '',
+      contact_email: data.contact_email ?? '',
       mailing_address: data.mailing_address ?? '',
       product_urls: data.product_urls.length > 0 ? data.product_urls : [{ label: '', url: '' }],
     });
@@ -236,8 +238,10 @@ function GrowSenderProfileCard({ canEdit }: { canEdit: boolean }) {
     setError(null);
     try {
       const body = {
+        sender_name: draft.sender_name.trim() || null,
         website_url: draft.website_url.trim() || null,
         phone: draft.phone.trim() || null,
+        contact_email: draft.contact_email.trim() || null,
         mailing_address: draft.mailing_address.trim() || null,
         product_urls: realProductUrls(draft.product_urls),
       };

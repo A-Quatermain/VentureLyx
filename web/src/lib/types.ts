@@ -574,8 +574,10 @@ export interface GrowProductUrl {
 }
 
 export interface GrowSenderProfile {
+  sender_name: string | null;
   website_url: string | null;
   phone: string | null;
+  contact_email: string | null;
   mailing_address: string | null;
   product_urls: GrowProductUrl[];
 }

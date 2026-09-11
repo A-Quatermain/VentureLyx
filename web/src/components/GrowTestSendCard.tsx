@@ -5,7 +5,7 @@ import { MagnifyingGlass, PaperPlaneTilt, WarningCircle } from '@phosphor-icons/
 import { useApi } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import type {
-  GrowContactListItem, GrowSequenceStep, GrowMailbox,
+  GrowContactListItem, GrowMailbox,
   GrowCampaignTestSendRenderResponse, GrowCampaignTestSendResponse,
 } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
@@ -43,6 +43,16 @@ const BLANK_MANUAL: ManualFields = {
   first_name: '', contact_name: '', role: '', entity_name: '', region: '', city: '', enrollment: '',
 };
 
+// The exact subset of the campaign page's own StepDraft this needs — a
+// StepDraft[] (which has more fields, like delay_days) is assignable here
+// as-is, no separate type to keep in sync.
+export interface TestSendStepDraft {
+  step_no: number;
+  applies_to_rank: number | null;
+  subject_tmpl: string;
+  body_tmpl: string;
+}
+
 function useDebounced(value: string, delayMs: number): string {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
@@ -52,12 +62,31 @@ function useDebounced(value: string, delayMs: number): string {
   return debounced;
 }
 
-export function GrowTestSendCard({ campaignId }: { campaignId: string }) {
+// Exported so the campaign page can build savedStepSignatures with the
+// exact same shape this compares against — one definition of "what makes
+// two steps the same," not two that could quietly drift apart.
+export function stepSignature(s: { step_no: number; applies_to_rank: number | null; subject_tmpl: string; body_tmpl: string }): string {
+  return JSON.stringify([s.step_no, s.applies_to_rank, s.subject_tmpl, s.body_tmpl]);
+}
+
+export function GrowTestSendCard({
+  campaignId, draftSteps, savedStepSignatures,
+}: {
+  campaignId: string;
+  // The editor's current, possibly-unsaved steps — test send renders
+  // whatever's actually on screen, not what's last saved to
+  // grow_sequence_steps, so generate → test → edit → test works with no
+  // save in between.
+  draftSteps: TestSendStepDraft[];
+  // Signatures (step_no/rank/subject/body) of what's actually persisted,
+  // for flagging which dropdown entries don't match anything saved yet.
+  savedStepSignatures: Set<string>;
+}) {
   const [mode, setMode] = useState<'existing' | 'manual'>('existing');
   const [search, setSearch] = useState('');
   const [selectedContact, setSelectedContact] = useState<GrowContactListItem | null>(null);
   const [manual, setManual] = useState<ManualFields>(BLANK_MANUAL);
-  const [stepId, setStepId] = useState('');
+  const [stepIndex, setStepIndex] = useState('');
   const [mailboxId, setMailboxId] = useState('');
   const [to, setTo] = useState('');
 
@@ -74,8 +103,9 @@ export function GrowTestSendCard({ campaignId }: { campaignId: string }) {
     : null;
   const { data: searchResults, isLoading: searching } = useApi<GrowContactListItem[]>(searchKey);
 
-  const { data: steps } = useApi<GrowSequenceStep[]>(`/grow/campaigns/${campaignId}/steps`);
   const { data: mailboxes } = useApi<GrowMailbox[]>('/grow/mailboxes');
+
+  const selectedStep = stepIndex !== '' ? draftSteps[Number(stepIndex)] : undefined;
 
   function resetOutcome() {
     setRendered(null);
@@ -86,7 +116,8 @@ export function GrowTestSendCard({ campaignId }: { campaignId: string }) {
 
   function body() {
     return {
-      step_id: stepId,
+      subject_tmpl: selectedStep!.subject_tmpl,
+      body_tmpl: selectedStep!.body_tmpl,
       ...(mode === 'existing' && selectedContact
         ? { contact_id: selectedContact.id }
         : {
@@ -103,7 +134,7 @@ export function GrowTestSendCard({ campaignId }: { campaignId: string }) {
     };
   }
 
-  const canRender = !!stepId && (mode === 'manual' || !!selectedContact);
+  const canRender = !!selectedStep && (mode === 'manual' || !!selectedContact);
   const canSend = canRender && !!mailboxId && !!to.trim();
 
   async function onRender() {
@@ -148,9 +179,9 @@ export function GrowTestSendCard({ campaignId }: { campaignId: string }) {
         <p className="text-sm font-semibold">Send test</p>
       </div>
       <p className="mt-0.5 text-xs text-muted-foreground">
-        Renders a real sequence step through a real mailbox — subject prefixed with{' '}
-        <span className="font-mono">[TEST]</span>. Never writes to the send log or touches an enrollment, so it
-        won&apos;t count against a mailbox&apos;s daily cap.
+        Renders whatever&apos;s currently in the editor below — including unsaved edits — through a real mailbox,
+        subject prefixed with <span className="font-mono">[TEST]</span>. Never writes to the send log or touches
+        an enrollment, so it won&apos;t count against a mailbox&apos;s daily cap.
       </p>
 
       <div className="mt-3 flex flex-col gap-3">
@@ -230,16 +261,20 @@ export function GrowTestSendCard({ campaignId }: { campaignId: string }) {
           <label className={labelCls}>
             Sequence step
             <select
-              value={stepId}
-              onChange={(e) => { setStepId(e.target.value); resetOutcome(); }}
+              value={stepIndex}
+              onChange={(e) => { setStepIndex(e.target.value); resetOutcome(); }}
               className={inputCls}
             >
               <option value="">Choose a step…</option>
-              {steps?.map((s) => (
-                <option key={s.id} value={s.id}>
-                  Step {s.step_no}{s.applies_to_rank !== null ? ` (rank ${s.applies_to_rank})` : ''}
-                </option>
-              ))}
+              {draftSteps.map((s, i) => {
+                const unsaved = !savedStepSignatures.has(stepSignature(s));
+                return (
+                  <option key={i} value={i}>
+                    Step {s.step_no}{s.applies_to_rank !== null ? ` (rank ${s.applies_to_rank})` : ''}
+                    {unsaved ? ' (unsaved)' : ''}
+                  </option>
+                );
+              })}
             </select>
           </label>
           <label className={labelCls}>
@@ -267,8 +302,14 @@ export function GrowTestSendCard({ campaignId }: { campaignId: string }) {
           </label>
         </div>
 
-        {(!steps || steps.length === 0) && (
+        {draftSteps.length === 0 && (
           <p className="text-xs text-muted-foreground">This campaign has no sequence steps yet — add one below first.</p>
+        )}
+        {selectedStep && !savedStepSignatures.has(stepSignature(selectedStep)) && (
+          <p className="text-xs text-warning">
+            This step has unsaved changes — the test send uses exactly what&apos;s in the editor now, not the last
+            saved version.
+          </p>
         )}
         {(!mailboxes || mailboxes.length === 0) && (
           <p className="text-xs text-muted-foreground">No mailboxes yet — add one in Sending setup first.</p>
