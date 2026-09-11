@@ -660,6 +660,9 @@ export interface GrowSendingReadiness {
 export type GrowEnrollmentState =
   | 'active' | 'replied' | 'bounced' | 'unsubscribed' | 'completed' | 'held' | 'failed';
 
+export type GrowSuppressionReason =
+  | 'unsubscribed' | 'hard_bounce' | 'complaint' | 'manual' | 'chain_overflow';
+
 export interface GrowContactListItem {
   id: string;
   email: string;
@@ -677,7 +680,50 @@ export interface GrowContactListItem {
   domain_rank: number | null;
   source_profile: string | null;
   created_at: string;
+  // Whichever enrollment is "current" for this row: the contact's most
+  // recently touched one across any campaign by default, or specifically
+  // its enrollment in the campaign the list is filtered to, once a
+  // campaign filter is set — see api/src/routes/grow.ts's CONTACT_JOIN_SQL.
+  enrollment_id: string | null;
   latest_enrollment_state: GrowEnrollmentState | null;
+  enrollment_campaign_id: string | null;
+  suppression_id: string | null;
+  suppression_reason: GrowSuppressionReason | null;
+  suppression_created_at: string | null;
+}
+
+export interface GrowContactIdsResponse {
+  ids: string[];
+  truncated: boolean;
+}
+
+export interface GrowBulkDeleteContactsResponse {
+  deleted: number;
+  blocked: Array<{ id: string; email: string }>;
+}
+
+export interface GrowSuppressResponse {
+  alreadySuppressed: boolean;
+  suppression: { id: string; reason: GrowSuppressionReason; created_at: string };
+}
+
+export interface GrowBulkSuppressResponse {
+  suppressed: number;
+  alreadySuppressed: number;
+}
+
+export interface GrowEnrollmentDeleteResponse {
+  removed: boolean;
+  ungated: number;
+}
+
+export interface GrowBulkEnrollmentDeleteResponse {
+  removed: number;
+  ungated: number;
+}
+
+export interface GrowClearAllContactsResponse {
+  deleted: number;
 }
 
 export interface GrowContactPreview {

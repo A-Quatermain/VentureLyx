@@ -372,13 +372,59 @@ function buildAssistPrompt(org: { name: string; vertical: string | null } | null
 
 const ENROLLMENT_STATES = ['active', 'replied', 'bounced', 'unsubscribed', 'completed', 'held', 'failed'] as const;
 
-const contactListQuery = z.object({
+// Shared by the list, the id-export used for "select all matching this
+// filter", and the bulk actions below — one definition so a bulk delete
+// can never see a different set of rows than what's on screen.
+const contactFilterQuery = z.object({
   tier: z.string().trim().min(1).optional(),
   region: z.string().trim().min(1).optional(),
   contact_rank: z.coerce.number().int().optional(),
   enrollment_state: z.enum(ENROLLMENT_STATES).optional(),
+  // Scopes both the enrollment_state EXISTS check and which enrollment
+  // en.* below reports as "this row's enrollment" — with no campaign_id,
+  // that's just whichever enrollment was touched most recently across any
+  // campaign (the dashboard-wide view this list always showed before);
+  // with one, it's specifically this contact's enrollment in it, which is
+  // what "remove from campaign" needs to act on unambiguously.
+  campaign_id: z.string().uuid().optional(),
+  suppressed: z.coerce.boolean().optional(),
+});
+
+const contactListQuery = contactFilterQuery.extend({
   page: z.coerce.number().int().min(1).default(1),
 });
+
+// Fixed positions $1-$6 shared by every query below that filters the
+// contacts list — the paginated list, the "select all matching this
+// filter" id export, and (implicitly) anything future that needs the same
+// filter. Query-specific params (e.g. LIMIT/OFFSET) start at $7.
+const CONTACT_JOIN_SQL = `
+  LEFT JOIN LATERAL (
+    SELECT e.id, e.state, e.campaign_id FROM grow_enrollments e
+     WHERE e.contact_id = c.id
+       AND ($5::uuid IS NULL OR e.campaign_id = $5)
+     ORDER BY e.updated_at DESC LIMIT 1
+  ) en ON true
+  LEFT JOIN grow_suppressions s ON s.org_id = app.current_org() AND s.email = c.email
+`;
+
+const CONTACT_FILTER_SQL = `
+  ($1::text IS NULL OR c.tier = $1)
+  AND ($2::text IS NULL OR c.region = $2)
+  AND ($3::int IS NULL OR c.contact_rank = $3)
+  AND ($4::text IS NULL OR EXISTS (
+        SELECT 1 FROM grow_enrollments e2
+         WHERE e2.contact_id = c.id AND e2.state = $4
+           AND ($5::uuid IS NULL OR e2.campaign_id = $5)))
+  AND ($6::boolean IS NULL OR (s.id IS NOT NULL) = $6)
+`;
+
+function contactFilterParams(f: z.infer<typeof contactFilterQuery>): unknown[] {
+  return [f.tier ?? null, f.region ?? null, f.contact_rank ?? null, f.enrollment_state ?? null,
+    f.campaign_id ?? null, f.suppressed ?? null];
+}
+
+const bulkIdsInput = z.object({ ids: z.array(z.string().uuid()).min(1).max(5000) });
 
 const previewQuery = z.object({
   campaign_id: z.string().uuid().optional(),
@@ -1300,32 +1346,309 @@ export default async function growRoutes(app: FastifyInstance) {
 
   app.get('/grow/contacts', async (req) => {
     req.requireRole('viewer');
-    const { tier, region, contact_rank, enrollment_state, page } = contactListQuery.parse(req.query);
-    const offset = (page - 1) * 50;
+    const filter = contactListQuery.parse(req.query);
+    const offset = (filter.page - 1) * 50;
 
     return req.db((q) =>
       q.rows(
         `SELECT c.id, c.email, c.first_name, c.contact_name, c.role, c.contact_rank,
                 c.entity_name, c.region, c.city, c.state, c.recipient_domain, c.tier,
                 c.is_chain, c.domain_rank, c.source_profile, c.created_at,
-                en.state AS latest_enrollment_state
+                en.id AS enrollment_id, en.state AS latest_enrollment_state, en.campaign_id AS enrollment_campaign_id,
+                s.id AS suppression_id, s.reason AS suppression_reason, s.created_at AS suppression_created_at
            FROM grow_contacts c
-           LEFT JOIN LATERAL (
-             SELECT state FROM grow_enrollments e
-              WHERE e.contact_id = c.id
-              ORDER BY e.updated_at DESC LIMIT 1
-           ) en ON true
-          WHERE ($1::text IS NULL OR c.tier = $1)
-            AND ($2::text IS NULL OR c.region = $2)
-            AND ($3::int IS NULL OR c.contact_rank = $3)
-            AND ($4::text IS NULL OR EXISTS (
-                  SELECT 1 FROM grow_enrollments e2
-                   WHERE e2.contact_id = c.id AND e2.state = $4))
+           ${CONTACT_JOIN_SQL}
+          WHERE ${CONTACT_FILTER_SQL}
           ORDER BY c.created_at DESC
-          LIMIT 50 OFFSET $5`,
-        [tier ?? null, region ?? null, contact_rank ?? null, enrollment_state ?? null, offset],
+          LIMIT 50 OFFSET $7`,
+        [...contactFilterParams(filter), offset],
       ),
     );
+  });
+
+  // "Select all matching this filter" without shipping the whole list back
+  // just to read off ids — same filters as the list above, id-only, capped
+  // well above anything this app's contact volumes actually reach so a
+  // bulk action never silently acts on fewer rows than the count it showed.
+  const CONTACT_IDS_LIMIT = 5000;
+
+  app.get('/grow/contacts/ids', async (req) => {
+    req.requireRole('viewer');
+    const filter = contactFilterQuery.parse(req.query);
+
+    return req.db(async (q) => {
+      const rows = await q.rows<{ id: string }>(
+        `SELECT c.id
+           FROM grow_contacts c
+           ${CONTACT_JOIN_SQL}
+          WHERE ${CONTACT_FILTER_SQL}
+          ORDER BY c.created_at DESC
+          LIMIT $7`,
+        [...contactFilterParams(filter), CONTACT_IDS_LIMIT + 1],
+      );
+      const truncated = rows.length > CONTACT_IDS_LIMIT;
+      return { ids: rows.slice(0, CONTACT_IDS_LIMIT).map((r) => r.id), truncated };
+    });
+  });
+
+  app.delete('/grow/contacts/:id', async (req) => {
+    req.requireRole('manager');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const contact = await q.one<{ id: string; email: string }>(
+        `SELECT id, email FROM grow_contacts WHERE id = $1`, [id],
+      );
+      if (!contact) throw new HttpError(404, 'Contact not found', 'not_found');
+
+      const hasHistory = await q.one(`SELECT 1 FROM grow_messages WHERE contact_id = $1 LIMIT 1`, [id]);
+      if (hasHistory) {
+        throw new HttpError(
+          409,
+          `${contact.email} has a send history — deleting it would destroy that compliance record. Suppress it instead to stop any further sends.`,
+          'has_message_history',
+        );
+      }
+
+      // grow_enrollments cascades from grow_contacts already (009_grow.sql);
+      // grow_messages never does (its own history above already ruled out
+      // any existing here) — nothing left to clean up by hand.
+      await q.exec(`DELETE FROM grow_contacts WHERE id = $1`, [id]);
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_contacts.delete',
+        entityType: 'grow_contacts', entityId: id, ip: req.ip, diff: { email: contact.email },
+      });
+      return { deleted: true };
+    });
+  });
+
+  app.post('/grow/contacts/bulk-delete', async (req) => {
+    req.requireRole('manager');
+    const sess = req.requireAuth();
+    const { ids } = bulkIdsInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const blocked = await q.rows<{ id: string; email: string }>(
+        `SELECT id, email FROM grow_contacts c
+          WHERE id = ANY($1)
+            AND EXISTS (SELECT 1 FROM grow_messages m WHERE m.contact_id = c.id)`,
+        [ids],
+      );
+      const blockedIds = new Set(blocked.map((b) => b.id));
+      const deletable = ids.filter((i) => !blockedIds.has(i));
+
+      const deleted = deletable.length > 0
+        ? await q.exec(`DELETE FROM grow_contacts WHERE id = ANY($1)`, [deletable])
+        : 0;
+
+      if (deleted > 0) {
+        await audit(q, {
+          orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_contacts.bulk_delete',
+          entityType: 'grow_contacts', ip: req.ip,
+          diff: { requested: ids.length, deleted, blocked: blocked.length },
+        });
+      }
+      return { deleted, blocked: blocked.map((b) => ({ id: b.id, email: b.email })) };
+    });
+  });
+
+  app.post('/grow/contacts/:id/suppress', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const contact = await q.one<{ email: string }>(`SELECT email FROM grow_contacts WHERE id = $1`, [id]);
+      if (!contact) throw new HttpError(404, 'Contact not found', 'not_found');
+
+      // Manual is the only reason a person clicking a button can honestly
+      // claim — unsubscribed/hard_bounce/complaint/chain_overflow are set
+      // by an automated signal (a reply-poller, a bounce webhook, the
+      // worker), none of which exist yet. ON CONFLICT DO NOTHING so this
+      // can never downgrade an existing stronger suppression back to manual.
+      const inserted = await q.one<{ id: string; reason: string; created_at: string }>(
+        `INSERT INTO grow_suppressions (org_id, email, reason)
+         VALUES (app.current_org(), $1, 'manual')
+         ON CONFLICT (org_id, email) DO NOTHING
+         RETURNING id, reason, created_at`,
+        [contact.email],
+      );
+      if (!inserted) {
+        const existing = await q.one<{ id: string; reason: string; created_at: string }>(
+          `SELECT id, reason, created_at FROM grow_suppressions WHERE org_id = app.current_org() AND email = $1`,
+          [contact.email],
+        );
+        return { alreadySuppressed: true, suppression: existing };
+      }
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_contacts.suppress',
+        entityType: 'grow_contacts', entityId: id, ip: req.ip, diff: { email: contact.email, reason: 'manual' },
+      });
+      return { alreadySuppressed: false, suppression: inserted };
+    });
+  });
+
+  app.post('/grow/contacts/bulk-suppress', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { ids } = bulkIdsInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const contacts = await q.rows<{ email: string }>(
+        `SELECT DISTINCT email FROM grow_contacts WHERE id = ANY($1)`, [ids],
+      );
+      const suppressed = await q.exec(
+        `INSERT INTO grow_suppressions (org_id, email, reason)
+         SELECT app.current_org(), e, 'manual' FROM unnest($1::text[]) AS e
+         ON CONFLICT (org_id, email) DO NOTHING`,
+        [contacts.map((c) => c.email)],
+      );
+      const alreadySuppressed = contacts.length - suppressed;
+      if (suppressed > 0) {
+        await audit(q, {
+          orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_contacts.bulk_suppress',
+          entityType: 'grow_contacts', ip: req.ip,
+          diff: { requested: ids.length, suppressed, alreadySuppressed },
+        });
+      }
+      return { suppressed, alreadySuppressed };
+    });
+  });
+
+  // Un-suppress. Only 'manual' rows — a suppression from an actual bounce,
+  // complaint, or unsubscribe is the recipient's own signal, not something
+  // a staff member gets to override from this screen.
+  app.delete('/grow/suppressions/:id', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const row = await q.one<{ email: string; reason: string }>(
+        `SELECT email, reason FROM grow_suppressions WHERE id = $1`, [id],
+      );
+      if (!row) throw new HttpError(404, 'Suppression not found', 'not_found');
+      if (row.reason !== 'manual') {
+        throw new HttpError(
+          400,
+          `Can't remove a '${row.reason}' suppression — only ones added manually can be undone.`,
+          'not_manual',
+        );
+      }
+      await q.exec(`DELETE FROM grow_suppressions WHERE id = $1`, [id]);
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_contacts.unsuppress',
+        entityType: 'grow_suppressions', entityId: id, ip: req.ip, diff: { email: row.email },
+      });
+      return { unsuppressed: true };
+    });
+  });
+
+  // Removes an enrollment, keeps the contact. If this was the rank-1 side
+  // of a gate (see 009_grow.sql — a rank-2 contact waits for the rank-1
+  // contact in the same campaign to go quiet before entering the queue),
+  // whatever was gated on it would otherwise wait forever for an
+  // enrollment that no longer exists, so that gate is cleared first.
+  app.delete('/grow/enrollments/:id', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const enrollment = await q.one<{ id: string; contact_id: string; campaign_id: string }>(
+        `SELECT id, contact_id, campaign_id FROM grow_enrollments WHERE id = $1`, [id],
+      );
+      if (!enrollment) throw new HttpError(404, 'Enrollment not found', 'not_found');
+
+      const ungated = await q.exec(
+        `UPDATE grow_enrollments SET gated_on_contact_id = NULL
+          WHERE campaign_id = $1 AND gated_on_contact_id = $2`,
+        [enrollment.campaign_id, enrollment.contact_id],
+      );
+      await q.exec(`DELETE FROM grow_enrollments WHERE id = $1`, [id]);
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_enrollments.delete',
+        entityType: 'grow_enrollments', entityId: id, ip: req.ip,
+        diff: { contact_id: enrollment.contact_id, campaign_id: enrollment.campaign_id, ungated },
+      });
+      return { removed: true, ungated };
+    });
+  });
+
+  // Bulk counterpart, shaped around what the contacts list actually
+  // selects (contacts, filtered to one campaign) rather than enrollment
+  // ids the client would otherwise have no easy way to gather for a
+  // "select all matching this filter" selection spanning pages.
+  app.post('/grow/campaigns/:id/remove-contacts', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const { ids } = bulkIdsInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const campaign = await q.one(`SELECT id FROM grow_campaigns WHERE id = $1`, [id]);
+      if (!campaign) throw new HttpError(404, 'Campaign not found', 'not_found');
+
+      const ungated = await q.exec(
+        `UPDATE grow_enrollments SET gated_on_contact_id = NULL
+          WHERE campaign_id = $1 AND gated_on_contact_id = ANY($2)`,
+        [id, ids],
+      );
+      const removed = await q.exec(
+        `DELETE FROM grow_enrollments WHERE campaign_id = $1 AND contact_id = ANY($2)`,
+        [id, ids],
+      );
+      if (removed > 0) {
+        await audit(q, {
+          orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_enrollments.bulk_delete',
+          entityType: 'grow_campaigns', entityId: id, ip: req.ip,
+          diff: { requested: ids.length, removed, ungated },
+        });
+      }
+      return { removed, ungated };
+    });
+  });
+
+  const clearAllContactsInput = z.object({ confirm: z.string() });
+
+  // For undoing a bad import wholesale, not a per-contact tool. Two
+  // guardrails a per-contact delete doesn't need: can't be mid-send (a
+  // running campaign could be actively working through the very list this
+  // would erase), and — same rule as the single/bulk delete above — refuses
+  // outright the moment this org has sent any real mail, since pausing a
+  // campaign first would otherwise be all it takes to route around that
+  // protection and erase the compliance record it exists to protect.
+  app.post('/grow/contacts/clear-all', async (req) => {
+    req.requireRole('manager');
+    const sess = req.requireAuth();
+    const { confirm } = clearAllContactsInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const org = await q.one<{ name: string }>(`SELECT name FROM organizations WHERE id = app.current_org()`);
+      if (!org || confirm.trim() !== org.name) {
+        throw new HttpError(400, `Type the org name exactly ("${org?.name ?? ''}") to confirm.`, 'confirmation_mismatch');
+      }
+      const running = await q.one<{ name: string }>(`SELECT name FROM grow_campaigns WHERE status = 'running' LIMIT 1`);
+      if (running) {
+        throw new HttpError(409, `Can't clear contacts while "${running.name}" is running — pause it first.`, 'campaign_running');
+      }
+      const hasHistory = await q.one(`SELECT 1 FROM grow_messages LIMIT 1`);
+      if (hasHistory) {
+        throw new HttpError(
+          409,
+          'This org has sent mail on record — clearing every contact would destroy that compliance history. Delete or suppress individual contacts instead.',
+          'has_message_history',
+        );
+      }
+
+      const deleted = await q.exec(`DELETE FROM grow_contacts`, []);
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_contacts.clear_all',
+        entityType: 'grow_contacts', ip: req.ip, diff: { deleted },
+      });
+      return { deleted };
+    });
   });
 
   // ---- Contacts import (CSV/XLSX upload) ---------------------------------------
@@ -1509,6 +1832,19 @@ export default async function growRoutes(app: FastifyInstance) {
         attrs: enrolled.attrs,
       };
 
+      // Suppression is enforced here regardless of the enrollment's own
+      // state — an 'active' enrollment doesn't mean this address is safe
+      // to mail; grow_suppressions is the org-wide, permanent no-send list
+      // (unsubscribes, hard bounces, complaints, and manual suppressions
+      // all land here) and this is the one place today that actually shows
+      // what a send would do, so it's checked ahead of the template render
+      // below, not left for the (not yet built) worker to be the first and
+      // only thing that ever checks it.
+      const suppression = await q.one<{ reason: string }>(
+        `SELECT reason FROM grow_suppressions WHERE org_id = app.current_org() AND email = $1`,
+        [enrolled.email],
+      );
+
       const senderProfile = await getSenderProfile(q);
 
       // Sender fields resolve in both subject and body — unlike
@@ -1533,12 +1869,14 @@ export default async function growRoutes(app: FastifyInstance) {
       // {{product_url:Label}}.
       const subjectUnresolved = hasUnrenderedPlaceholder(subject);
       const bodyUnresolved = hasUnrenderedPlaceholder(body);
-      const refused = subjectUnresolved || bodyUnresolved;
-      const refusalReason = refused
-        ? `refused to send: unrendered placeholder ${
-            firstUnrenderedPlaceholder(subjectUnresolved ? subject : body)
-          } in ${subjectUnresolved ? 'subject' : 'body'}`
-        : null;
+      const refused = !!suppression || subjectUnresolved || bodyUnresolved;
+      const refusalReason = suppression
+        ? `refused to send: ${enrolled.email} is suppressed (${suppression.reason})`
+        : refused
+          ? `refused to send: unrendered placeholder ${
+              firstUnrenderedPlaceholder(subjectUnresolved ? subject : body)
+            } in ${subjectUnresolved ? 'subject' : 'body'}`
+          : null;
 
       return {
         contact_id: enrolled.contact_id,
