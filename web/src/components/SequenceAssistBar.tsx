@@ -18,12 +18,17 @@ const INSTRUCTIONS: Array<{ key: GrowAssistInstruction; label: string }> = [
 // (api/src/routes/grow.ts) — this endpoint streams token-by-token, so
 // there's no complete string to check until the stream is already done and
 // shown to the person; this is the check that runs before "Apply" is
-// allowed to splice a bad rewrite into a real step.
+// allowed to splice a bad rewrite into a real step. sender_website/
+// sender_phone are simple reserved tokens like unsubscribe_footer;
+// product_url:<label> is checked separately below against this org's
+// actual product labels, passed in from the campaign page.
 const ALLOWED_MERGE_FIELDS = new Set([
   'first_name', 'contact_name', 'entity_name', 'role', 'region', 'city', 'enrollment',
+  'sender_website', 'sender_phone',
 ]);
+const PRODUCT_URL_TOKEN_RE = /\{\{\s*product_url:([^{}]+?)\s*\}\}/g;
 
-function validateRewrite(text: string): string | null {
+function validateRewrite(text: string, knownProductLabels: Set<string>): string | null {
   if (text.includes('{{unsubscribe_footer}}')) {
     return 'This rewrite introduced the unsubscribe footer token — discard it and try again.';
   }
@@ -31,6 +36,12 @@ function validateRewrite(text: string): string | null {
     const name = match[1] ?? '';
     if (!ALLOWED_MERGE_FIELDS.has(name)) {
       return `This rewrite used an unsupported merge field {{${name}}} — discard it and try again.`;
+    }
+  }
+  for (const match of text.matchAll(PRODUCT_URL_TOKEN_RE)) {
+    const label = (match[1] ?? '').trim();
+    if (!knownProductLabels.has(label)) {
+      return `This rewrite referenced {{product_url:${label}}}, which isn't one of this org's product URLs — discard it and try again.`;
     }
   }
   return null;
@@ -43,11 +54,16 @@ function truncate(s: string, n: number): string {
 export function SequenceAssistBar({
   selectedText,
   fullValue,
+  knownProductLabels,
   onApply,
   onClose,
 }: {
   selectedText: string;
   fullValue: string;
+  /** This org's own grow_sender_profiles.product_urls labels — a rewrite
+   *  may only reference a {{product_url:<label>}} that's actually one of
+   *  these, same guardrail generation enforces server-side. */
+  knownProductLabels: Set<string>;
   onApply: (newText: string) => void;
   onClose: () => void;
 }) {
@@ -80,7 +96,7 @@ export function SequenceAssistBar({
     if (!sawError) setStatus('done');
   }
 
-  const validationError = status === 'done' ? validateRewrite(text) : null;
+  const validationError = status === 'done' ? validateRewrite(text, knownProductLabels) : null;
 
   return (
     <Card className="mt-2 border-primary/30 bg-primary/5 p-3">

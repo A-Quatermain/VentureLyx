@@ -2,17 +2,25 @@
 
 import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { mutate } from 'swr';
 import {
-  CaretLeft, Play, Pause, Clock, CalendarBlank, Target, Plus, Trash, Globe, ClipboardText, Sparkle,
+  CaretLeft, Play, Pause, Plus, Trash, ClipboardText, Sparkle,
+  WarningCircle,
 } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
-import type { GrowCampaign, GrowSequenceStep, GrowSequenceGenerateResponse } from '@/lib/types';
+import type {
+  GrowCampaign, GrowSequenceStep, GrowSequenceGenerateResponse, GrowSenderProfile, GrowSendingReadiness,
+  OrgProfile,
+} from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { SequenceAssistBar } from '@/components/SequenceAssistBar';
+import { GrowSendWindowCard } from '@/components/GrowSendWindowCard';
+import { GrowDomainCapsTable } from '@/components/GrowDomainCapsTable';
+import { GrowScheduleProjection } from '@/components/GrowScheduleProjection';
 import { toneSoft, type Tone } from '@/components/ui/tone';
 
 const CAMPAIGN_STATUS_TONE: Record<GrowCampaign['status'], Tone> = {
@@ -21,6 +29,7 @@ const CAMPAIGN_STATUS_TONE: Record<GrowCampaign['status'], Tone> = {
   paused: 'warning',
   stopped: 'destructive',
   done: 'primary',
+  archived: 'muted',
 };
 
 interface StepDraft {
@@ -45,36 +54,31 @@ interface ActiveAssist {
 const CAMPAIGNS_KEY = '/grow/campaigns';
 const stepsKey = (id: string) => `/grow/campaigns/${id}/steps`;
 
-function InfoStat({ icon: Icon, label, value }: { icon: typeof Clock; label: string; value: string }) {
-  return (
-    <div className="flex items-center gap-2.5">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted">
-        <Icon size={15} className="text-muted-foreground" />
-      </div>
-      <div className="min-w-0">
-        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</p>
-        <p className="truncate text-sm font-medium">{value}</p>
-      </div>
-    </div>
-  );
-}
-
 export default function GrowCampaignPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
   const role = useRole();
-  // UI gating only — requireRole('staff') on the API is what actually
-  // enforces this; a stale/wrong client-side role read still fails
+  // UI gating only — requireRole('staff')/'manager' on the API is what
+  // actually enforces this; a stale/wrong client-side role read still fails
   // gracefully server-side, it just wouldn't show these controls first.
   const canEdit = atLeast(role, 'staff');
+  const canDelete = atLeast(role, 'manager');
 
   const { data: campaigns, isLoading: campaignLoading, error: campaignError } =
     useApi<GrowCampaign[]>(CAMPAIGNS_KEY);
   const { data: steps, isLoading: stepsLoading, error: stepsError } =
     useApi<GrowSequenceStep[]>(stepsKey(id));
+  const { data: senderProfile } = useApi<GrowSenderProfile>('/grow/sender-profile');
+  const { data: readiness } = useApi<GrowSendingReadiness>('/grow/sending-readiness');
+  const { data: org } = useApi<OrgProfile>('/orgs/current');
   const campaign = campaigns?.find((c) => c.id === id);
+  const knownProductLabels = new Set((senderProfile?.product_urls ?? []).map((p) => p.label));
 
   const [draft, setDraft] = useState<StepDraft[] | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
@@ -158,6 +162,29 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
     }
   }
 
+  async function onDelete() {
+    if (!campaign) return;
+    if (!window.confirm(`Delete "${campaign.name}"? This can't be undone.`)) return;
+    setDeleting(true);
+    setDeleteError(null);
+    setDeleteNotice(null);
+    try {
+      const res = await apiFetch<{ archived: boolean; campaign: GrowCampaign | null }>(
+        `/grow/campaigns/${id}`, { method: 'DELETE' },
+      );
+      await mutate(CAMPAIGNS_KEY);
+      if (res.archived) {
+        setDeleteNotice('This campaign has already sent mail, so it was archived instead of deleted — its send log is kept for the record.');
+      } else {
+        router.push('/grow');
+      }
+    } catch (err) {
+      setDeleteError(err instanceof ApiError ? err.message : 'Could not delete this campaign.');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function onGenerate() {
     if (draft && draft.length > 0) {
       const ok = window.confirm('Replace the current sequence with an AI-generated draft? Unsaved edits will be lost.');
@@ -216,6 +243,9 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
           >
             <CaretLeft size={14} weight="bold" /> Grow
           </Link>
+          {org && (
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{org.name}</p>
+          )}
           <div className="flex items-center gap-3">
             <h1 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">{campaign.name}</h1>
             <span
@@ -224,34 +254,64 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
               {campaign.status}
             </span>
           </div>
-          {campaign.pause_reason && (
-            <p className="mt-1 text-sm text-destructive">Paused: {campaign.pause_reason}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {canEdit && (
+            <>
+              {campaign.status === 'running' ? (
+                <Button variant="ghost" onClick={() => onSetStatus('paused')} disabled={statusBusy}>
+                  <Pause size={14} weight="bold" className="mr-1.5 inline" />
+                  {statusBusy ? 'Pausing…' : 'Pause'}
+                </Button>
+              ) : campaign.status === 'draft' || campaign.status === 'paused' ? (
+                <Button onClick={() => onSetStatus('running')} disabled={statusBusy || readiness?.ready === false}>
+                  <Play size={14} weight="bold" className="mr-1.5 inline" />
+                  {statusBusy ? 'Starting…' : 'Start'}
+                </Button>
+              ) : null}
+            </>
+          )}
+          {canDelete && campaign.status !== 'archived' && (
+            <Button variant="ghost" onClick={onDelete} disabled={deleting}>
+              <Trash size={14} weight="bold" className="mr-1.5 inline" />
+              {deleting ? 'Deleting…' : 'Delete'}
+            </Button>
           )}
         </div>
-        {canEdit && (
-          <div className="flex items-center gap-2">
-            {campaign.status === 'running' ? (
-              <Button variant="ghost" onClick={() => onSetStatus('paused')} disabled={statusBusy}>
-                <Pause size={14} weight="bold" className="mr-1.5 inline" />
-                {statusBusy ? 'Pausing…' : 'Pause'}
-              </Button>
-            ) : campaign.status === 'draft' || campaign.status === 'paused' ? (
-              <Button onClick={() => onSetStatus('running')} disabled={statusBusy}>
-                <Play size={14} weight="bold" className="mr-1.5 inline" />
-                {statusBusy ? 'Starting…' : 'Start'}
-              </Button>
-            ) : null}
-          </div>
-        )}
       </div>
       {statusError && <p className="-mt-2 text-sm text-destructive">{statusError}</p>}
+      {deleteError && <p className="-mt-2 text-sm text-destructive">{deleteError}</p>}
+      {deleteNotice && (
+        <Card className="flex items-start gap-3 border-warning/40 bg-warning/5 p-4">
+          <Trash size={18} weight="fill" className="mt-0.5 shrink-0 text-warning" />
+          <p className="text-sm text-warning">{deleteNotice}</p>
+        </Card>
+      )}
 
-      <Card className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
-        <InfoStat icon={Target} label="Daily target" value={String(campaign.daily_target)} />
-        <InfoStat icon={Clock} label="Send window" value={`${campaign.window_start}–${campaign.window_end}`} />
-        <InfoStat icon={CalendarBlank} label="Days" value={campaign.weekdays_only ? 'Weekdays only' : 'Every day'} />
-        <InfoStat icon={Globe} label="Timezone" value={campaign.timezone} />
-      </Card>
+      {(campaign.status === 'draft' || campaign.status === 'paused') && readiness?.ready === false && (
+        <Card className="flex items-start gap-3 border-warning/40 bg-warning/5 p-4">
+          <WarningCircle size={20} weight="fill" className="mt-0.5 shrink-0 text-warning" />
+          <div>
+            <p className="text-sm font-medium text-warning">This org isn&apos;t ready to send yet</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {!readiness.hasVerifiedDomain && !readiness.hasActiveMailbox
+                ? 'No fully verified sending domain (SPF, DKIM, and DMARC) and no active mailbox.'
+                : !readiness.hasVerifiedDomain
+                  ? 'No fully verified sending domain (SPF, DKIM, and DMARC) yet.'
+                  : 'No active mailbox yet.'}{' '}
+              <Link href="/grow/sending" className="font-medium text-primary hover:underline">
+                Set up sending →
+              </Link>
+            </p>
+          </div>
+        </Card>
+      )}
+
+      <GrowSendWindowCard campaign={campaign} canEdit={canEdit} />
+
+      <GrowScheduleProjection campaignId={id} pauseReason={campaign.pause_reason} />
+
+      <GrowDomainCapsTable campaignId={id} canEdit={canEdit} />
 
       <Card className="p-0">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
@@ -371,6 +431,7 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
                     <SequenceAssistBar
                       selectedText={activeAssist.text}
                       fullValue={activeAssist.fullValue}
+                      knownProductLabels={knownProductLabels}
                       onApply={applyAssist}
                       onClose={() => setActiveAssist(null)}
                     />
@@ -392,6 +453,7 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
                     <SequenceAssistBar
                       selectedText={activeAssist.text}
                       fullValue={activeAssist.fullValue}
+                      knownProductLabels={knownProductLabels}
                       onApply={applyAssist}
                       onClose={() => setActiveAssist(null)}
                     />

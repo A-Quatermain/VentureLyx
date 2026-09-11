@@ -3,11 +3,13 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { mutate } from 'swr';
 import {
   Megaphone, UsersThree, PaperPlaneTilt, Tray, WarningCircle, Flag,
-  EnvelopeSimple, Globe, Play, Pause, CheckCircle, ArrowRight, UploadSimple,
+  EnvelopeSimple, Globe, Play, Pause, CheckCircle, Archive, Trash, ArrowRight, UploadSimple,
 } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
+import { apiFetch, ApiError } from '@/lib/api';
 import type { GrowCampaign, GrowContactListItem, GrowStats } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { Bar } from '@/components/ui/Bar';
@@ -17,12 +19,15 @@ import { PageHeader, Stagger, StaggerItem } from '@/components/Primitives';
 import { NewCampaignDrawer } from '@/components/NewCampaignDrawer';
 import { toneSoft, type Tone } from '@/components/ui/tone';
 
+const CAMPAIGNS_KEY = '/grow/campaigns';
+
 const CAMPAIGN_STATUS_TONE: Record<GrowCampaign['status'], Tone> = {
   draft: 'muted',
   running: 'success',
   paused: 'warning',
   stopped: 'destructive',
   done: 'primary',
+  archived: 'muted',
 };
 
 const CAMPAIGN_STATUS_ICON: Record<GrowCampaign['status'], typeof Play> = {
@@ -31,7 +36,29 @@ const CAMPAIGN_STATUS_ICON: Record<GrowCampaign['status'], typeof Play> = {
   paused: Pause,
   stopped: Pause,
   done: CheckCircle,
+  archived: Archive,
 };
+
+/** Shared by the dashboard list and the campaign detail page: confirms,
+ *  calls the delete endpoint, and reports whether it actually deleted or
+ *  archived instead (a campaign with any sent mail on record can't be
+ *  deleted — see api/src/routes/grow.ts). */
+async function confirmAndDeleteCampaign(
+  campaign: GrowCampaign,
+  onDone: (result: { archived: boolean }) => void,
+  onError: (message: string) => void,
+) {
+  if (!window.confirm(`Delete "${campaign.name}"? This can't be undone.`)) return;
+  try {
+    const res = await apiFetch<{ archived: boolean; campaign: GrowCampaign | null }>(
+      `/grow/campaigns/${campaign.id}`, { method: 'DELETE' },
+    );
+    await mutate(CAMPAIGNS_KEY);
+    onDone(res);
+  } catch (err) {
+    onError(err instanceof ApiError ? err.message : `Could not delete "${campaign.name}".`);
+  }
+}
 
 function Metric({
   label,
@@ -187,10 +214,13 @@ export default function GrowPage() {
   const router = useRouter();
   const role = useRole();
   const canEdit = atLeast(role, 'staff');
+  const canDelete = atLeast(role, 'manager');
   const [creating, setCreating] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
 
   const { data: campaigns, isLoading: campaignsLoading, error: campaignsError } =
-    useApi<GrowCampaign[]>('/grow/campaigns');
+    useApi<GrowCampaign[]>(CAMPAIGNS_KEY);
   const { data: stats, isLoading: statsLoading, error: statsError } = useApi<GrowStats>('/grow/stats');
   const { data: contacts, isLoading: contactsLoading } = useApi<GrowContactListItem[]>('/grow/contacts');
 
@@ -250,6 +280,9 @@ export default function GrowPage() {
             </Link>
             <Link href="/grow/queue" className="text-sm font-medium text-primary hover:underline">
               Queue →
+            </Link>
+            <Link href="/grow/sending" className="text-sm font-medium text-primary hover:underline">
+              Sending setup →
             </Link>
             {canEdit && <Button onClick={() => setCreating(true)}>New campaign</Button>}
           </div>
@@ -318,14 +351,16 @@ export default function GrowPage() {
           <Megaphone size={16} className="text-muted-foreground" />
           <p className="text-sm font-semibold">Campaigns</p>
         </div>
+        {deleteError && <p className="border-b border-border px-4 py-2 text-sm text-destructive">{deleteError}</p>}
+        {deleteNotice && <p className="border-b border-border bg-warning/5 px-4 py-2 text-sm text-warning">{deleteNotice}</p>}
         <ul className="divide-y divide-border">
           {campaigns.map((c) => {
             const StatusIcon = CAMPAIGN_STATUS_ICON[c.status];
             return (
-              <li key={c.id}>
+              <li key={c.id} className="relative">
                 <Link
                   href={`/grow/campaigns/${c.id}`}
-                  className="flex items-center justify-between gap-3 p-4 transition-colors hover:bg-muted/50"
+                  className={`flex items-center justify-between gap-3 p-4 transition-colors hover:bg-muted/50 ${canDelete ? 'pr-12' : ''}`}
                 >
                   <div className="flex min-w-0 items-center gap-3">
                     <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${toneSoft[CAMPAIGN_STATUS_TONE[c.status]]}`}>
@@ -349,6 +384,30 @@ export default function GrowPage() {
                     <ArrowRight size={14} className="text-muted-foreground" />
                   </div>
                 </Link>
+                {canDelete && (
+                  <button
+                    type="button"
+                    aria-label={`Delete ${c.name}`}
+                    onClick={() => {
+                      setDeleteError(null);
+                      setDeleteNotice(null);
+                      confirmAndDeleteCampaign(
+                        c,
+                        (res) => {
+                          if (res.archived) {
+                            setDeleteNotice(
+                              `"${c.name}" has already sent mail, so it was archived instead of deleted — its send log is kept for the record.`,
+                            );
+                          }
+                        },
+                        setDeleteError,
+                      );
+                    }}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-destructive"
+                  >
+                    <Trash size={14} />
+                  </button>
+                )}
               </li>
             );
           })}
@@ -363,7 +422,11 @@ export default function GrowPage() {
           </div>
           {stats.mailbox_capacity.length === 0 ? (
             <p className="p-4 text-sm text-muted-foreground">
-              No active mailboxes yet — connect one in Settings before starting a campaign.
+              No active mailboxes yet —{' '}
+              <Link href="/grow/sending" className="text-primary hover:underline">
+                add one in Sending setup
+              </Link>{' '}
+              before starting a campaign.
             </p>
           ) : (
             <table className="w-full min-w-[480px] text-left text-sm">

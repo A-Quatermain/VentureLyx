@@ -1,20 +1,24 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { mutate } from 'swr';
-import { Cpu, Key, ChartBar, CaretDown, MapPin, MagnifyingGlass } from '@phosphor-icons/react';
+import { Cpu, Key, ChartBar, CaretDown, MapPin, MagnifyingGlass, TrendUp } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import { API_BASE } from '@/lib/config';
 import type {
   OrgProfile, AISettingsResponse, AIProviderPreference, AIFeature, AIModelOverride, AIProvider,
-  ServiceArea, GscStatus,
+  ServiceArea, GscStatus, GrowSenderProfile,
 } from '@/lib/types';
 import { PageHeader } from '@/components/Primitives';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { BusinessProfileForm, type BusinessProfileValues } from '@/components/BusinessProfileForm';
 import { ServiceAreaForm, BLANK_CITY, realCities, type ServiceAreaValues } from '@/components/ServiceAreaForm';
+import {
+  GrowSenderProfileForm, realProductUrls, type GrowSenderProfileValues,
+} from '@/components/GrowSenderProfileForm';
 
 const ORG_KEY = '/orgs/current';
 const AI_SETTINGS_KEY = '/settings/ai';
@@ -43,6 +47,7 @@ export default function SettingsPage() {
       <div className="flex max-w-3xl flex-col gap-6">
         <BusinessCard canEdit={canEdit} />
         <ServiceAreaCard canEdit={canEdit} />
+        <GrowSenderProfileCard canEdit={canEdit} />
         <GscCard canEdit={canEdit} />
         <AICard canEdit={canEdit} />
       </div>
@@ -190,6 +195,85 @@ function ServiceAreaCard({ canEdit }: { canEdit: boolean }) {
         <>
           <fieldset disabled={!canEdit} className="contents">
             <ServiceAreaForm values={draft} onChange={setDraft} />
+          </fieldset>
+          {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+          {canEdit && (
+            <div className="mt-4 flex items-center gap-3">
+              <Button onClick={onSave} disabled={saving}>
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+              {saved && <span className="text-sm text-success">Saved.</span>}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
+const GROW_SENDER_PROFILE_KEY = '/grow/sender-profile';
+
+function GrowSenderProfileCard({ canEdit }: { canEdit: boolean }) {
+  const { data, isLoading } = useApi<GrowSenderProfile>(GROW_SENDER_PROFILE_KEY);
+  const [draft, setDraft] = useState<GrowSenderProfileValues | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!data) return;
+    setDraft({
+      website_url: data.website_url ?? '',
+      phone: data.phone ?? '',
+      mailing_address: data.mailing_address ?? '',
+      product_urls: data.product_urls.length > 0 ? data.product_urls : [{ label: '', url: '' }],
+    });
+  }, [data]);
+
+  async function onSave() {
+    if (!draft) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const body = {
+        website_url: draft.website_url.trim() || null,
+        phone: draft.phone.trim() || null,
+        mailing_address: draft.mailing_address.trim() || null,
+        product_urls: realProductUrls(draft.product_urls),
+      };
+      await apiFetch(GROW_SENDER_PROFILE_KEY, { method: 'PUT', body: JSON.stringify(body) });
+      await mutate(GROW_SENDER_PROFILE_KEY);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not save your Grow sender profile.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card className="p-6">
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <TrendUp size={18} className="text-primary" />
+          <p className="font-display text-lg font-bold tracking-tight">Grow sender profile</p>
+        </div>
+        <Link href="/grow/sending" className="text-sm font-medium text-primary hover:underline">
+          Sending domains &amp; mailboxes →
+        </Link>
+      </div>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Who your outreach emails come from. Resolved as merge fields in sequence steps — website and phone
+        are optional, but a mailing address is legally required before any real send exists. Verifying a
+        sending domain and adding a mailbox happens on the linked page, not here.
+      </p>
+      {isLoading || !draft ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : (
+        <>
+          <fieldset disabled={!canEdit} className="contents">
+            <GrowSenderProfileForm values={draft} onChange={setDraft} />
           </fieldset>
           {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
           {canEdit && (

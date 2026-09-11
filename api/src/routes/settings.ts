@@ -19,6 +19,24 @@ const businessProfileInput = z.object({
   service_area: z.string().trim().max(200).nullable().optional(),
 });
 
+const productUrlInput = z.object({
+  label: z.string().trim().min(1).max(60),
+  url: z.string().trim().url(),
+});
+
+const growSenderProfileInput = z.object({
+  website_url: z.string().trim().url().nullable().optional(),
+  phone: z.string().trim().max(40).nullable().optional(),
+  // CAN-SPAM §7704(a)(5): a real physical postal address is legally
+  // required in every commercial email, not optional metadata — free text
+  // since it's rendered as-is into the unsubscribe footer, never parsed.
+  mailing_address: z.string().trim().max(500).nullable().optional(),
+  product_urls: z.array(productUrlInput).max(20).default([]),
+}).refine(
+  (body) => new Set(body.product_urls.map((p) => p.label)).size === body.product_urls.length,
+  { message: 'Product labels must be unique — {{product_url:Label}} can only resolve to one URL.', path: ['product_urls'] },
+);
+
 const aiSettingsInput = z.object({
   providerPreference: z.enum(['auto', 'anthropic', 'openai']).optional(),
   spendCapMonthly: z.number().positive().nullable().optional(),
@@ -62,6 +80,56 @@ export default async function settingsRoutes(app: FastifyInstance) {
         entityType: 'organizations', entityId: req.ctx.orgId ?? undefined, ip: req.ip, diff: body,
       });
       return org;
+    });
+  });
+
+  // ---- Grow sender profile ----------------------------------------------------
+  // Website, phone, product links, and the physical mailing address
+  // CAN-SPAM requires in every commercial email — resolved as
+  // {{sender_website}}, {{sender_phone}}, {{product_url:<label>}}, and the
+  // unsubscribe footer respectively (api/src/lib/growTemplate.ts,
+  // routes/grow.ts). One row per org; a fresh org just reads back nulls
+  // and an empty product list rather than a 404, same as the business
+  // profile above.
+  app.get('/grow/sender-profile', async (req) => {
+    req.requireRole('viewer');
+    return req.db(async (q) => {
+      const row = await q.one<{
+        website_url: string | null; phone: string | null; mailing_address: string | null;
+        product_urls: Array<{ label: string; url: string }>;
+      }>(
+        `SELECT website_url, phone, mailing_address, product_urls
+           FROM grow_sender_profiles WHERE org_id = app.current_org()`,
+      );
+      return {
+        website_url: row?.website_url ?? null,
+        phone: row?.phone ?? null,
+        mailing_address: row?.mailing_address ?? null,
+        product_urls: row?.product_urls ?? [],
+      };
+    });
+  });
+
+  app.put('/grow/sender-profile', async (req) => {
+    req.requireRole('admin');
+    const sess = req.requireAuth();
+    const body = growSenderProfileInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const profile = await q.one(
+        `INSERT INTO grow_sender_profiles (org_id, website_url, phone, mailing_address, product_urls)
+         VALUES (app.current_org(), $1, $2, $3, $4)
+         ON CONFLICT (org_id) DO UPDATE
+           SET website_url = EXCLUDED.website_url, phone = EXCLUDED.phone,
+               mailing_address = EXCLUDED.mailing_address, product_urls = EXCLUDED.product_urls
+         RETURNING website_url, phone, mailing_address, product_urls`,
+        [body.website_url ?? null, body.phone ?? null, body.mailing_address ?? null, JSON.stringify(body.product_urls)],
+      );
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_sender_profiles.update',
+        entityType: 'grow_sender_profiles', ip: req.ip, diff: body,
+      });
+      return profile;
     });
   });
 

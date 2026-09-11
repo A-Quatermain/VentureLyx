@@ -16,7 +16,7 @@
 import { randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { audit } from '../lib/auth.js';
+import { audit, decryptSecret, encryptSecret } from '../lib/auth.js';
 import {
   CAP_MESSAGE, logAiUsage, resolveAIContext, staticEvents, streamAI, streamEventsToSSE,
 } from '../lib/ai.js';
@@ -25,19 +25,48 @@ import {
   applyMapping, guessMapping, mappingMatchesHeaders, type MappingConfig,
 } from '../lib/growContactImportMapping.js';
 import { ingestFile } from '../lib/growContactImportXlsx.js';
+import type { Querier } from '../lib/db.js';
 import {
-  firstUnrenderedPlaceholder, hasUnrenderedPlaceholder, render, renderUnsubscribeFooter,
-  type RenderableContact,
+  firstUnrenderedPlaceholder, hasUnrenderedPlaceholder, render, renderSenderFields,
+  renderUnsubscribeFooter, type RenderableContact, type SenderProfile,
 } from '../lib/growTemplate.js';
+import { checkImapConnectivity, sendTestEmail } from '../lib/growMailboxTest.js';
+import { mailboxCapOnDate, rampPoints, steadyCapDate } from '../lib/growMailboxWarmup.js';
+import { DEFAULT_FALLBACK_CAP, isConsumerDomain, projectSchedule } from '../lib/growSchedule.js';
+import {
+  buildExpectedRecords, verifyDomain, type SendingDomainProvider,
+} from '../lib/growSendingDomain.js';
 import { HttpError } from '../plugins/context.js';
 
-// Mirrors sender.js's BASE_URL/MAILING_ADDRESS (/opt/outreach/src) so a
-// preview's unsubscribe link/footer look exactly like a real send's. Kept
-// as their own env vars rather than reusing APP_BASE_URL (the frontend
-// origin used elsewhere in this API) since Grow's own /u/:token route
-// doesn't exist yet — the worker and sending path are out of scope here.
+// Mirrors sender.js's BASE_URL (/opt/outreach/src) so a preview's
+// unsubscribe link looks exactly like a real send's. Its own env var
+// rather than reusing APP_BASE_URL (the frontend origin used elsewhere in
+// this API) since Grow's own /u/:token route doesn't exist yet — the
+// worker and sending path are out of scope here.
+//
+// MAILING_ADDRESS used to live next to it as a second env var
+// (GROW_MAILING_ADDRESS) — a single value for the whole deployment, which
+// can't be right once more than one org sends through this app, and
+// CAN-SPAM requiring it means it belongs somewhere the owner can see and
+// edit it, not a server config file. It's grow_sender_profiles now (see
+// db/migrations/011_grow_sender_profiles.sql), fetched per org below.
 const GROW_BASE_URL = process.env.GROW_BASE_URL || 'http://localhost:8080';
-const GROW_MAILING_ADDRESS = process.env.GROW_MAILING_ADDRESS || '';
+
+async function getSenderProfile(q: Querier): Promise<SenderProfile & { mailing_address: string | null }> {
+  const row = await q.one<{
+    website_url: string | null; phone: string | null; mailing_address: string | null;
+    product_urls: Array<{ label: string; url: string }>;
+  }>(
+    `SELECT website_url, phone, mailing_address, product_urls
+       FROM grow_sender_profiles WHERE org_id = app.current_org()`,
+  );
+  return {
+    website_url: row?.website_url ?? null,
+    phone: row?.phone ?? null,
+    mailing_address: row?.mailing_address ?? null,
+    product_urls: row?.product_urls ?? [],
+  };
+}
 
 // Same circuit-breaker thresholds as scheduler.js's circuitBreaker()
 // (/opt/outreach/src) — the worker isn't built here, but the dashboard
@@ -46,6 +75,11 @@ const GROW_MAILING_ADDRESS = process.env.GROW_MAILING_ADDRESS || '';
 // driftable copy in the frontend.
 const BOUNCE_PAUSE_RATE = 0.03;
 const COMPLAINT_PAUSE_RATE = 0.003;
+// scheduler.js's circuitBreaker() ignores rates entirely below this many
+// sends — a campaign's first few messages can bounce 100% by pure bad luck
+// with nothing wrong. Surfaced so the UI can say "not enough sends yet"
+// instead of a scary, statistically meaningless percentage.
+const MIN_SAMPLE = 50;
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const timeField = () => z.string().regex(TIME_RE, 'Use HH:MM (24-hour)');
@@ -89,6 +123,73 @@ const stepInput = z.object({
 
 const stepsPatch = z.object({ steps: z.array(stepInput).min(1) });
 
+// ---- Sending setup --------------------------------------------------------------
+
+const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const SENDING_DOMAIN_PROVIDERS = ['spacemail', 'google', 'microsoft', 'other'] as const;
+
+const sendingDomainInput = z.object({
+  domain: z.string().trim().toLowerCase().regex(DOMAIN_RE, 'Enter a real domain name, e.g. mail.example.com'),
+  provider: z.enum(SENDING_DOMAIN_PROVIDERS),
+});
+
+const mailboxInput = z.object({
+  domain_id: z.string().uuid(),
+  address: z.string().trim().toLowerCase().email(),
+  from_name: z.string().trim().min(1).max(100),
+  reply_to: z.string().trim().toLowerCase().email().nullable().optional(),
+  smtp_host: z.string().trim().min(1),
+  smtp_port: z.number().int().min(1).max(65535).default(465),
+  imap_host: z.string().trim().min(1).nullable().optional(),
+  imap_port: z.number().int().min(1).max(65535).nullable().optional().default(993),
+  username: z.string().trim().min(1),
+  password: z.string().min(1).max(500),
+  steady_cap: z.number().int().min(1).max(1000).default(25),
+});
+
+const mailboxStatusPatch = z.object({ status: z.enum(['active', 'paused']) });
+
+const testSendInput = z.object({ to: z.string().trim().toLowerCase().email() });
+
+// '*' is the only non-hostname value the domain column ever holds — the
+// default rule every recipient domain without its own row falls back to.
+const DOMAIN_POLICY_DOMAIN_RE = /^(\*|[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+)$/;
+
+const domainPolicyInput = z.object({
+  domain: z.string().trim().toLowerCase()
+    .regex(DOMAIN_POLICY_DOMAIN_RE, "Enter a real domain, or '*' for the default rule"),
+  daily_cap: z.number().int().min(0).max(10_000),
+});
+
+const domainPolicyCapPatch = z.object({ daily_cap: z.number().int().min(0).max(10_000) });
+
+const MAILBOX_FIELDS = `id, domain_id, address, from_name, reply_to, smtp_host, smtp_port,
+  imap_host, imap_port, username, warmup_started_on, steady_cap, status, last_health_at,
+  created_at, updated_at`;
+
+interface SendingReadiness {
+  hasVerifiedDomain: boolean;
+  hasActiveMailbox: boolean;
+  ready: boolean;
+}
+
+/** A campaign has nothing to send from until the org has at least one
+ *  fully-verified sending domain (SPF, DKIM, and DMARC all resolving) and
+ *  at least one mailbox in a sendable state — the same states
+ *  scheduler.js's mailboxCapacity() treats as capable of sending
+ *  ('warming' or 'active'; 'paused'/'disabled' are not). */
+async function checkSendingReadiness(q: Querier): Promise<SendingReadiness> {
+  const domain = await q.one(
+    `SELECT 1 FROM grow_sending_domains WHERE spf_ok AND dkim_ok AND dmarc_ok LIMIT 1`,
+  );
+  const mailbox = await q.one(
+    `SELECT 1 FROM grow_mailboxes WHERE status IN ('warming','active') LIMIT 1`,
+  );
+  const hasVerifiedDomain = !!domain;
+  const hasActiveMailbox = !!mailbox;
+  return { hasVerifiedDomain, hasActiveMailbox, ready: hasVerifiedDomain && hasActiveMailbox };
+}
+
 // ---- AI sequence authoring ----------------------------------------------------
 //
 // Two different shapes on purpose. Generation produces structured data (a
@@ -101,27 +202,43 @@ const stepsPatch = z.object({ steps: z.array(stepInput).min(1) });
 // point, so that one stays a real SSE stream via streamEventsToSSE —
 // exactly the pattern routes/ai.ts already uses, AIStreamPanel and all.
 //
-// Every merge field the model is allowed to use, and the one reserved
-// token it must never invent, remove, or alter. Matches growTemplate.ts's
+// Every merge field the model is allowed to use, and the reserved tokens
+// it must never invent, remove, or alter. Matches growTemplate.ts's
 // render() — first_name/contact_name/entity_name/role/region/city/
-// enrollment are the grow_contacts columns worth addressing someone by;
-// unsubscribe_footer is resolved later, at send time, by sender-side logic
-// this file doesn't touch.
+// enrollment are the grow_contacts columns worth addressing someone by.
+// sender_website/sender_phone/unsubscribe_footer/product_url:<label> are
+// all resolved later (renderSenderFields()/renderUnsubscribeFooter(), at
+// preview or send time) against data this prompt doesn't have direct
+// access to — the model only ever emits the token, never a real value.
 const MERGE_FIELDS = ['first_name', 'contact_name', 'entity_name', 'role', 'region', 'city', 'enrollment'] as const;
 const UNSUBSCRIBE_TOKEN = '{{unsubscribe_footer}}';
-const VALID_TOKEN_NAMES = new Set<string>([...MERGE_FIELDS, 'unsubscribe_footer']);
+const RESERVED_TOKEN_NAMES = new Set<string>(['unsubscribe_footer', 'sender_website', 'sender_phone']);
+const VALID_TOKEN_NAMES = new Set<string>([...MERGE_FIELDS, ...RESERVED_TOKEN_NAMES]);
+const PRODUCT_URL_TOKEN_RE = /\{\{\s*product_url:([^{}]+?)\s*\}\}/g;
 
 function countOccurrences(text: string, token: string): number {
   return text.split(token).length - 1;
 }
 
-/** Throws if `text` uses a {{...}} token outside the allowed set — the
- *  model was told the exact list in the prompt; this is the check that
- *  doesn't just trust it followed instructions. */
-function assertValidMergeTokens(text: string): void {
+/** Throws if `text` uses a {{...}} token outside the allowed set, or a
+ *  {{product_url:<label>}} whose label isn't one of this org's own
+ *  product_urls — the model was told the exact list in the prompt; this
+ *  is the check that doesn't just trust it followed instructions, and the
+ *  specific guardrail against inventing a URL the org never entered. */
+function assertValidMergeTokens(text: string, productLabels: Set<string>): void {
   for (const match of text.matchAll(/\{\{\s*(\w+)\s*\}\}/g)) {
     if (!VALID_TOKEN_NAMES.has(match[1]!)) {
       throw new HttpError(502, `The AI used an unsupported merge field {{${match[1]}}} — try generating again`, 'ai_invalid_output');
+    }
+  }
+  for (const match of text.matchAll(PRODUCT_URL_TOKEN_RE)) {
+    const label = match[1]!.trim();
+    if (!productLabels.has(label)) {
+      throw new HttpError(
+        502,
+        `The AI referenced {{product_url:${label}}}, which isn't one of this org's product URLs — try generating again`,
+        'ai_invalid_output',
+      );
     }
   }
 }
@@ -169,18 +286,38 @@ function buildSequenceGenerationPrompt(
   org: { name: string; vertical: string | null } | null,
   catalogItems: Array<{ name: string; description: string | null }>,
   locations: Array<{ name: string; region: string | null }>,
+  senderProfile: { website_url: string | null; phone: string | null; product_urls: Array<{ label: string; url: string }> },
   skeleton: SequenceSkeletonStep[],
 ): { system: string; user: string } {
+  // Only ever offer a sender token the org has actually filled in — an
+  // empty website/phone or an empty product_urls list means that field
+  // just isn't mentioned as available at all, so there's nothing for the
+  // model to reach for and invent a value around.
+  const senderFields = [
+    senderProfile.website_url ? '{{sender_website}}' : null,
+    senderProfile.phone ? '{{sender_phone}}' : null,
+    ...senderProfile.product_urls.map((p) => `{{product_url:${p.label}}}`),
+  ].filter((f): f is string => f !== null);
+
   const system = [
     `You are drafting a cold-outreach email sequence for ${org?.name ?? 'this business'}` +
       `${org?.vertical ? `, a ${org.vertical} business` : ''}.`,
     'GROUNDING RULES — follow exactly, no exceptions:',
-    '- Use ONLY the facts given below (what this business sells, where it operates, who is being contacted). ' +
-      'Never invent customer names, testimonials, statistics, years in business, awards, or capabilities not listed below.',
+    '- Use ONLY the facts given below (what this business sells, where it operates, who is being contacted, ' +
+      'and the sender fields listed as available). Never invent customer names, testimonials, statistics, ' +
+      'years in business, awards, capabilities, or links not listed below.',
     '- If "What this business sells" says nothing is listed, write generically about wanting to start a ' +
       'conversation — do not invent a product or service to describe.',
-    `- Every merge field must be written exactly as {{field}} and be one of: ${MERGE_FIELDS.map((f) => `{{${f}}}`).join(', ')}. ` +
-      'Never invent a merge field name, and never use one not in this list.',
+    `- Every merge field must be written exactly as {{field}} and be one of: ${MERGE_FIELDS.map((f) => `{{${f}}}`).join(', ')}` +
+      `${senderFields.length > 0 ? `, or one of these sender fields: ${senderFields.join(', ')}` : ''}. ` +
+      'Never invent a merge field name, a {{product_url:...}} label not listed above, or use a sender field not listed as available.',
+    senderFields.length > 0
+      ? '- Sender fields are optional, not required — use one only where it genuinely fits a sentence ' +
+        '(e.g. "check it out at {{sender_website}}", "ask about {{product_url:Widget}}"). Never append a ' +
+        '"Links:" list, a signature block of URLs, or any bullet list of links at the end of the email — weave ' +
+        'at most one sender field into the body naturally, in one sentence, or use none at all.'
+      : '- No sender fields (website, phone, product links) are available for this org yet — do not reference ' +
+        'a website, phone number, or product link at all.',
     `- End every email body with the literal token ${UNSUBSCRIBE_TOKEN} on its own line, exactly once, unchanged.`,
     '- Each email: 80-150 words, plain text, no markdown, no "Subject:" label inside the body.',
     'Respond with ONLY valid JSON — no markdown fences, no commentary — matching exactly this shape:',
@@ -194,6 +331,9 @@ function buildSequenceGenerationPrompt(
   const where = locations.length > 0
     ? [...new Set(locations.map((l) => (l.region ? `${l.name}, ${l.region}` : l.name)))].join('; ')
     : '(nothing listed — do not invent where this business operates)';
+  const senderAvailable = senderFields.length > 0
+    ? senderFields.map((f) => `- ${f}`).join('\n')
+    : '(none — do not reference a website, phone, or product link)';
   const steps = skeleton
     .map((s, i) => `${i + 1}. Step ${s.step_no}${s.rankLabel ? ` for contacts with role "${s.rankLabel}"` : ''} — ${s.angle}`)
     .join('\n');
@@ -201,6 +341,7 @@ function buildSequenceGenerationPrompt(
   const user = [
     `What this business sells:\n${sell}`,
     `Where it operates:\n${where}`,
+    `Sender fields available to use (optional):\n${senderAvailable}`,
     `Write these ${skeleton.length} email(s), in order:\n${steps}`,
   ].join('\n\n');
 
@@ -351,6 +492,21 @@ export default async function growRoutes(app: FastifyInstance) {
     values.push(id);
 
     return req.db(async (q) => {
+      // Starting a campaign with nothing to send from isn't a state worth
+      // reaching just so it can fail silently later — block it here, with
+      // the specific reason, rather than letting a (future) worker find
+      // out mid-run.
+      if (body.status === 'running') {
+        const readiness = await checkSendingReadiness(q);
+        if (!readiness.ready) {
+          const missing = [
+            !readiness.hasVerifiedDomain ? 'no fully verified sending domain (SPF, DKIM, and DMARC)' : null,
+            !readiness.hasActiveMailbox ? 'no active mailbox' : null,
+          ].filter(Boolean).join(' and ');
+          throw new HttpError(400, `Can't start this campaign — this org has ${missing} yet.`, 'not_ready_to_send');
+        }
+      }
+
       const campaign = await q.one(
         `UPDATE grow_campaigns SET ${fields.join(', ')}
           WHERE id = $${i}
@@ -364,6 +520,57 @@ export default async function growRoutes(app: FastifyInstance) {
       });
       return campaign;
     });
+  });
+
+  // A campaign that has actually sent mail carries its own CAN-SPAM record
+  // in grow_messages — deleting the campaign would delete that log along
+  // with it (ON DELETE CASCADE, same as every other child table here), so
+  // that case archives instead and never removes a row. A campaign that
+  // never sent anything has no such record to protect; grow_sequence_steps,
+  // grow_enrollments and grow_messages all cascade from grow_campaigns
+  // already (009_grow.sql), so one DELETE is enough to take its steps and
+  // enrollments with it — no separate cleanup queries needed.
+  app.delete('/grow/campaigns/:id', async (req) => {
+    req.requireRole('manager');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const campaign = await q.one<{ id: string; name: string }>(
+        `SELECT id, name FROM grow_campaigns WHERE id = $1`, [id],
+      );
+      if (!campaign) throw new HttpError(404, 'Campaign not found', 'not_found');
+
+      const sent = await q.one<{ n: number }>(
+        `SELECT count(*) AS n FROM grow_messages WHERE campaign_id = $1 AND status = 'sent'`, [id],
+      );
+      const sentCount = sent?.n ?? 0;
+
+      if (sentCount > 0) {
+        const archived = await q.one(
+          `UPDATE grow_campaigns SET status = 'archived' WHERE id = $1 RETURNING ${CAMPAIGN_FIELDS}`,
+          [id],
+        );
+        await audit(q, {
+          orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_campaigns.archive',
+          entityType: 'grow_campaigns', entityId: id, ip: req.ip,
+          diff: { reason: `refused delete: ${sentCount} sent message(s) on record` },
+        });
+        return { archived: true, campaign: archived };
+      }
+
+      await q.exec(`DELETE FROM grow_campaigns WHERE id = $1`, [id]);
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_campaigns.delete',
+        entityType: 'grow_campaigns', entityId: id, ip: req.ip, diff: { name: campaign.name },
+      });
+      return { archived: false, campaign: null };
+    });
+  });
+
+  app.get('/grow/sending-readiness', async (req) => {
+    req.requireRole('viewer');
+    return req.db((q) => checkSendingReadiness(q));
   });
 
   // ---- Sequence steps ---------------------------------------------------------
@@ -448,7 +655,7 @@ export default async function growRoutes(app: FastifyInstance) {
     const feature = 'sequence_writing' as const;
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
 
-    const { system, user, skeleton, ctx } = await req.db(async (q) => {
+    const { system, user, skeleton, productLabels, ctx } = await req.db(async (q) => {
       const campaign = await q.one<{ id: string }>(`SELECT id FROM grow_campaigns WHERE id = $1`, [id]);
       if (!campaign) throw new HttpError(404, 'Campaign not found', 'not_found');
 
@@ -462,6 +669,7 @@ export default async function growRoutes(app: FastifyInstance) {
       const locations = await q.rows<{ name: string; region: string | null }>(
         `SELECT name, region FROM locations WHERE is_active = true ORDER BY is_primary DESC, name LIMIT 20`,
       );
+      const senderProfile = await getSenderProfile(q);
       // Top two ranks actually present in this org's imported list, each
       // with its most common role label — "the contact's role" the AI
       // should address, not a guessed title. An org with no contacts yet
@@ -476,8 +684,12 @@ export default async function growRoutes(app: FastifyInstance) {
       );
 
       const skel = buildSequenceSkeleton(rankGroups.map((r) => ({ rank: r.contact_rank, role: r.role })));
-      const prompt = buildSequenceGenerationPrompt(org, catalogItems, locations, skel);
-      return { system: prompt.system, user: prompt.user, skeleton: skel, ctx: context };
+      const prompt = buildSequenceGenerationPrompt(org, catalogItems, locations, senderProfile, skel);
+      return {
+        system: prompt.system, user: prompt.user, skeleton: skel,
+        productLabels: new Set(senderProfile.product_urls.map((p) => p.label)),
+        ctx: context,
+      };
     });
 
     if (ctx.capExceeded) {
@@ -515,8 +727,8 @@ export default async function growRoutes(app: FastifyInstance) {
       if (!subject || !body) {
         throw new HttpError(502, 'The AI response was missing a subject or body — try generating again', 'ai_invalid_output');
       }
-      assertValidMergeTokens(subject);
-      assertValidMergeTokens(body);
+      assertValidMergeTokens(subject, productLabels);
+      assertValidMergeTokens(body, productLabels);
       if (countOccurrences(body, UNSUBSCRIBE_TOKEN) !== 1) {
         throw new HttpError(
           502,
@@ -583,6 +795,505 @@ export default async function growRoutes(app: FastifyInstance) {
     });
 
     await streamEventsToSSE(reply, gen);
+  });
+
+  // ---- Sending setup ------------------------------------------------------------
+  // Nothing sends without a verified domain and at least one mailbox — this
+  // section is entirely CRUD + verification, never the sending path itself
+  // (grow_messages.status is never touched here, same boundary as the rest
+  // of this file).
+
+  app.get('/grow/sending-domains', async (req) => {
+    req.requireRole('viewer');
+    return req.db(async (q) => {
+      const rows = await q.rows<{
+        id: string; domain: string; provider: SendingDomainProvider;
+        spf_ok: boolean; dkim_ok: boolean; dmarc_ok: boolean; verified_at: string | null;
+      }>(
+        `SELECT id, domain, provider, spf_ok, dkim_ok, dmarc_ok, verified_at
+           FROM grow_sending_domains ORDER BY created_at`,
+      );
+      return rows.map((r) => ({ ...r, expected_records: buildExpectedRecords(r.domain, r.provider) }));
+    });
+  });
+
+  app.post('/grow/sending-domains', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const body = sendingDomainInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const row = await q.one<{
+        id: string; domain: string; provider: SendingDomainProvider;
+        spf_ok: boolean; dkim_ok: boolean; dmarc_ok: boolean; verified_at: string | null;
+      }>(
+        `INSERT INTO grow_sending_domains (org_id, domain, provider)
+         VALUES (app.current_org(), $1, $2)
+         RETURNING id, domain, provider, spf_ok, dkim_ok, dmarc_ok, verified_at`,
+        [body.domain, body.provider],
+      );
+      if (!row) throw new HttpError(409, `${body.domain} has already been added`, 'duplicate_domain');
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_sending_domains.create',
+        entityType: 'grow_sending_domains', entityId: row.id, ip: req.ip, diff: body,
+      });
+      return { ...row, expected_records: buildExpectedRecords(row.domain, row.provider) };
+    });
+  });
+
+  // Live DNS lookups against the domain's real, public DNS — nothing here
+  // reads from or writes to grow_sending_domains' spf_ok/dkim_ok/dmarc_ok
+  // until the lookups have actually returned, so a slow or unresponsive
+  // resolver just makes this request slow, never wrong.
+  app.post('/grow/sending-domains/:id/verify', async (req) => {
+    req.requireRole('staff');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    const domainRow = await req.db((q) =>
+      q.one<{ domain: string; provider: SendingDomainProvider }>(
+        `SELECT domain, provider FROM grow_sending_domains WHERE id = $1`,
+        [id],
+      ),
+    );
+    if (!domainRow) throw new HttpError(404, 'Sending domain not found', 'not_found');
+
+    const result = await verifyDomain(domainRow.domain, domainRow.provider);
+
+    return req.db(async (q) => {
+      const updated = await q.one(
+        `UPDATE grow_sending_domains
+            SET spf_ok = $2, dkim_ok = $3, dmarc_ok = $4, verified_at = now()
+          WHERE id = $1
+        RETURNING id, domain, provider, spf_ok, dkim_ok, dmarc_ok, verified_at`,
+        [id, result.spf.ok, result.dkim.ok, result.dmarc.ok],
+      );
+      return { ...updated, checks: [result.spf, result.dkim, result.dmarc], subdomain_warning: result.subdomainWarning };
+    });
+  });
+
+  app.get('/grow/mailboxes', async (req) => {
+    req.requireRole('viewer');
+    return req.db(async (q) => {
+      const rows = await q.rows<{
+        id: string; domain_id: string; address: string; from_name: string; reply_to: string | null;
+        smtp_host: string; smtp_port: number; imap_host: string | null; imap_port: number | null;
+        username: string; warmup_started_on: string | null; steady_cap: number; status: string;
+        last_health_at: string | null; created_at: string; updated_at: string;
+        domain: string; daily_cap: number;
+      }>(
+        `SELECT m.id, m.domain_id, m.address, m.from_name, m.reply_to, m.smtp_host, m.smtp_port,
+                m.imap_host, m.imap_port, m.username, m.warmup_started_on, m.steady_cap, m.status,
+                m.last_health_at, m.created_at, m.updated_at,
+                d.domain,
+                grow_mailbox_daily_cap(m.*, CURRENT_DATE) AS daily_cap
+           FROM grow_mailboxes m
+           JOIN grow_sending_domains d ON d.id = m.domain_id
+          ORDER BY m.created_at`,
+      );
+      return rows.map((r) => ({
+        ...r,
+        steady_cap_date: r.warmup_started_on
+          ? steadyCapDate(new Date(r.warmup_started_on), r.steady_cap).toISOString().slice(0, 10)
+          : null,
+      }));
+    });
+  });
+
+  app.post('/grow/mailboxes', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const body = mailboxInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const domain = await q.one<{ id: string }>(`SELECT id FROM grow_sending_domains WHERE id = $1`, [body.domain_id]);
+      if (!domain) throw new HttpError(404, 'Sending domain not found', 'not_found');
+
+      // Credential vault row, same convention as GSC's OAuth token
+      // (integrations.credential_enc/iv/tag via encryptSecret) — the
+      // password is never written anywhere else, including audit_log
+      // below, whose diff deliberately excludes it.
+      const { enc, iv, tag } = encryptSecret(body.password);
+      const integration = await q.one<{ id: string }>(
+        `INSERT INTO integrations (org_id, provider, external_id, display_name, status,
+                                    credential_enc, credential_iv, credential_tag)
+         VALUES (app.current_org(), 'grow_mailbox', $1, $2, 'connected', $3, $4, $5)
+         RETURNING id`,
+        [body.address, body.address, enc, iv, tag],
+      );
+      if (!integration) throw new HttpError(409, `${body.address} is already connected`, 'duplicate_mailbox');
+
+      const mailbox = await q.one(
+        `INSERT INTO grow_mailboxes
+           (org_id, domain_id, integration_id, address, from_name, reply_to,
+            smtp_host, smtp_port, imap_host, imap_port, username,
+            warmup_started_on, steady_cap, status)
+         VALUES (app.current_org(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_DATE, $11, 'warming')
+         RETURNING ${MAILBOX_FIELDS}`,
+        [
+          body.domain_id, integration.id, body.address, body.from_name, body.reply_to ?? null,
+          body.smtp_host, body.smtp_port, body.imap_host ?? null, body.imap_port ?? null,
+          body.username, body.steady_cap,
+        ],
+      );
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_mailboxes.create',
+        entityType: 'grow_mailboxes', entityId: (mailbox as { id: string }).id, ip: req.ip,
+        diff: { ...body, password: undefined },
+      });
+      return mailbox;
+    });
+  });
+
+  app.patch('/grow/mailboxes/:id', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const body = mailboxStatusPatch.parse(req.body);
+
+    return req.db(async (q) => {
+      const mailbox = await q.one(
+        `UPDATE grow_mailboxes SET status = $2 WHERE id = $1 RETURNING ${MAILBOX_FIELDS}`,
+        [id, body.status],
+      );
+      if (!mailbox) throw new HttpError(404, 'Mailbox not found', 'not_found');
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_mailboxes.update',
+        entityType: 'grow_mailboxes', entityId: id, ip: req.ip, diff: body,
+      });
+      return mailbox;
+    });
+  });
+
+  // Sends one real message through this mailbox's real SMTP credentials,
+  // then checks (not "confirms a reply arrived" — see growMailboxTest.ts)
+  // that the same credentials can authenticate over IMAP and open INBOX.
+  // Both results are returned verbatim, success or failure — never
+  // summarized into a bare boolean that would hide a real SMTP/IMAP error
+  // string from the person debugging why sends aren't going out.
+  app.post('/grow/mailboxes/:id/test-send', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const { to } = testSendInput.parse(req.body);
+
+    const { mailbox, password } = await req.db(async (q) => {
+      const row = await q.one<{
+        id: string; address: string; from_name: string; reply_to: string | null;
+        smtp_host: string; smtp_port: number; imap_host: string | null; imap_port: number | null;
+        username: string; integration_id: string;
+      }>(
+        `SELECT id, address, from_name, reply_to, smtp_host, smtp_port, imap_host, imap_port, username, integration_id
+           FROM grow_mailboxes WHERE id = $1`,
+        [id],
+      );
+      if (!row) throw new HttpError(404, 'Mailbox not found', 'not_found');
+
+      const cred = await q.one<{ credential_enc: Buffer; credential_iv: Buffer; credential_tag: Buffer }>(
+        `SELECT credential_enc, credential_iv, credential_tag FROM integrations WHERE id = $1`,
+        [row.integration_id],
+      );
+      if (!cred?.credential_enc) {
+        throw new HttpError(409, 'No stored credential for this mailbox — re-add it', 'no_credential');
+      }
+      return { mailbox: row, password: decryptSecret(cred.credential_enc, cred.credential_iv, cred.credential_tag) };
+    });
+
+    const smtp = await sendTestEmail(mailbox, password, to);
+    const imap = await checkImapConnectivity(mailbox, password);
+
+    await req.db(async (q) => {
+      await q.exec(`UPDATE grow_mailboxes SET last_health_at = now() WHERE id = $1`, [id]);
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_mailboxes.test_send',
+        entityType: 'grow_mailboxes', entityId: id, ip: req.ip,
+        diff: { to, smtp_ok: smtp.ok, imap_ok: imap.ok },
+      });
+    });
+
+    return { smtp, imap };
+  });
+
+  // ---- Domain caps ----------------------------------------------------------------
+  //
+  // grow_domain_policies is org-wide, not campaign-scoped (there's no
+  // campaign_id column) — every campaign this org runs shares the same
+  // per-recipient-domain throttle, matching scheduler.js's domainCapacity(),
+  // which reads it the same way regardless of which campaign is asking.
+  //
+  // A fresh org has no rows here at all, so this list is synthesized, not a
+  // straight SELECT: every domain with an explicit policy, plus (since an
+  // uncapped domain with real volume is exactly the gap this table exists
+  // to surface) the top domains among currently-enrolled contacts that
+  // *don't* have one yet, plus a '*' row — real if the org has saved one,
+  // synthesized at scheduler.js's own hardcoded fallback (25) if not, so
+  // the table always shows what's actually governing an uncapped domain
+  // right now rather than implying there's no limit at all.
+  const UNCAPPED_DOMAINS_SHOWN = 15;
+
+  app.get('/grow/domain-policies', async (req) => {
+    req.requireRole('viewer');
+    return req.db(async (q) => {
+      const org = await q.one<{ timezone: string }>(
+        `SELECT timezone FROM organizations WHERE id = app.current_org()`,
+      );
+      const tz = org?.timezone ?? 'UTC';
+
+      const explicit = await q.rows<{
+        id: string; domain: string; daily_cap: number; enrolled_contacts: number; sent_today: number;
+      }>(
+        `SELECT p.id, p.domain, p.daily_cap,
+                COALESCE(ec.n, 0) AS enrolled_contacts,
+                COALESCE(st.n, 0) AS sent_today
+           FROM grow_domain_policies p
+           LEFT JOIN LATERAL (
+             SELECT count(DISTINCT e.contact_id) AS n
+               FROM grow_enrollments e JOIN grow_contacts c ON c.id = e.contact_id
+              WHERE e.state = 'active' AND c.recipient_domain = p.domain
+           ) ec ON true
+           LEFT JOIN LATERAL (
+             SELECT count(*) AS n FROM grow_messages m
+              WHERE m.status = 'sent' AND m.recipient_domain = p.domain
+                AND (m.sent_at AT TIME ZONE $1)::date = (now() AT TIME ZONE $1)::date
+           ) st ON true
+          WHERE p.domain <> '*'`,
+        [tz],
+      );
+
+      const uncapped = await q.rows<{ domain: string; enrolled_contacts: number; sent_today: number }>(
+        `SELECT c.recipient_domain AS domain,
+                count(DISTINCT e.contact_id) AS enrolled_contacts,
+                COALESCE((
+                  SELECT count(*) FROM grow_messages m
+                   WHERE m.status = 'sent' AND m.recipient_domain = c.recipient_domain
+                     AND (m.sent_at AT TIME ZONE $1)::date = (now() AT TIME ZONE $1)::date
+                ), 0) AS sent_today
+           FROM grow_enrollments e
+           JOIN grow_contacts c ON c.id = e.contact_id
+          WHERE e.state = 'active'
+            AND NOT EXISTS (SELECT 1 FROM grow_domain_policies p WHERE p.domain = c.recipient_domain)
+          GROUP BY c.recipient_domain
+          ORDER BY enrolled_contacts DESC
+          LIMIT ${UNCAPPED_DOMAINS_SHOWN}`,
+        [tz],
+      );
+
+      const star = await q.one<{ id: string; daily_cap: number }>(
+        `SELECT id, daily_cap FROM grow_domain_policies WHERE domain = '*'`,
+      );
+      const starTotals = await q.one<{ enrolled_contacts: number; sent_today: number }>(
+        `SELECT
+           (SELECT count(DISTINCT e.contact_id) FROM grow_enrollments e JOIN grow_contacts c ON c.id = e.contact_id
+             WHERE e.state = 'active'
+               AND NOT EXISTS (SELECT 1 FROM grow_domain_policies p
+                                WHERE p.domain = c.recipient_domain AND p.domain <> '*')
+           ) AS enrolled_contacts,
+           (SELECT count(*) FROM grow_messages m
+             WHERE m.status = 'sent'
+               AND (m.sent_at AT TIME ZONE $1)::date = (now() AT TIME ZONE $1)::date
+               AND NOT EXISTS (SELECT 1 FROM grow_domain_policies p
+                                WHERE p.domain = m.recipient_domain AND p.domain <> '*')
+           ) AS sent_today`,
+        [tz],
+      );
+
+      const rows = [
+        ...explicit.map((r) => ({ ...r, is_default: false })),
+        ...uncapped.map((r) => ({
+          id: null as string | null, domain: r.domain, daily_cap: star?.daily_cap ?? DEFAULT_FALLBACK_CAP,
+          enrolled_contacts: r.enrolled_contacts, sent_today: r.sent_today, is_default: false,
+        })),
+        {
+          id: star?.id ?? null, domain: '*', daily_cap: star?.daily_cap ?? DEFAULT_FALLBACK_CAP,
+          enrolled_contacts: starTotals?.enrolled_contacts ?? 0, sent_today: starTotals?.sent_today ?? 0,
+          is_default: true,
+        },
+      ];
+
+      return rows
+        .sort((a, b) => b.enrolled_contacts - a.enrolled_contacts)
+        .map((r) => ({
+          ...r,
+          is_consumer: isConsumerDomain(r.domain),
+          remaining: Math.max(0, r.daily_cap - r.sent_today),
+          is_saved: r.id !== null,
+        }));
+    });
+  });
+
+  app.post('/grow/domain-policies', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const body = domainPolicyInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const row = await q.one(
+        `INSERT INTO grow_domain_policies (org_id, domain, daily_cap)
+         VALUES (app.current_org(), $1, $2)
+         ON CONFLICT (org_id, domain) DO UPDATE SET daily_cap = EXCLUDED.daily_cap
+         RETURNING id, domain, daily_cap`,
+        [body.domain, body.daily_cap],
+      );
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_domain_policies.upsert',
+        entityType: 'grow_domain_policies', entityId: (row as { id: string }).id, ip: req.ip, diff: body,
+      });
+      return row;
+    });
+  });
+
+  app.patch('/grow/domain-policies/:id', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const body = domainPolicyCapPatch.parse(req.body);
+
+    return req.db(async (q) => {
+      const row = await q.one(
+        `UPDATE grow_domain_policies SET daily_cap = $2 WHERE id = $1 RETURNING id, domain, daily_cap`,
+        [id, body.daily_cap],
+      );
+      if (!row) throw new HttpError(404, 'Domain policy not found', 'not_found');
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_domain_policies.update',
+        entityType: 'grow_domain_policies', entityId: id, ip: req.ip, diff: body,
+      });
+      return row;
+    });
+  });
+
+  app.delete('/grow/domain-policies/:id', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const existing = await q.one<{ domain: string }>(`SELECT domain FROM grow_domain_policies WHERE id = $1`, [id]);
+      if (!existing) throw new HttpError(404, 'Domain policy not found', 'not_found');
+      if (existing.domain === '*') {
+        throw new HttpError(400, "The '*' default rule can't be removed — edit its cap instead", 'invalid_input');
+      }
+      await q.exec(`DELETE FROM grow_domain_policies WHERE id = $1`, [id]);
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_domain_policies.delete',
+        entityType: 'grow_domain_policies', entityId: id, ip: req.ip, diff: { domain: existing.domain },
+      });
+      return { ok: true };
+    });
+  });
+
+  // ---- Schedule projection ----------------------------------------------------------
+  //
+  // Everything the "schedule & pacing" tab needs beyond the campaign row
+  // itself (window_start/end/timezone/weekdays_only/daily_target are just
+  // columns on grow_campaigns — the existing PATCH /grow/campaigns/:id
+  // already edits them, no new endpoint needed for that half of the page).
+
+  app.get('/grow/campaigns/:id/schedule-projection', async (req) => {
+    req.requireRole('viewer');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const campaign = await q.one<{
+        timezone: string; weekdays_only: boolean; daily_target: number;
+      }>(
+        `SELECT timezone, weekdays_only, daily_target FROM grow_campaigns WHERE id = $1`,
+        [id],
+      );
+      if (!campaign) throw new HttpError(404, 'Campaign not found', 'not_found');
+
+      // Same-shaped remaining-sends count as the projection's job requires:
+      // one row per (active enrollment, still-unsent qualifying step) pair,
+      // grouped by recipient domain — everything this campaign still has
+      // left to say to everyone currently in it, not just their next email.
+      const remainingByDomain = await q.rows<{ domain: string; n: number }>(
+        `SELECT c.recipient_domain AS domain, count(*) AS n
+           FROM grow_enrollments e
+           JOIN grow_contacts c ON c.id = e.contact_id
+           JOIN grow_sequence_steps s ON s.campaign_id = e.campaign_id
+                                       AND s.step_no > e.current_step
+                                       AND (s.applies_to_rank IS NULL OR s.applies_to_rank = c.contact_rank)
+          WHERE e.campaign_id = $1 AND e.state = 'active'
+          GROUP BY c.recipient_domain`,
+        [id],
+      );
+
+      const mailboxRows = await q.rows<{ status: string; warmup_started_on: string | null; steady_cap: number }>(
+        `SELECT status, warmup_started_on, steady_cap FROM grow_mailboxes`,
+      );
+      const policyRows = await q.rows<{ domain: string; daily_cap: number }>(
+        `SELECT domain, daily_cap FROM grow_domain_policies`,
+      );
+
+      const domainCaps = new Map(policyRows.filter((p) => p.domain !== '*').map((p) => [p.domain, p.daily_cap]));
+      const fallbackCap = policyRows.find((p) => p.domain === '*')?.daily_cap ?? DEFAULT_FALLBACK_CAP;
+      const mailboxes = mailboxRows.map((m) => ({
+        status: m.status,
+        warmupStartedOn: m.warmup_started_on ? new Date(m.warmup_started_on) : null,
+        steadyCap: m.steady_cap,
+      }));
+
+      const projection = projectSchedule({
+        mailboxes,
+        domainRemaining: new Map(remainingByDomain.map((r) => [r.domain, r.n])),
+        domainCaps,
+        fallbackCap,
+        dailyTarget: campaign.daily_target,
+        weekdaysOnly: campaign.weekdays_only,
+        timezone: campaign.timezone,
+      });
+
+      // Circuit breaker, scoped to this campaign specifically — same
+      // definitions as scheduler.js's circuitBreaker() (WHERE campaign_id =
+      // $2), unlike /grow/stats' org-wide dashboard rollup.
+      const totals = await q.one<{ sent: number; bounced: number }>(
+        `SELECT count(*) FILTER (WHERE status = 'sent') AS sent,
+                count(*) FILTER (WHERE status = 'bounced') AS bounced
+           FROM grow_messages WHERE campaign_id = $1`,
+        [id],
+      );
+      const complaints = await q.one<{ n: number }>(
+        `SELECT count(*) AS n FROM grow_events e
+           JOIN grow_messages m ON m.id = e.message_id
+          WHERE e.type = 'complaint' AND m.campaign_id = $1`,
+        [id],
+      );
+      const sent = totals?.sent ?? 0;
+      const bounceRate = sent > 0 ? (totals!.bounced / sent) : 0;
+      const complaintRate = sent > 0 ? ((complaints?.n ?? 0) / sent) : 0;
+
+      // Mailbox warmup ramps for the chart — org-wide, same as the mailbox
+      // list itself; not filtered to this campaign because sending
+      // infrastructure isn't campaign-scoped.
+      const mailboxesForChart = await q.rows<{
+        id: string; address: string; warmup_started_on: string | null; steady_cap: number; status: string;
+      }>(
+        `SELECT id, address, warmup_started_on, steady_cap, status FROM grow_mailboxes ORDER BY address`,
+      );
+
+      return {
+        circuit_breaker: {
+          sent, bounced: totals?.bounced ?? 0, complaints: complaints?.n ?? 0,
+          bounce_rate: bounceRate, bounce_threshold: BOUNCE_PAUSE_RATE,
+          complaint_rate: complaintRate, complaint_threshold: COMPLAINT_PAUSE_RATE,
+          sample_size_met: sent >= MIN_SAMPLE, min_sample: MIN_SAMPLE,
+        },
+        projection,
+        mailbox_ramps: mailboxesForChart.map((m) => ({
+          id: m.id, address: m.address, status: m.status, steady_cap: m.steady_cap,
+          warmup_started_on: m.warmup_started_on,
+          steady_cap_date: m.warmup_started_on
+            ? steadyCapDate(new Date(m.warmup_started_on), m.steady_cap).toISOString().slice(0, 10)
+            : null,
+          current_cap: m.warmup_started_on
+            ? mailboxCapOnDate(
+                { status: m.status, warmupStartedOn: new Date(m.warmup_started_on), steadyCap: m.steady_cap },
+                new Date(new Date().toISOString().slice(0, 10)),
+              )
+            : 0,
+          points: m.warmup_started_on ? rampPoints(new Date(m.warmup_started_on), m.steady_cap) : [],
+        })),
+      };
+    });
   });
 
   // ---- Contacts ---------------------------------------------------------------
@@ -798,19 +1509,35 @@ export default async function growRoutes(app: FastifyInstance) {
         attrs: enrolled.attrs,
       };
 
-      const subject = render(step.subject_tmpl, contactForRender);
-      const renderedBody = render(step.body_tmpl, contactForRender);
+      const senderProfile = await getSenderProfile(q);
+
+      // Sender fields resolve in both subject and body — unlike
+      // unsubscribe_footer (body-only by design), a subject line like
+      // "Support for {{entity_name}} — {{product_url:TestGuard}}" is a
+      // real, valid use of a sender field.
+      const subject = renderSenderFields(render(step.subject_tmpl, contactForRender), senderProfile);
+      const bodyAfterMerge = renderSenderFields(render(step.body_tmpl, contactForRender), senderProfile);
 
       const previewToken = randomBytes(18).toString('hex');
       const unsubscribeUrl = `${GROW_BASE_URL}/u/${previewToken}`;
-      const body = renderUnsubscribeFooter(renderedBody, {
-        mailingAddress: GROW_MAILING_ADDRESS,
+      const body = renderUnsubscribeFooter(bodyAfterMerge, {
+        mailingAddress: senderProfile.mailing_address ?? '',
         unsubscribeUrl,
       });
 
-      const refused = hasUnrenderedPlaceholder(body);
+      // A sender field that never resolved — the org hasn't set a website/
+      // phone, or the step names a product_url label the org doesn't have
+      // — is caught here exactly like an unresolved unsubscribe_footer
+      // would be: hasUnrenderedPlaceholder() now matches the widened
+      // PLACEHOLDER_RE (growTemplate.ts), which includes the colon in
+      // {{product_url:Label}}.
+      const subjectUnresolved = hasUnrenderedPlaceholder(subject);
+      const bodyUnresolved = hasUnrenderedPlaceholder(body);
+      const refused = subjectUnresolved || bodyUnresolved;
       const refusalReason = refused
-        ? `refused to send: unrendered placeholder ${firstUnrenderedPlaceholder(body)} in body`
+        ? `refused to send: unrendered placeholder ${
+            firstUnrenderedPlaceholder(subjectUnresolved ? subject : body)
+          } in ${subjectUnresolved ? 'subject' : 'body'}`
         : null;
 
       return {

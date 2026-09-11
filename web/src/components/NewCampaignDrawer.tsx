@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { mutate } from 'swr';
 import { apiFetch, ApiError } from '@/lib/api';
-import type { GrowCampaign } from '@/lib/types';
+import { useApi } from '@/lib/useApi';
+import type { GrowCampaign, OrgProfile } from '@/lib/types';
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerFooter } from '@/components/ui/Drawer';
 import { Button } from '@/components/ui/Button';
 
@@ -42,6 +43,7 @@ export function NewCampaignDrawer({
    *  where to go next (straight to its sequence-step editor). */
   onCreated: (campaignId: string) => void;
 }) {
+  const { data: org } = useApi<OrgProfile>('/orgs/current');
   const [form, setForm] = useState<FormState>(INITIAL);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +99,11 @@ export function NewCampaignDrawer({
       <DrawerContent>
         <DrawerHeader>
           <DrawerTitle>New campaign</DrawerTitle>
+          {org && (
+            <p className="mt-1 text-sm text-muted-foreground">
+              for <span className="font-medium text-foreground">{org.name}</span>
+            </p>
+          )}
         </DrawerHeader>
 
         <div className="flex flex-1 flex-col gap-4">

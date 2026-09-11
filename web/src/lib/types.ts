@@ -519,7 +519,7 @@ export interface CatalogItem {
 
 // ---- Grow ----------------------------------------------------------------
 
-export type GrowCampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'done';
+export type GrowCampaignStatus = 'draft' | 'running' | 'paused' | 'stopped' | 'done' | 'archived';
 
 export interface GrowCampaign {
   id: string;
@@ -560,6 +560,102 @@ export interface GrowSequenceGenerateResponse {
 }
 
 export type GrowAssistInstruction = 'rewrite' | 'shorten' | 'tone' | 'direct';
+
+export interface GrowProductUrl {
+  label: string;
+  url: string;
+}
+
+export interface GrowSenderProfile {
+  website_url: string | null;
+  phone: string | null;
+  mailing_address: string | null;
+  product_urls: GrowProductUrl[];
+}
+
+// ---- Grow sending setup -----------------------------------------------------
+
+export type GrowSendingDomainProvider = 'spacemail' | 'google' | 'microsoft' | 'other';
+
+export interface GrowExpectedDnsRecord {
+  type: 'SPF' | 'DKIM' | 'DMARC';
+  kind: 'TXT' | 'CNAME';
+  name: string;
+  value: string | null;
+  instructions: string;
+}
+
+export interface GrowSendingDomain {
+  id: string;
+  domain: string;
+  provider: GrowSendingDomainProvider;
+  spf_ok: boolean;
+  dkim_ok: boolean;
+  dmarc_ok: boolean;
+  verified_at: string | null;
+  expected_records: GrowExpectedDnsRecord[];
+}
+
+export interface GrowDnsCheckResult {
+  type: 'SPF' | 'DKIM' | 'DMARC';
+  ok: boolean;
+  expected: string | null;
+  found: string[];
+  note: string;
+}
+
+export interface GrowVerifyDomainResponse extends GrowSendingDomain {
+  checks: GrowDnsCheckResult[];
+  subdomain_warning: string | null;
+}
+
+export type GrowMailboxStatus = 'warming' | 'active' | 'paused' | 'disabled';
+
+export interface GrowMailbox {
+  id: string;
+  domain_id: string;
+  domain: string;
+  address: string;
+  from_name: string;
+  reply_to: string | null;
+  smtp_host: string;
+  smtp_port: number;
+  imap_host: string | null;
+  imap_port: number | null;
+  username: string;
+  warmup_started_on: string | null;
+  steady_cap: number;
+  status: GrowMailboxStatus;
+  daily_cap: number;
+  steady_cap_date: string | null;
+  last_health_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GrowSmtpTestResult {
+  ok: boolean;
+  messageId: string | null;
+  response: string | null;
+  error: string | null;
+}
+
+export interface GrowImapTestResult {
+  ok: boolean;
+  messageCount: number | null;
+  error: string | null;
+}
+
+export interface GrowTestSendResponse {
+  smtp: GrowSmtpTestResult;
+  imap: GrowImapTestResult;
+}
+
+export interface GrowSendingReadiness {
+  hasVerifiedDomain: boolean;
+  hasActiveMailbox: boolean;
+  ready: boolean;
+}
 
 export type GrowEnrollmentState =
   | 'active' | 'replied' | 'bounced' | 'unsubscribed' | 'completed' | 'held' | 'failed';
@@ -641,6 +737,73 @@ export interface GrowStats {
   complaint_threshold: number;
   mailbox_capacity: GrowMailboxCapacity[];
   domain_capacity: GrowDomainCapacity[];
+}
+
+// ---- Grow schedule & pacing -------------------------------------------------
+
+export interface GrowDomainPolicy {
+  id: string | null;
+  domain: string;
+  daily_cap: number;
+  enrolled_contacts: number;
+  sent_today: number;
+  remaining: number;
+  is_default: boolean;
+  is_consumer: boolean;
+  is_saved: boolean;
+}
+
+export type GrowScheduleBinding = 'mailbox_capacity' | 'domain_caps' | 'daily_target';
+
+export interface GrowScheduleDay {
+  date: string;
+  mailbox_capacity: number;
+  domain_capacity: number;
+  daily_target: number;
+  sent: number;
+  binding: GrowScheduleBinding;
+}
+
+export interface GrowScheduleProjection {
+  completion_date: string | null;
+  horizon_exceeded: boolean;
+  remaining_sends: number;
+  blocked_reason: 'no_mailbox_capacity' | 'no_domain_capacity' | null;
+  days: GrowScheduleDay[];
+}
+
+export interface GrowCircuitBreaker {
+  sent: number;
+  bounced: number;
+  complaints: number;
+  bounce_rate: number;
+  bounce_threshold: number;
+  complaint_rate: number;
+  complaint_threshold: number;
+  sample_size_met: boolean;
+  min_sample: number;
+}
+
+export interface GrowMailboxRampPoint {
+  date: string;
+  cap: number;
+}
+
+export interface GrowMailboxRamp {
+  id: string;
+  address: string;
+  status: GrowMailboxStatus;
+  steady_cap: number;
+  warmup_started_on: string | null;
+  steady_cap_date: string | null;
+  current_cap: number;
+  points: GrowMailboxRampPoint[];
+}
+
+export interface GrowScheduleProjectionResponse {
+  circuit_breaker: GrowCircuitBreaker;
+  projection: GrowScheduleProjection;
+  mailbox_ramps: GrowMailboxRamp[];
 }
 
 // ---- Grow contacts import --------------------------------------------------
