@@ -25,10 +25,12 @@ import {
   applyMapping, guessMapping, mappingMatchesHeaders, type MappingConfig,
 } from '../lib/growContactImportMapping.js';
 import { ingestFile } from '../lib/growContactImportXlsx.js';
+import { enrollAllContacts } from '../lib/growEnroll.js';
 import type { Querier } from '../lib/db.js';
 import {
-  firstUnrenderedPlaceholder, hasUnrenderedPlaceholder, render, renderSenderFields,
-  renderUnsubscribeFooter, type RenderableContact, type SenderProfile,
+  firstUnrenderedPlaceholder, getSenderProfile, GROW_BASE_URL, GROW_BASE_URL_USABLE,
+  hasUnrenderedPlaceholder, render, renderSenderFields, renderUnsubscribeFooter,
+  type RenderableContact,
 } from '../lib/growTemplate.js';
 import { checkImapConnectivity, sendRenderedTestEmail, sendTestEmail } from '../lib/growMailboxTest.js';
 import { mailboxCapOnDate, rampPoints, steadyCapDate } from '../lib/growMailboxWarmup.js';
@@ -39,58 +41,6 @@ import {
   buildExpectedRecords, verifyDomain, type SendingDomainProvider,
 } from '../lib/growSendingDomain.js';
 import { HttpError } from '../plugins/context.js';
-
-// Mirrors sender.js's BASE_URL (/opt/outreach/src) so a preview's
-// unsubscribe link looks exactly like a real send's. Its own env var
-// rather than reusing APP_BASE_URL (the frontend origin used elsewhere in
-// this API) since Grow's own /u/:token route doesn't exist yet — the
-// worker and sending path are out of scope here.
-//
-// MAILING_ADDRESS used to live next to it as a second env var
-// (GROW_MAILING_ADDRESS) — a single value for the whole deployment, which
-// can't be right once more than one org sends through this app, and
-// CAN-SPAM requiring it means it belongs somewhere the owner can see and
-// edit it, not a server config file. It's grow_sender_profiles now (see
-// db/migrations/011_grow_sender_profiles.sql), fetched per org below.
-const GROW_BASE_URL = process.env.GROW_BASE_URL || 'http://localhost:8080';
-
-// The first real test send showed exactly what this guards against: no
-// GROW_BASE_URL set anywhere in the deployed environment meant every
-// unsubscribe link — preview, test send, and (eventually) a real one — was
-// silently built against the http://localhost:8080 fallback above. A
-// localhost link is unreachable for a real recipient and, for a real send,
-// means there's no working unsubscribe mechanism at all. Checked once
-// against whatever GROW_BASE_URL actually resolved to at process start,
-// not per-request — either the whole deployment is configured correctly or
-// it isn't.
-function isDevBaseUrl(url: string): boolean {
-  try {
-    const { hostname } = new URL(url);
-    return hostname === 'localhost' || hostname === '127.0.0.1';
-  } catch {
-    return true; // unparseable is exactly as unusable as localhost
-  }
-}
-const GROW_BASE_URL_USABLE = !isDevBaseUrl(GROW_BASE_URL);
-
-async function getSenderProfile(q: Querier): Promise<SenderProfile & { mailing_address: string | null }> {
-  const row = await q.one<{
-    sender_name: string | null; website_url: string | null; phone: string | null;
-    contact_email: string | null; mailing_address: string | null;
-    product_urls: Array<{ label: string; url: string }>;
-  }>(
-    `SELECT sender_name, website_url, phone, contact_email, mailing_address, product_urls
-       FROM grow_sender_profiles WHERE org_id = app.current_org()`,
-  );
-  return {
-    sender_name: row?.sender_name ?? null,
-    website_url: row?.website_url ?? null,
-    phone: row?.phone ?? null,
-    contact_email: row?.contact_email ?? null,
-    mailing_address: row?.mailing_address ?? null,
-    product_urls: row?.product_urls ?? [],
-  };
-}
 
 interface RenderedStep {
   subject: string;
@@ -1011,6 +961,31 @@ export default async function growRoutes(app: FastifyInstance) {
     }));
 
     return { ...prep.rendered, smtp };
+  });
+
+  // ---- Enroll (bulk, one-shot) -----------------------------------------------
+  //
+  // Nothing else in this app or the standalone engine it was ported from
+  // ever wrote a grow_enrollments row (see lib/growEnroll.ts's header) — a
+  // campaign could sit at status='running' indefinitely with real mailboxes
+  // and real contacts and never queue anything. This is the missing step:
+  // enroll every not-yet-enrolled, not-suppressed contact into the
+  // campaign. Safe to call more than once — already-enrolled and suppressed
+  // contacts are skipped, not re-inserted or double-sent.
+  app.post('/grow/campaigns/:id/enroll', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      await assertCampaignExists(q, id);
+      const result = await enrollAllContacts(q, id);
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_campaigns.enroll',
+        entityType: 'grow_campaigns', entityId: id, ip: req.ip, diff: result,
+      });
+      return result;
+    });
   });
 
   // Drafts a starting sequence grounded in this org's own profile — what it

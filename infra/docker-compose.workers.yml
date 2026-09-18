@@ -45,3 +45,31 @@ services:
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }
+
+  grow-worker:
+    # Same image as the api service (../api), different command — the
+    # worker is api/src/worker/growWorker.ts, built into the same dist/ and
+    # sharing every lib/ it needs (db.ts, auth.ts, growTemplate.ts,
+    # growScheduler.ts) rather than a separate package to keep in sync.
+    build:
+      context: ../api
+    image: venturelyx/api:latest
+    container_name: vx-grow-worker
+    command: ["node", "dist/worker/growWorker.js"]
+    restart: unless-stopped
+    networks: [venturelyx]
+    environment:
+      NODE_ENV: production
+      # Connects as the APP role, so RLS applies exactly as it does to the
+      # API. Never the superuser.
+      DATABASE_URL: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      VAULT_KEY: ${VAULT_KEY}
+      GROW_BASE_URL: ${GROW_BASE_URL:-https://app.venturelyx.com}
+      LOG_LEVEL: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 384m
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }

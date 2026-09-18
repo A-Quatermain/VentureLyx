@@ -54,7 +54,7 @@ function isoDate(date: Date): string {
  *  Date — ported from scheduler.js's zonedDateParts(), same reasoning: a
  *  campaign's weekday (for weekdays_only) is a wall-clock concept in its
  *  own timezone, not the server's UTC day. */
-function todayInTimezone(timeZone: string): Date {
+export function todayInTimezone(timeZone: string): Date {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
   }).formatToParts(new Date());
@@ -62,7 +62,7 @@ function todayInTimezone(timeZone: string): Date {
   return new Date(Date.UTC(get('year'), get('month') - 1, get('day')));
 }
 
-function isWeekend(date: Date, timeZone: string): boolean {
+export function isWeekend(date: Date, timeZone: string): boolean {
   const weekday = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' }).format(date);
   return weekday === 'Sat' || weekday === 'Sun';
 }

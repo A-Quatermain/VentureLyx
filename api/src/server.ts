@@ -19,6 +19,7 @@ import locationsRoutes from './routes/locations.js';
 import integrationsRoutes from './routes/integrations.js';
 import growRoutes from './routes/grow.js';
 import { healthy, shutdown } from './lib/db.js';
+import { processUnsubscribe } from './lib/growUnsubscribe.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -74,6 +75,35 @@ app.get('/health', async (_req, reply) => {
     db: db ? 'up' : 'down',
     time: new Date().toISOString(),
   });
+});
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+// Top-level, not under /v1 — GROW_BASE_URL/u/:token is what every Grow
+// render path (preview, test-send, and growWorker.ts's real send) builds
+// literally with no path prefix. Public: a recipient clicking this link, or
+// a mail provider's automated RFC 8058 List-Unsubscribe-Post request, has
+// no session and no org context, so this can't sit behind req.requireAuth().
+app.get('/u/:token', async (req, reply) => {
+  const { token } = req.params as { token: string };
+  const result = await processUnsubscribe(token);
+  reply.type('text/html');
+  if (!result.found) {
+    return reply.status(404).send('<!doctype html><p>This unsubscribe link is not valid or has expired.</p>');
+  }
+  return reply.send(
+    `<!doctype html><p>${escapeHtml(result.email ?? 'This address')} has been unsubscribed and will not receive further email from this campaign.</p>`,
+  );
+});
+
+// The actual RFC 8058 one-click target — mail providers POST here with no
+// page render expected, so this always returns a bare 200/404 with no body.
+app.post('/u/:token', async (req, reply) => {
+  const { token } = req.params as { token: string };
+  const result = await processUnsubscribe(token);
+  return reply.status(result.found ? 200 : 404).send();
 });
 
 await app.register(authRoutes, { prefix: '/v1' });

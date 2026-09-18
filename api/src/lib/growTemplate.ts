@@ -24,7 +24,13 @@
  * product_url references a label the org never defined), the token is
  * left in place rather than blanked — so hasUnrenderedPlaceholder() catches
  * it and the send refuses, the same guardrail {{unsubscribe_footer}} gets.
+ *
+ * getSenderProfile() moved here from routes/grow.ts so the (now built)
+ * worker (src/worker/growWorker.ts) and growScheduler.ts's planTick() read
+ * the exact same row the preview/test-send routes always have, rather than
+ * a second copy of this query drifting from it.
  */
+import type { Querier } from './db.js';
 
 export interface RenderableContact {
   [key: string]: unknown;
@@ -131,4 +137,47 @@ export function hasUnrenderedPlaceholder(body: string): boolean {
  *  sender.js's `body.match(PLACEHOLDER_RE)[0]` at the refusal call site. */
 export function firstUnrenderedPlaceholder(body: string): string | null {
   return body.match(PLACEHOLDER_RE)?.[0] ?? null;
+}
+
+// GROW_BASE_URL was defaulting to http://localhost:8080 with nothing
+// overriding it anywhere in the deployed environment, so every unsubscribe
+// link built against it was unreachable for a real recipient. Moved here
+// (from routes/grow.ts) so growWorker.ts's real sends refuse under the
+// exact same condition the preview/test-send routes already refuse under,
+// rather than a second, possibly-diverging localhost check.
+export function isDevBaseUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === 'localhost' || hostname === '127.0.0.1';
+  } catch {
+    return true; // unparseable is exactly as unusable as localhost
+  }
+}
+
+export const GROW_BASE_URL = process.env.GROW_BASE_URL || 'http://localhost:8080';
+export const GROW_BASE_URL_USABLE = !isDevBaseUrl(GROW_BASE_URL);
+
+/** This org's Grow sender identity (db/migrations/011,014_grow_sender_profiles).
+ *  A row is optional — an org that never filled in the sending-setup screen
+ *  gets all-null fields, which renderSenderFields() already treats as "leave
+ *  the token unresolved" rather than crashing. */
+export async function getSenderProfile(
+  q: Querier,
+): Promise<SenderProfile & { mailing_address: string | null }> {
+  const row = await q.one<{
+    sender_name: string | null; website_url: string | null; phone: string | null;
+    contact_email: string | null; mailing_address: string | null;
+    product_urls: Array<{ label: string; url: string }>;
+  }>(
+    `SELECT sender_name, website_url, phone, contact_email, mailing_address, product_urls
+       FROM grow_sender_profiles WHERE org_id = app.current_org()`,
+  );
+  return {
+    sender_name: row?.sender_name ?? null,
+    website_url: row?.website_url ?? null,
+    phone: row?.phone ?? null,
+    contact_email: row?.contact_email ?? null,
+    mailing_address: row?.mailing_address ?? null,
+    product_urls: row?.product_urls ?? [],
+  };
 }
