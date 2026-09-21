@@ -146,7 +146,7 @@ export default function CommandCenter() {
       </Stagger>
 
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card className="overflow-hidden bg-gradient-to-br from-primary to-violet-700 text-white">
+        <Card className="overflow-hidden bg-gradient-to-br from-primary to-accent-deep text-white">
           <div className="flex items-center gap-2 border-b border-white/15 px-6 py-4">
             <Target size={18} weight="fill" />
             <h3 className="font-display font-semibold">Next Best Action</h3>

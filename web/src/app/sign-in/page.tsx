@@ -54,9 +54,16 @@ export default function SignInPage() {
           aria-hidden
           className="absolute inset-0 h-full w-full object-cover"
         />
-        <div className="absolute inset-0 bg-gradient-to-b from-primary/80 via-primary/40 to-violet-950/85" />
+        {/* Hardcoded to the original indigo/violet values (design_guidelines.json's
+            light --primary #4F46E5, Tailwind's violet-950 #2e1065) rather
+            than from-primary/to-violet-950 — this photo's tint predates the
+            brand-blue token change and must stay indigo/violet regardless of
+            what --primary becomes next, not silently follow it. */}
+        <div className="absolute inset-0 bg-gradient-to-b from-[#4F46E5]/80 via-[#4F46E5]/40 to-[#2e1065]/85" />
 
-        <p className="relative font-display text-lg font-bold tracking-tight text-white">Venturelyx</p>
+        {/* No logo on this panel by design — logo-full's navy wordmark
+            doesn't read against this indigo/purple overlay. Lives on the
+            light form side instead, where it's fully legible. */}
 
         <h1 className="relative max-w-lg font-display text-4xl font-bold leading-tight tracking-tight text-white xl:text-5xl">
           We build businesses, not websites.
@@ -65,8 +72,13 @@ export default function SignInPage() {
 
       <div className="flex items-center justify-center bg-background p-6">
         <div className="w-full max-w-sm">
-          <p className="font-display text-lg font-bold tracking-tight lg:hidden">Venturelyx</p>
-          <h2 className="mt-1 font-display text-2xl font-bold tracking-tight">Welcome back</h2>
+          {/* Theme-aware pair — this panel is bg-background (light or dark
+              depending on theme), unlike the hero panel's fixed dark scrim.
+              56px, both breakpoints — this is now the only logo on the page,
+              shown here on mobile too since the photo panel is lg:hidden. */}
+          <img src="/brand/logo-full.png" alt="Venturelyx" className="h-14 w-auto dark:hidden" />
+          <img src="/brand/logo-full-white.png" alt="Venturelyx" className="hidden h-14 w-auto dark:block" />
+          <h2 className="mt-6 font-display text-2xl font-bold tracking-tight">Welcome back</h2>
           <p className="mt-1 text-sm text-muted-foreground">Sign in to your Command Center.</p>
 
           <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-4">

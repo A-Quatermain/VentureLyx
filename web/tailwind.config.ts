@@ -1,8 +1,8 @@
 import type { Config } from 'tailwindcss';
 
-// Indigo/violet (docs/design_guidelines.json) — replaces the earlier Swiss
-// Brutalist palette entirely (this file no longer has any trace of Klein
-// Blue). Token values live in src/styles/globals.css; this file only maps
+// Brand blue/teal, sampled from public/brand/ (docs/design_guidelines.json
+// predates the real logo and still describes indigo/violet — superseded).
+// Token values live in src/styles/globals.css; this file only maps
 // Tailwind utilities onto those variables.
 const config: Config = {
   content: ['./src/**/*.{ts,tsx}'],
@@ -35,6 +35,9 @@ const config: Config = {
         accent: {
           DEFAULT: 'hsl(var(--accent))',
           foreground: 'hsl(var(--accent-fg))',
+          // Darker fixed variant for white text on a gradient (Button's
+          // 'ai' variant) — see the --accent-deep comment in globals.css.
+          deep: 'hsl(var(--accent-deep))',
         },
         muted: {
           DEFAULT: 'hsl(var(--muted))',

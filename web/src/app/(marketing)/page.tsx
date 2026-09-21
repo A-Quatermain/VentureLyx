@@ -54,12 +54,11 @@ export default async function LandingPage() {
     <div className="min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-30 border-b border-border bg-background/80 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-          <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary">
-              <span className="font-display text-lg font-bold leading-none text-primary-foreground">V</span>
-            </div>
-            <span className="font-display text-lg font-bold tracking-tight">Venturelyx</span>
-          </div>
+          {/* Theme-aware pair, not one image: logo-full.png's navy wordmark
+              is nearly invisible against this header's dark-mode background.
+              32px mobile / 40px desktop. */}
+          <img src="/brand/logo-full.png" alt="Venturelyx" className="h-8 w-auto dark:hidden sm:h-10" />
+          <img src="/brand/logo-full-white.png" alt="Venturelyx" className="hidden h-8 w-auto dark:block sm:h-10" />
           <div className="flex items-center gap-3">
             <ThemeToggle />
             <Link href="/sign-in" className="hidden text-sm text-muted-foreground hover:text-foreground sm:inline">
@@ -87,6 +86,10 @@ export default async function LandingPage() {
 
         <div className="mx-auto max-w-6xl px-6 pb-24 pt-20 sm:pt-28">
           <div className="max-w-3xl">
+            {/* White variant — this sits on the video hero's dark scrim,
+                same reasoning as the header's dark-mode pairing above,
+                except this surface is always dark regardless of theme. */}
+            <img src="/brand/logo-full-white.png" alt="Venturelyx" className="mb-6 h-12 w-auto sm:h-[72px]" />
             <h1 className="font-display text-4xl font-bold leading-tight tracking-tight text-white sm:text-5xl">
               We build businesses,
               <br />

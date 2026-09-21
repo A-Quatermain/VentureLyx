@@ -73,9 +73,7 @@ function SidebarNav({ pathname }: { pathname: string }) {
     <>
       <div className="flex h-16 items-center px-6">
         <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary shadow-sm">
-            <span className="font-display text-lg font-bold leading-none text-primary-foreground">V</span>
-          </div>
+          <img src="/brand/logo-mark.png" alt="" className="h-8 w-8" />
           <span className="font-display text-lg font-bold tracking-tight">Venturelyx</span>
         </div>
       </div>

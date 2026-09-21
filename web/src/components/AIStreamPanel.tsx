@@ -17,7 +17,7 @@ interface Meta {
 const PROVIDER_LABEL: Record<string, string> = { anthropic: 'Claude', openai: 'ChatGPT' };
 
 // Reusable AI streaming panel, styled per design_guidelines.json's AI
-// components rule: the indigo-to-violet gradient is reserved for the
+// components rule: the brand blue-to-teal gradient is reserved for the
 // "Fix this for me"-style CTA (Button's `ai` variant) — the panel chrome
 // itself stays a plain white card, like every other surface.
 export function AIStreamPanel({

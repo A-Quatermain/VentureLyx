@@ -31,7 +31,7 @@ function OnboardingLayout({ children, wide = false }: { children: ReactNode; wid
           webm="/video/hero-trades.webm"
           className="absolute inset-0"
         />
-        <div className="absolute inset-0 bg-gradient-to-b from-primary/80 via-primary/40 to-violet-950/85" />
+        <div className="absolute inset-0 bg-gradient-to-b from-primary/80 via-primary/40 to-[#001030]/85" />
 
         <p className="relative font-display text-lg font-bold tracking-tight text-white">Venturelyx</p>
 

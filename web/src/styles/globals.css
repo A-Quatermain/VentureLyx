@@ -2,24 +2,33 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Indigo/violet tokens — docs/design_guidelines.json. Replaces the earlier
-   Swiss Brutalist palette (Klein Blue, radius 0, harsh black/white 1px
-   borders) everywhere; nothing in the app should still reference those
-   values. HSL triplets (not hex) because GrowthGauge's inline SVG reads
-   hsl(var(--primary|muted|destructive|success)) directly. Light is the
-   default — .dark is applied by lib/theme.ts via a class on <html>, not a
-   media query, since the toggle is explicit. */
+/* Brand tokens — sampled from public/brand/logo-mark.png and logo-full.png
+   (2026-09-21), replacing the earlier indigo/violet palette
+   (docs/design_guidelines.json). Primary/accent now match the logo's own
+   blue-through-cyan-to-teal gradient (#0047FF -> #0096E4 -> #00E5C8, the
+   middle stop is the exact 50% blend of the two brand endpoints, matching
+   what the logo's own gradient interpolates through) rather than an
+   unrelated indigo. --fg/--card-fg use the logo wordmark's own navy
+   (#001030, sampled directly from logo-full.png's dominant opaque color)
+   instead of a generic slate. HSL triplets (not hex) because GrowthGauge's
+   inline SVG reads hsl(var(--primary|muted|destructive|success)) directly.
+   Light is the default — .dark is applied by lib/theme.ts via a class on
+   <html>, not a media query, since the toggle is explicit.
+
+   --accent-fg is navy, not white: #00E5C8 is light enough (L in HSL is
+   ~45%, but it reads bright) that white text on it measures ~1.6:1
+   contrast — badly failing WCAG AA. Navy on it measures ~11.7:1. */
 :root {
   --bg: 210 40% 98%;
-  --fg: 222.2 47.4% 11.2%;
+  --fg: 220 100% 9.4%;
   --card: 0 0% 100%;
-  --card-fg: 222.2 47.4% 11.2%;
+  --card-fg: 220 100% 9.4%;
   --border: #E2E8F0;
-  --primary: 243.4 75.4% 58.6%;
-  --primary-hover: 244.5 57.9% 50.6%;
+  --primary: 223.3 100% 50%;
+  --primary-hover: 223.3 100% 42%;
   --primary-fg: 0 0% 100%;
-  --accent: 174.7 83.9% 31.6%;
-  --accent-fg: 0 0% 100%;
+  --accent: 172.4 100% 44.9%;
+  --accent-fg: 220 100% 9.4%;
   --muted: 210 40% 96.1%;
   --muted-fg: 215.4 16.3% 46.9%;
   --destructive: 0 84.2% 60.2%;
@@ -27,8 +36,15 @@
   --success: 160.1 84.1% 39.4%;
   --success-fg: 0 0% 100%;
   --warning: 37.7 92.1% 50.2%;
-  --warning-fg: 222.2 47.4% 11.2%;
-  --ai-gradient: linear-gradient(to right, #4F46E5, #7C3AED);
+  --warning-fg: 220 100% 9.4%;
+  --ai-gradient: linear-gradient(to right, #0047FF, #0096E4, #00E5C8);
+  /* Same 172.4° accent hue, deliberately darkened — #00E5C8 itself measures
+     ~1.6:1 with white text (badly fails WCAG AA), so Button's 'ai' gradient
+     (white text, spans primary -> this) uses this instead of --accent for
+     its end stop. ~4.9:1 with white. Not themed: its whole job is staying
+     dark enough for white text regardless of light/dark mode, so one value
+     covers both (.dark doesn't redefine it, so it carries through as-is). */
+  --accent-deep: 172.4 100% 25%;
 }
 
 .dark {
@@ -37,11 +53,16 @@
   --card: 222.2 47.4% 11.2%;
   --card-fg: 210 40% 98%;
   --border: #1E293B;
-  --primary: 238.7 83.5% 66.7%;
-  --primary-hover: 234.5 89.5% 73.9%;
+  /* Lighter/less saturated-by-lightness than light mode's --primary so it
+     reads on a dark card, same relationship the old indigo tokens had
+     (58.6% -> 66.7% lightness). Capped at 55%, not pushed lighter: white
+     button text on this measures ~5.4:1 (AA); the more intuitively
+     "dark-mode-lightened" 65% measured only ~3.7:1. */
+  --primary: 223.3 100% 55%;
+  --primary-hover: 223.3 100% 62%;
   --primary-fg: 0 0% 100%;
-  --accent: 173.4 80.4% 40%;
-  --accent-fg: 174 84% 5%;
+  --accent: 172.4 75% 45%;
+  --accent-fg: 172 84% 6%;
   --muted: 217.2 32.6% 17.5%;
   --muted-fg: 215 20.2% 65.1%;
   --destructive: 0 90.6% 70.8%;
@@ -50,7 +71,7 @@
   --success-fg: 156 84% 10%;
   --warning: 45.4 96.7% 64.5%;
   --warning-fg: 26 83% 14%;
-  --ai-gradient: linear-gradient(to right, #6366F1, #A78BFA);
+  --ai-gradient: linear-gradient(to right, #1A59FF, #0096E4, #00E5C8);
 }
 
 body {
