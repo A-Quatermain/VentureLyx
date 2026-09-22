@@ -969,3 +969,78 @@ export interface GrowImportCommitResponse extends GrowImportSummary {
   inserted: number;
   alreadyExisted: number;
 }
+
+// ---- Admin ---------------------------------------------------------------
+export interface AdminSummary {
+  userCount: number;
+  orgCount: number;
+  waitlistNewCount: number;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  full_name: string;
+  is_platform_staff: boolean;
+  mfa_enabled: boolean;
+  last_login_at: string | null;
+  created_at: string;
+}
+
+export type OrgModules = Record<string, boolean>;
+
+export interface AdminOrganization {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  vertical: string | null;
+  modules: OrgModules;
+  created_at: string;
+  owner_email: string | null;
+  member_count: number;
+  site_count: number;
+}
+
+export interface AdminOrgMember {
+  id: string;
+  email: string;
+  full_name: string;
+  role: string;
+  member_since: string;
+}
+
+export interface AdminOrgSite {
+  id: string;
+  in_health_score: boolean;
+  is_primary: boolean;
+}
+
+export interface AdminOrganizationDetail {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  vertical: string | null;
+  website_url: string | null;
+  modules: OrgModules;
+  created_at: string;
+  members: AdminOrgMember[];
+  sites: AdminOrgSite[];
+}
+
+export type WaitlistStatus = 'new' | 'contacted' | 'converted';
+
+export interface WaitlistEntry {
+  id: string;
+  email: string;
+  business_name: string | null;
+  website_url: string | null;
+  phone: string | null;
+  interest: string | null;
+  source_page: string | null;
+  status: WaitlistStatus;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}

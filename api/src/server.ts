@@ -18,6 +18,8 @@ import settingsRoutes from './routes/settings.js';
 import locationsRoutes from './routes/locations.js';
 import integrationsRoutes from './routes/integrations.js';
 import growRoutes from './routes/grow.js';
+import adminRoutes from './routes/admin.js';
+import waitlistRoutes from './routes/waitlist.js';
 import { healthy, shutdown } from './lib/db.js';
 import { processUnsubscribe } from './lib/growUnsubscribe.js';
 
@@ -115,6 +117,8 @@ await app.register(settingsRoutes, { prefix: '/v1' });
 await app.register(locationsRoutes, { prefix: '/v1' });
 await app.register(integrationsRoutes, { prefix: '/v1' });
 await app.register(growRoutes, { prefix: '/v1' });
+await app.register(adminRoutes, { prefix: '/v1' });
+await app.register(waitlistRoutes, { prefix: '/v1' });
 
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, async () => {

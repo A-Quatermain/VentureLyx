@@ -7,6 +7,7 @@ import {
 import { getServerSession } from '@/lib/session';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { VideoHero } from '@/components/VideoHero';
+import { WaitlistCTA } from '@/components/WaitlistCTA';
 import { MODULES, type ModuleInfo } from '@/lib/modules';
 import { TIERS, PRICING_CTA_LABEL } from '@/lib/pricing';
 
@@ -396,14 +397,9 @@ export default async function LandingPage() {
       <section id="pricing" className="mx-auto max-w-6xl scroll-mt-20 px-6 pb-24">
         <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">Pricing</h2>
         {TIERS.length === 0 ? (
-          <div className="mt-8 rounded-2xl border border-border bg-surface p-10 text-center shadow-sm">
+          <div className="mt-8 flex flex-col items-center gap-4 rounded-2xl border border-border bg-surface p-10 text-center shadow-sm">
             <p className="text-muted-foreground">We&rsquo;re finalizing pricing as we roll out.</p>
-            <Link
-              href="/register"
-              className="mt-5 inline-flex min-h-[42px] items-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
-            >
-              {PRICING_CTA_LABEL} <ArrowRight size={16} weight="bold" />
-            </Link>
+            <WaitlistCTA interest="pricing (unspecified tier)" sourcePage="landing_pricing" label={PRICING_CTA_LABEL} />
           </div>
         ) : (
           <div className="mt-8 grid gap-4 sm:grid-cols-3">
@@ -417,12 +413,14 @@ export default async function LandingPage() {
                 <ul className="mt-4 flex flex-col gap-2 text-sm text-muted-foreground">
                   {t.features.map((f) => <li key={f}>{f}</li>)}
                 </ul>
-                <Link
-                  href="/register"
-                  className="mt-6 inline-flex min-h-[42px] w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
-                >
-                  {PRICING_CTA_LABEL} <ArrowRight size={16} weight="bold" />
-                </Link>
+                <div className="mt-6">
+                  <WaitlistCTA
+                    interest={t.name}
+                    sourcePage="landing_pricing"
+                    label={PRICING_CTA_LABEL}
+                    className="inline-flex min-h-[42px] w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
+                  />
+                </div>
               </div>
             ))}
           </div>
