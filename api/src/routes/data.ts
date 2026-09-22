@@ -9,6 +9,15 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../lib/auth.js';
 import { HttpError } from '../plugins/context.js';
+import { moduleWriteGate } from '../lib/moduleAccess.js';
+
+// This file mixes two modules (plus Command Center, which is never gated)
+// under one router, so the module boundary is per-route here, not a
+// plugin-wide hook like operate.ts/grow.ts/reviews.ts: only the /seo/*
+// writes below get { preHandler: SCALESEO_WRITE }. The /command/* and
+// /operate/leads|schedule|money routes are GET-only today regardless, so
+// there's nothing currently to gate on them even if they were Operate's.
+const SCALESEO_WRITE = { preHandler: moduleWriteGate('scaleseo') };
 
 export default async function dataRoutes(app: FastifyInstance) {
 
@@ -212,7 +221,7 @@ export default async function dataRoutes(app: FastifyInstance) {
   // (PATCH /orgs/current, PUT /service-area), not a day-to-day edit.
   const seoSiteUpdateInput = z.object({ render: z.boolean() });
 
-  app.patch('/seo/sites/:siteId', async (req) => {
+  app.patch('/seo/sites/:siteId', SCALESEO_WRITE, async (req) => {
     req.requireRole('admin');
     const sess = req.requireAuth();
     const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
@@ -305,7 +314,7 @@ export default async function dataRoutes(app: FastifyInstance) {
   });
 
   // ---- ScaleSEO: queue a crawl -----------------------------------------
-  app.post('/seo/crawl/:siteId', async (req) => {
+  app.post('/seo/crawl/:siteId', SCALESEO_WRITE, async (req) => {
     req.requireRole('manager');
     const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
 
@@ -491,7 +500,7 @@ export default async function dataRoutes(app: FastifyInstance) {
     );
   });
 
-  app.post('/seo/content-pages', async (req) => {
+  app.post('/seo/content-pages', SCALESEO_WRITE, async (req) => {
     req.requireRole('staff');
     const body = contentPageInput.parse(req.body);
     return req.db((q) =>

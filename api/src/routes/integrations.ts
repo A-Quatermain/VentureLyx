@@ -15,6 +15,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit, encryptSecret } from '../lib/auth.js';
 import { HttpError } from '../plugins/context.js';
+import { moduleWriteGate } from '../lib/moduleAccess.js';
 
 const GSC_SCOPE = 'https://www.googleapis.com/auth/webmasters.readonly';
 const GSC_PROVIDER = 'google_search_console';
@@ -226,7 +227,7 @@ export default async function integrationsRoutes(app: FastifyInstance) {
   });
 
   // ---- disconnect -------------------------------------------------------
-  app.post('/integrations/gsc/disconnect', async (req) => {
+  app.post('/integrations/gsc/disconnect', { preHandler: moduleWriteGate('scaleseo') }, async (req) => {
     req.requireRole('admin');
     const sess = req.requireAuth();
 

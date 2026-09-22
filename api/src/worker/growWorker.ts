@@ -63,16 +63,37 @@ const SENDER_POLL_MS = Number(process.env.GROW_SENDER_POLL_MS ?? 20_000);
 const SENDER_BATCH_SIZE = Number(process.env.GROW_SENDER_BATCH_SIZE ?? 5);
 const MAX_ATTEMPTS = 3;
 
+// (o.modules->>'grow')::boolean IS DISTINCT FROM false — lib/moduleAccess.ts's
+// same "missing key defaults to enabled, only an explicit false disables"
+// rule, expressed in SQL: a NULL (key absent) or true both count as
+// enabled, only a literal false excludes the org. This worker runs
+// entirely outside the HTTP API (withTenant/withPlatform straight against
+// Postgres), so moduleWriteGate's preHandler never sees these writes —
+// without this, toggling Grow off in the admin console would stop new API
+// calls but not the already-running planner/sender loops from continuing
+// to queue and send real mail for that org.
+const GROW_ENABLED = `(o.modules->>'grow')::boolean IS DISTINCT FROM false`;
+
 async function orgIdsWithRunningCampaigns(): Promise<string[]> {
   const rows = await withPlatform((q) =>
-    q.rows<{ org_id: string }>(`SELECT DISTINCT org_id FROM grow_campaigns WHERE status = 'running'`),
+    q.rows<{ org_id: string }>(
+      `SELECT DISTINCT gc.org_id
+         FROM grow_campaigns gc
+         JOIN organizations o ON o.id = gc.org_id
+        WHERE gc.status = 'running' AND ${GROW_ENABLED}`,
+    ),
   );
   return rows.map((r) => r.org_id);
 }
 
 async function orgIdsWithMailboxes(): Promise<string[]> {
   const rows = await withPlatform((q) =>
-    q.rows<{ org_id: string }>(`SELECT DISTINCT org_id FROM grow_mailboxes`),
+    q.rows<{ org_id: string }>(
+      `SELECT DISTINCT gm.org_id
+         FROM grow_mailboxes gm
+         JOIN organizations o ON o.id = gm.org_id
+        WHERE ${GROW_ENABLED}`,
+    ),
   );
   return rows.map((r) => r.org_id);
 }

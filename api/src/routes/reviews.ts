@@ -10,6 +10,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../lib/auth.js';
 import { HttpError } from '../plugins/context.js';
+import { moduleWriteGate } from '../lib/moduleAccess.js';
 
 const REVIEW_FIELDS = `id, source, author_name, rating, body, reviewed_at,
   response_body, response_status, responded_at`;
@@ -23,6 +24,10 @@ const reviewInput = z.object({
 });
 
 export default async function reviewsRoutes(app: FastifyInstance) {
+  // Every route below is Reviews-scoped; this file's registration is the
+  // module boundary. Reads pass through untouched — only POST/PATCH/DELETE
+  // can be turned off.
+  app.addHook('preHandler', moduleWriteGate('reviews'));
 
   app.get('/reviews', async (req) => {
     req.requireRole('viewer');

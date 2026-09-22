@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { audit, encryptSecret } from '../lib/auth.js';
 import { estimateCost, KNOWN_MODELS } from '../lib/ai.js';
 import { HttpError } from '../plugins/context.js';
+import { moduleWriteGate } from '../lib/moduleAccess.js';
 
 const businessProfileInput = z.object({
   name: z.string().trim().min(1).max(200),
@@ -120,7 +121,7 @@ export default async function settingsRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/grow/sender-profile', async (req) => {
+  app.put('/grow/sender-profile', { preHandler: moduleWriteGate('grow') }, async (req) => {
     req.requireRole('admin');
     const sess = req.requireAuth();
     const body = growSenderProfileInput.parse(req.body);

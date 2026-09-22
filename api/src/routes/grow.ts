@@ -17,6 +17,7 @@ import { randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { audit, decryptSecret, encryptSecret } from '../lib/auth.js';
+import { moduleWriteGate } from '../lib/moduleAccess.js';
 import {
   CAP_MESSAGE, logAiUsage, resolveAIContext, staticEvents, streamAI, streamEventsToSSE,
 } from '../lib/ai.js';
@@ -576,6 +577,12 @@ async function readMultipartUpload(
 }
 
 export default async function growRoutes(app: FastifyInstance) {
+  // Every route below is Grow-scoped; this file's registration is the
+  // module boundary. Reads pass through untouched (moduleWriteGate no-ops
+  // on GET/HEAD) — only POST/PATCH/DELETE can be turned off. Deliberately
+  // covers the real-send worker's own entry points too (test-send, enroll)
+  // — a disabled Grow module must not be able to queue or send mail.
+  app.addHook('preHandler', moduleWriteGate('grow'));
 
   // ---- Campaigns ------------------------------------------------------------
 

@@ -3,6 +3,7 @@
 // is not the browser — it has no cookie jar of its own — so this is
 // deliberate, not an accident: read the request's Cookie header once here,
 // never re-implemented per page.
+import { cache } from 'react';
 import { cookies } from 'next/headers';
 import { INTERNAL_API_BASE } from './config';
 import type { MeResponse } from './types';
@@ -22,6 +23,12 @@ async function serverFetch<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function getServerSession(): Promise<MeResponse> {
+// React.cache() dedupes this across every layout/page that calls it within
+// one request tree — (app)/layout.tsx and, since module layouts each call
+// it again for their own enablement check, that would otherwise be a
+// second real round-trip to /auth/me per page load. The underlying fetch
+// itself still stays cache: 'no-store' (serverFetch above) — this only
+// dedupes repeat calls within a single render, not across requests.
+export const getServerSession = cache((): Promise<MeResponse> => {
   return serverFetch<MeResponse>('/auth/me');
-}
+});

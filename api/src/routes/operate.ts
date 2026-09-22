@@ -15,6 +15,7 @@ import type { Querier } from '../lib/db.js';
 import { syncMarketTargets } from '../lib/marketTargets.js';
 import { slugify } from '../lib/slug.js';
 import { HttpError } from '../plugins/context.js';
+import { moduleWriteGate } from '../lib/moduleAccess.js';
 
 async function logTimeline(
   q: Querier,
@@ -89,6 +90,10 @@ const catalogItemInput = z.object({
 });
 
 export default async function operateRoutes(app: FastifyInstance) {
+  // Every route below is Operate-scoped; this file's registration is the
+  // module boundary. Reads pass through untouched (moduleWriteGate no-ops
+  // on GET/HEAD) — only POST/PATCH/DELETE can be turned off.
+  app.addHook('preHandler', moduleWriteGate('operate'));
 
   // ---- Customers (parties) -------------------------------------------------
   // GET /parties returns lifetime value and open balance computed straight

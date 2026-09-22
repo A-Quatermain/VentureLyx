@@ -32,6 +32,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       organizations={me.organizations ?? []}
       currentOrgId={me.currentOrgId}
       orgName={currentOrg?.name ?? null}
+      orgModules={(currentOrg?.modules as Record<string, boolean> | undefined) ?? {}}
     >
       {children}
     </AppShell>

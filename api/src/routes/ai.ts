@@ -11,6 +11,7 @@ import {
   logAiUsage, streamAI, streamEventsToSSE, resolveAIContext, staticEvents, CAP_MESSAGE,
 } from '../lib/ai.js';
 import { HttpError } from '../plugins/context.js';
+import { moduleWriteGate } from '../lib/moduleAccess.js';
 
 export default async function aiRoutes(app: FastifyInstance) {
 
@@ -73,7 +74,10 @@ export default async function aiRoutes(app: FastifyInstance) {
   // Drafts body copy only — title/meta/H1/slug stay real form fields the
   // person fills in, not AI-generated, since a small business owner reading
   // this needs to trust and edit those directly, not approve a black box.
-  app.post('/ai/page-generation/stream', async (req, reply) => {
+  // Content Writer, per ai-team/page.tsx's own ASSISTANTS list: module
+  // 'ScaleSEO', not 'AI Team' — that page is a roster view over features
+  // that live in their owning modules, not a module with its own routes.
+  app.post('/ai/page-generation/stream', { preHandler: moduleWriteGate('scaleseo') }, async (req, reply) => {
     req.requireRole('staff');
     const orgId = req.ctx.orgId!;
     const feature = 'page_generation' as const;
@@ -114,7 +118,8 @@ export default async function aiRoutes(app: FastifyInstance) {
   // The review's real rating/author/body are read server-side by ID rather
   // than trusted from the request body — a client can't ask the model to
   // reply to fabricated review content this way.
-  app.post('/ai/review-response/stream', async (req, reply) => {
+  // Reputation Assistant, per ai-team/page.tsx: module 'Reviews'.
+  app.post('/ai/review-response/stream', { preHandler: moduleWriteGate('reviews') }, async (req, reply) => {
     req.requireRole('staff');
     const orgId = req.ctx.orgId!;
     const feature = 'review_response' as const;
