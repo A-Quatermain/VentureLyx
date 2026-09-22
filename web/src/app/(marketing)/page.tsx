@@ -1,11 +1,20 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import {
-  ArrowRight, Kanban, MagnifyingGlass, Gauge, Compass, Package, TrendUp, Robot,
+  ArrowRight, Kanban, MagnifyingGlass, Gauge, Compass, Package, TrendUp, Robot, Star,
 } from '@phosphor-icons/react/ssr';
 import { getServerSession } from '@/lib/session';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { VideoHero } from '@/components/VideoHero';
+import { MODULES, type ModuleInfo } from '@/lib/modules';
+
+// This page is a Server Component, so it imports Phosphor's /ssr icon set —
+// lib/modules.ts stores an icon *name* rather than a component for exactly
+// this reason (a client component would need the other import). Local to
+// this file: nothing else needs this mapping.
+const MODULE_ICONS: Record<ModuleInfo['icon'], typeof Kanban> = {
+  Compass, Package, Kanban, MagnifyingGlass, TrendUp, Robot, Star,
+};
 
 // This page's output depends on the request's session cookie (redirects an
 // authenticated visitor away entirely), so it was never actually a static
@@ -34,14 +43,6 @@ const FEATURES = [
   },
 ];
 
-const MODULES = [
-  { n: '01', name: 'Build', desc: 'Idea → blueprint → brand → site', icon: Compass, live: false },
-  { n: '02', name: 'Source', desc: 'Suppliers, RFQs, cost compares', icon: Package, live: false },
-  { n: '03', name: 'Operate', desc: 'CRM, jobs, invoices, payments', icon: Kanban, live: true },
-  { n: '04', name: 'ScaleSEO', desc: "Get found. Fix what's broken.", icon: MagnifyingGlass, live: true },
-  { n: '05', name: 'Grow', desc: 'Leads, email/SMS, funnels, ads', icon: TrendUp, live: false },
-  { n: '06', name: 'AI Team', desc: 'Receptionist, sales, SEO agents', icon: Robot, live: false },
-] as const;
 
 export default async function LandingPage() {
   const me = await getServerSession();
@@ -131,27 +132,33 @@ export default async function LandingPage() {
       </section>
 
       <section id="modules" className="mx-auto max-w-6xl scroll-mt-20 px-6 pb-24">
-        <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">Six modules. One platform.</h2>
+        <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">Every module. One platform.</h2>
         <p className="mt-2 text-muted-foreground">Start with what's live. The rest is on the way.</p>
         <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {MODULES.map((m) => (
-            <div key={m.name} className="flex items-start justify-between gap-3 rounded-xl border border-border bg-surface p-5 shadow-sm">
-              <div className="flex items-start gap-3">
-                <m.icon size={20} weight="duotone" className={m.live ? 'text-primary' : 'text-muted-foreground/50'} />
-                <div>
-                  <div className="font-display font-bold tracking-tight">{m.name}</div>
-                  <div className="mt-1 text-sm text-muted-foreground">{m.desc}</div>
+          {MODULES.map((m) => {
+            const Icon = MODULE_ICONS[m.icon];
+            return (
+              <div key={m.key} className="flex items-start justify-between gap-3 rounded-xl border border-border bg-surface p-5 shadow-sm">
+                <div className="flex items-start gap-3">
+                  <Icon size={20} weight="duotone" className={m.status === 'soon' ? 'text-muted-foreground/50' : 'text-primary'} />
+                  <div>
+                    <div className="font-display font-bold tracking-tight">{m.name}</div>
+                    <div className="mt-1 text-sm text-muted-foreground">{m.description}</div>
+                    {m.subtitle && <div className="mt-1 text-xs text-muted-foreground/80">{m.subtitle}</div>}
+                  </div>
                 </div>
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                    m.status === 'live' ? 'bg-success/10 text-success'
+                      : m.status === 'beta' ? 'bg-warning/10 text-warning'
+                        : 'bg-muted text-muted-foreground'
+                  }`}
+                >
+                  {m.status}
+                </span>
               </div>
-              <span
-                className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                  m.live ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'
-                }`}
-              >
-                {m.live ? 'Live' : 'Soon'}
-              </span>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
