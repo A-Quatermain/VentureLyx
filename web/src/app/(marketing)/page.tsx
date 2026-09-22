@@ -1,12 +1,14 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import {
-  ArrowRight, Kanban, MagnifyingGlass, Gauge, Compass, Package, TrendUp, Robot, Star,
+  ArrowRight, Kanban, MagnifyingGlass, Compass, Package, TrendUp, Robot, Star,
+  Globe, MagicWand, ChartBar, ShieldCheck, Prohibit, HandTap, ImageSquare,
 } from '@phosphor-icons/react/ssr';
 import { getServerSession } from '@/lib/session';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { VideoHero } from '@/components/VideoHero';
 import { MODULES, type ModuleInfo } from '@/lib/modules';
+import { TIERS, PRICING_CTA_LABEL } from '@/lib/pricing';
 
 // This page is a Server Component, so it imports Phosphor's /ssr icon set —
 // lib/modules.ts stores an icon *name* rather than a component for exactly
@@ -25,24 +27,125 @@ const MODULE_ICONS: Record<ModuleInfo['icon'], typeof Kanban> = {
 // reason. Forcing dynamic skips the build-time attempt entirely.
 export const dynamic = 'force-dynamic';
 
-const FEATURES = [
+const HOW_IT_WORKS = [
   {
-    icon: Kanban,
-    title: 'Operate',
-    copy: 'Track every lead through a pipeline, manage your catalog, and see who owes you money — all in one place.',
+    step: '1',
+    icon: Globe,
+    title: 'Connect your website',
+    copy: 'Point ScaleSEO at your live site. No code, no tag manager, no waiting on a developer.',
   },
   {
+    step: '2',
     icon: MagnifyingGlass,
-    title: 'ScaleSEO',
-    copy: "Scan your site, get a health score, and see exactly which pages and issues are costing you customers.",
+    title: 'We scan it',
+    copy: 'A real crawl finds the pages you’re missing for every service, in every city you serve.',
   },
   {
-    icon: Gauge,
-    title: 'Command Center',
-    copy: 'One score for how healthy your business is, plus the next best action — surfaced automatically, not buried in a report.',
+    step: '3',
+    icon: MagicWand,
+    title: 'Fix issues with AI drafts you approve',
+    copy: 'AI drafts the page, the fix, or the reply. Nothing goes live until you say so.',
+  },
+  {
+    step: '4',
+    icon: ChartBar,
+    title: 'Track by where it came from',
+    copy: 'Leads, jobs, and revenue, attributed back to the channel and page that produced them.',
   },
 ];
 
+// Real, verified numbers only (queried 2026-09-22 against the running
+// database) — see the commit message for the exact queries. Nothing here
+// is illustrative or rounded for effect.
+const CASE_STUDY = {
+  name: 'N&P Pools',
+  vertical: 'South Florida pool service',
+  before: 1,
+  after: 15,
+  crawlDates: 'September 1 and September 10',
+  healthBefore: 74,
+  healthAfter: 90,
+  opportunityPages: 36,
+  ownerQuote: null as string | null, // placeholder — see the boxed callout below
+  ownerName: 'Noel',
+};
+
+// Module sections get a real screenshot each, not an illustration — none
+// are captured yet (see the PLACEHOLDER note below and the chat response
+// this shipped with). Build/Source have no screenshot slot: they don't
+// exist to screenshot yet, and stay in the compact status grid instead.
+const MODULE_SECTIONS: Array<{
+  key: string;
+  eyebrow: string;
+  title: string;
+  copy: string;
+  screenshotCaption: string;
+}> = [
+  {
+    key: 'operate',
+    eyebrow: 'Operate — live',
+    title: 'Every lead in one pipeline',
+    copy: 'Track leads from first contact to paid invoice. See your catalog, your open jobs, and exactly who owes you money — all in one place.',
+    screenshotCaption: 'Operate — pipeline view',
+  },
+  {
+    key: 'scaleseo',
+    eyebrow: 'ScaleSEO — live',
+    title: 'Find out why customers can’t find you',
+    copy: 'A real crawl of your site, a health score out of 100, and a page-by-page account of what’s broken — the same engine behind the N&P Pools result above.',
+    screenshotCaption: 'ScaleSEO — site health dashboard',
+  },
+  {
+    key: 'grow',
+    eyebrow: 'Grow — beta',
+    title: 'Email campaigns that respect your list',
+    copy: 'Import your contacts, write a sequence, and send real campaigns with mailbox warmup and one-click unsubscribe built in. SMS, funnels, and paid ads are coming.',
+    screenshotCaption: 'Grow — campaign sequence editor',
+  },
+  {
+    key: 'ai-team',
+    eyebrow: 'AI Team — beta',
+    title: 'AI drafts. You approve.',
+    copy: 'Growth Strategist recommends what to do next. Content Writer drafts service and location pages. Reputation Assistant drafts review replies. Nothing publishes or sends until you approve it. A phone attendant is coming.',
+    screenshotCaption: 'AI Team — assistant roster',
+  },
+  {
+    key: 'reviews',
+    eyebrow: 'Reviews — live',
+    title: 'Every review, one inbox',
+    copy: 'Collect reviews from Google, Facebook, and Yelp, or add them manually. See your rating trend and reply with an AI-drafted response you approve before it goes live.',
+    screenshotCaption: 'Reviews — inbox and rating trend',
+  },
+];
+
+const TRUST_POINTS = [
+  { icon: ShieldCheck, title: 'You own your data', copy: 'Export or delete it whenever you want. It’s yours, not ours to hold onto.' },
+  { icon: Prohibit, title: 'Cancel anytime', copy: 'No contract, no retention call. Cancel from Settings whenever you want.' },
+  { icon: HandTap, title: 'AI never acts without you', copy: 'Every AI-drafted page, reply, or email is a draft. Nothing publishes or sends until you approve it.' },
+];
+
+const FAQ = [
+  {
+    q: 'Do I need a website already?',
+    a: 'Yes, today — ScaleSEO and Grow both work against a site you already have. Build, a from-scratch website builder, is coming soon.',
+  },
+  {
+    q: 'Will AI publish or send anything without me?',
+    a: 'No. Every AI-drafted page, review reply, or email sits as a draft until you personally approve it — see the Trust section above.',
+  },
+  {
+    q: 'What does ScaleSEO actually check?',
+    a: 'It crawls your live site, scores its health, and flags exactly which pages and issues are costing you visibility — the same crawl behind the N&P Pools example on this page.',
+  },
+  {
+    q: 'Is Grow’s email sending compliant?',
+    a: 'Every campaign includes a real one-click unsubscribe link that’s honored immediately, and sending is paced with a mailbox warmup ramp rather than blasting a new domain’s full volume on day one.',
+  },
+  {
+    q: 'What does it cost?',
+    a: 'We’re finalizing pricing as we roll out. Join the waitlist below and we’ll reach out the moment it’s ready.',
+  },
+];
 
 export default async function LandingPage() {
   const me = await getServerSession();
@@ -75,6 +178,7 @@ export default async function LandingPage() {
         </div>
       </header>
 
+      {/* ---- Hero: who it's for, the problem, one CTA -------------------- */}
       <section className="relative isolate overflow-hidden">
         <VideoHero
           poster="/video/hero-trades-poster.jpg"
@@ -91,46 +195,137 @@ export default async function LandingPage() {
                 same reasoning as the header's dark-mode pairing above,
                 except this surface is always dark regardless of theme. */}
             <img src="/brand/logo-full-white.png" alt="Venturelyx" className="mb-6 h-12 w-auto sm:h-[72px]" />
-            <h1 className="font-display text-4xl font-bold leading-tight tracking-tight text-white sm:text-5xl">
-              We build businesses,
+            <p className="font-display text-sm font-semibold uppercase tracking-wide text-white/70">
+              For local service businesses
+            </p>
+            <h1 className="mt-2 font-display text-4xl font-bold leading-tight tracking-tight text-white sm:text-5xl">
+              Customers can’t find you.
               <br />
-              not websites.
+              Leads slip through. Reviews go unanswered.
             </h1>
             <p className="mt-6 max-w-xl text-base leading-relaxed text-white/80 sm:text-lg">
-              The operating system that takes your small business from idea to launch to
-              scale — CRM, SEO, and revenue, all reporting into one Command Center, with an
-              AI team behind it.
+              Venturelyx finds the customers searching for you, keeps every lead in one
+              pipeline, and drafts your review replies — so nothing falls through the
+              cracks.
             </p>
-            <div className="mt-8 flex flex-wrap gap-3">
+            <div className="mt-8">
               <Link
                 href="/register"
                 className="inline-flex min-h-[42px] items-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
               >
                 Start free <ArrowRight size={16} weight="bold" />
               </Link>
-              <Link
-                href="/sign-in"
-                className="inline-flex min-h-[42px] items-center rounded-lg border border-white/30 px-5 text-sm font-medium text-white transition-colors hover:bg-white/10"
-              >
-                I have an account
-              </Link>
             </div>
           </div>
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-6 pb-20">
-        <div className="grid gap-4 md:grid-cols-3">
-          {FEATURES.map((f) => (
-            <div key={f.title} className="rounded-xl border border-border bg-surface p-6 shadow-sm transition-shadow hover:shadow-md">
-              <f.icon size={24} weight="duotone" className="text-primary" />
-              <h3 className="mt-4 font-display text-xl font-bold tracking-tight">{f.title}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{f.copy}</p>
+      {/* ---- How it works ------------------------------------------------ */}
+      <section id="how-it-works" className="mx-auto max-w-6xl scroll-mt-20 px-6 py-20">
+        <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">How it works</h2>
+        <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {HOW_IT_WORKS.map((s) => (
+            <div key={s.step} className="rounded-xl border border-border bg-surface p-6 shadow-sm">
+              <div className="flex items-center gap-3">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 font-mono text-sm font-bold text-primary">
+                  {s.step}
+                </span>
+                <s.icon size={22} weight="duotone" className="text-primary" />
+              </div>
+              <h3 className="mt-4 font-display font-bold tracking-tight">{s.title}</h3>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{s.copy}</p>
             </div>
           ))}
         </div>
       </section>
 
+      {/* ---- Case study: N&P Pools — every number below is a verified,
+          queried fact (see CASE_STUDY above), not an estimate. ----------- */}
+      <section className="mx-auto max-w-6xl px-6 pb-20">
+        <div className="rounded-2xl border border-border bg-surface p-6 shadow-sm sm:p-10">
+          <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Real customer, real numbers
+          </p>
+          <h2 className="mt-2 font-display text-2xl font-bold tracking-tight sm:text-3xl">
+            {CASE_STUDY.name} — {CASE_STUDY.vertical}
+          </h2>
+
+          <div className="mt-6 grid gap-6 sm:grid-cols-3">
+            <div>
+              <div className="font-mono text-4xl font-bold tabular-nums text-primary">
+                {CASE_STUDY.before} <span className="text-2xl text-muted-foreground">&rarr;</span> {CASE_STUDY.after}
+              </div>
+              <p className="mt-1 text-sm text-muted-foreground">
+                pages search engines could see (crawls taken {CASE_STUDY.crawlDates})
+              </p>
+            </div>
+            <div>
+              <div className="font-mono text-4xl font-bold tabular-nums">
+                {CASE_STUDY.healthBefore} <span className="text-2xl text-muted-foreground">&rarr;</span> {CASE_STUDY.healthAfter}
+              </div>
+              <p className="mt-1 text-sm text-muted-foreground">ScaleSEO health score, zero critical issues</p>
+            </div>
+            <div>
+              <div className="font-mono text-4xl font-bold tabular-nums">{CASE_STUDY.opportunityPages}</div>
+              <p className="mt-1 text-sm text-muted-foreground">
+                more service-and-city pages ScaleSEO has identified as worth building next
+              </p>
+            </div>
+          </div>
+
+          <p className="mt-8 max-w-3xl text-sm leading-relaxed text-muted-foreground sm:text-base">
+            After a platform migration, search crawlers could see exactly one page of
+            {' '}{CASE_STUDY.name}&rsquo;s site — every city and service page was
+            effectively invisible. ScaleSEO flagged it on the first scan. After
+            rebuilding with crawlable pages, {CASE_STUDY.after} pages are now visible
+            to search engines and the health score rose from {CASE_STUDY.healthBefore}
+            {' '}to {CASE_STUDY.healthAfter}. ScaleSEO also mapped every service {CASE_STUDY.name}
+            {' '}offers against every city they serve and currently has {CASE_STUDY.opportunityPages}
+            {' '}more pages identified as worth building — each one a search their
+            customers are already making.
+          </p>
+
+          {/* PLACEHOLDER — do not treat as real copy. Owner has approved use
+              of the business name; the quote itself hasn't been collected yet. */}
+          <div className="mt-6 rounded-xl border border-dashed border-border p-5">
+            <p className="text-sm italic text-muted-foreground">
+              &ldquo;[Quote pending — {CASE_STUDY.ownerName}, {CASE_STUDY.name}]&rdquo;
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* ---- Module sections: real screenshots, not illustrations --------
+          PLACEHOLDER: no screenshot has been captured for any of these yet
+          (see the chat response this shipped with for why, and how to get
+          real ones in). Swap each ImageSquare block for an actual
+          screenshot — nothing else in this section needs to change. */}
+      <section className="mx-auto max-w-6xl px-6 py-20">
+        <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">See it, don&rsquo;t just take our word for it</h2>
+        <div className="mt-10 flex flex-col gap-16">
+          {MODULE_SECTIONS.map((m, i) => (
+            <div
+              key={m.key}
+              className={`grid items-center gap-8 lg:grid-cols-2 ${i % 2 === 1 ? 'lg:[&>*:first-child]:order-2' : ''}`}
+            >
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-primary">{m.eyebrow}</p>
+                <h3 className="mt-2 font-display text-xl font-bold tracking-tight sm:text-2xl">{m.title}</h3>
+                <p className="mt-3 text-sm leading-relaxed text-muted-foreground sm:text-base">{m.copy}</p>
+              </div>
+              <div className="flex aspect-[16/10] items-center justify-center rounded-xl border border-dashed border-border bg-muted/40">
+                <div className="flex flex-col items-center gap-2 text-muted-foreground/60">
+                  <ImageSquare size={32} weight="duotone" />
+                  <span className="text-xs">{m.screenshotCaption}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ---- All modules at a glance (includes Build/Source, which have
+          no screenshot section above since they don't exist to shoot yet) */}
       <section id="modules" className="mx-auto max-w-6xl scroll-mt-20 px-6 pb-24">
         <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">Every module. One platform.</h2>
         <p className="mt-2 text-muted-foreground">Start with what's live. The rest is on the way.</p>
@@ -160,6 +355,78 @@ export default async function LandingPage() {
             );
           })}
         </div>
+      </section>
+
+      {/* ---- Trust ---------------------------------------------------- */}
+      <section className="border-y border-border bg-surface">
+        <div className="mx-auto max-w-6xl px-6 py-16">
+          <div className="grid gap-8 sm:grid-cols-3">
+            {TRUST_POINTS.map((t) => (
+              <div key={t.title} className="flex flex-col items-start gap-3">
+                <t.icon size={28} weight="duotone" className="text-primary" />
+                <h3 className="font-display font-bold tracking-tight">{t.title}</h3>
+                <p className="text-sm leading-relaxed text-muted-foreground">{t.copy}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ---- FAQ -------------------------------------------------------- */}
+      <section id="faq" className="mx-auto max-w-3xl scroll-mt-20 px-6 py-20">
+        <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">Frequently asked questions</h2>
+        <div className="mt-8 flex flex-col gap-3">
+          {FAQ.map((f) => (
+            <details key={f.q} className="group rounded-xl border border-border bg-surface p-5 shadow-sm">
+              <summary className="cursor-pointer list-none font-display font-semibold tracking-tight marker:content-none">
+                {f.q}
+              </summary>
+              <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{f.a}</p>
+            </details>
+          ))}
+        </div>
+      </section>
+
+      {/* ---- Pricing -----------------------------------------------------
+          lib/pricing.ts's TIERS is empty on purpose — no real prices exist
+          in docs or anywhere else in this repo yet (checked; see that
+          file's header). Renders a waitlist-only section until TIERS has
+          real data; CTAs already say "Join the waitlist" per the brief,
+          since Stripe isn't wired up regardless of when prices land. */}
+      <section id="pricing" className="mx-auto max-w-6xl scroll-mt-20 px-6 pb-24">
+        <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">Pricing</h2>
+        {TIERS.length === 0 ? (
+          <div className="mt-8 rounded-2xl border border-border bg-surface p-10 text-center shadow-sm">
+            <p className="text-muted-foreground">We&rsquo;re finalizing pricing as we roll out.</p>
+            <Link
+              href="/register"
+              className="mt-5 inline-flex min-h-[42px] items-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
+            >
+              {PRICING_CTA_LABEL} <ArrowRight size={16} weight="bold" />
+            </Link>
+          </div>
+        ) : (
+          <div className="mt-8 grid gap-4 sm:grid-cols-3">
+            {TIERS.map((t) => (
+              <div key={t.key} className={`rounded-xl border p-6 shadow-sm ${t.featured ? 'border-primary' : 'border-border'} bg-surface`}>
+                <div className="font-display font-bold tracking-tight">{t.name}</div>
+                <div className="mt-2 font-mono text-3xl font-bold tabular-nums">
+                  {t.price}<span className="text-sm font-normal text-muted-foreground">/{t.cadence}</span>
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">{t.description}</p>
+                <ul className="mt-4 flex flex-col gap-2 text-sm text-muted-foreground">
+                  {t.features.map((f) => <li key={f}>{f}</li>)}
+                </ul>
+                <Link
+                  href="/register"
+                  className="mt-6 inline-flex min-h-[42px] w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
+                >
+                  {PRICING_CTA_LABEL} <ArrowRight size={16} weight="bold" />
+                </Link>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <footer className="border-t border-border py-8 text-center text-xs text-muted-foreground">
