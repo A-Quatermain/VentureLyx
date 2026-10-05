@@ -1,11 +1,14 @@
-import useSWR from 'swr';
+import useSWR, { type SWRConfiguration } from 'swr';
 import { apiFetch } from './api';
 import type { MeResponse } from './types';
 
 // path: null skips the request entirely (SWR's own convention) — for a
 // fetch that's only sometimes wanted, e.g. a search box with no query yet.
-export function useApi<T>(path: string | null) {
-  return useSWR<T>(path, (p: string) => apiFetch<T>(p));
+// `config` is for the rare caller that needs e.g. refreshInterval (polling
+// a just-queued crawl until its score lands) — optional, so every existing
+// call site is unaffected.
+export function useApi<T>(path: string | null, config?: SWRConfiguration<T>) {
+  return useSWR<T>(path, (p: string) => apiFetch<T>(p), config);
 }
 
 // Mirrors api/src/lib/auth.ts's Role/RANK/atLeast exactly — this is only for

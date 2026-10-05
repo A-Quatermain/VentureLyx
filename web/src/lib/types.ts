@@ -160,6 +160,8 @@ export interface Signal {
 }
 
 // ---- ScaleSEO ----------------------------------------------------------------
+export type SeoEnvironment = 'production' | 'staging' | 'development';
+
 export interface SeoSite {
   id: string;
   key: string;
@@ -168,6 +170,9 @@ export interface SeoSite {
   enabled: boolean;
   render: boolean;
   max_pages: number;
+  environment: SeoEnvironment;
+  is_primary: boolean;
+  in_health_score: boolean;
   last_crawl_at: string | null;
   next_crawl_at: string | null;
   crawl_schedule: string | null;
@@ -175,6 +180,9 @@ export interface SeoSite {
   pages: number | null;
   critical_issues: number | null;
   high_issues: number | null;
+  crawl_count: number;
+  page_count: number;
+  issue_count: number;
 }
 
 // ---- GET/PATCH /seo/sites/:siteId — crawler config, not health ------------
@@ -191,6 +199,24 @@ export interface SeoSiteConfig {
   timeout_s: number;
   respect_robots: boolean;
   crawl_schedule: string | null;
+  environment: SeoEnvironment;
+  is_primary: boolean;
+  in_health_score: boolean;
+}
+
+// ---- POST/PATCH /seo/sites body -------------------------------------------
+export interface SeoSiteInput {
+  url: string;
+  name: string;
+  environment: SeoEnvironment;
+  is_primary: boolean;
+  render: boolean;
+  in_health_score: boolean;
+}
+
+export interface SeoSiteCreateResponse {
+  id: string;
+  crawlQueued: boolean;
 }
 
 export interface SeoScoreDetail {

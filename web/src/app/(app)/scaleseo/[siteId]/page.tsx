@@ -2,14 +2,18 @@
 
 import { use, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { mutate } from 'swr';
-import { ChartBar, UsersThree, FilePlus, ClockCounterClockwise, MapPin, Target, Plug } from '@phosphor-icons/react';
+import {
+  ChartBar, UsersThree, FilePlus, ClockCounterClockwise, MapPin, Target, Plug,
+  PencilSimple, Trash, Plus,
+} from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import { API_BASE } from '@/lib/config';
 import type {
   SeoHealthDetail, SeoRanking, SeoCompetitor, SeoCrawlHistoryEntry, ContentPage, SummaryResponse,
-  CoverageGap, GscQueriesResponse,
+  CoverageGap, GscQueriesResponse, SeoSite,
 } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -19,12 +23,15 @@ import { Sparkline } from '@/components/ui/Sparkline';
 import { SeverityBadge } from '@/components/ui/Badge';
 import { StatStrip } from '@/components/ui/StatStrip';
 import { CrawlButton } from '@/components/CrawlButton';
-import { RenderToggle } from '@/components/RenderToggle';
 import { AIStreamPanel } from '@/components/AIStreamPanel';
+import { SitePicker } from '@/components/SitePicker';
+import { SiteDrawer } from '@/components/SiteDrawer';
 
 const TABS = ['Scanner', 'Keywords', 'Coverage', 'Competitors', 'AI Page Builder', 'History'] as const;
 type Tab = (typeof TABS)[number];
 type PageKind = 'service_page' | 'location_page' | 'blog_post' | 'landing_page';
+
+const SITES_KEY = '/seo/sites';
 
 export default function ScaleSeoHealthPage({
   params,
@@ -32,7 +39,17 @@ export default function ScaleSeoHealthPage({
   params: Promise<{ siteId: string }>;
 }) {
   const { siteId } = use(params);
+  const router = useRouter();
+  const role = useRole();
+  const canEdit = atLeast(role, 'admin');
+  const { data: sites } = useApi<SeoSite[]>(SITES_KEY);
+  const site = sites?.find((s) => s.id === siteId);
+
   const [tab, setTab] = useState<Tab>('Scanner');
+  const [addingSite, setAddingSite] = useState(false);
+  const [editingSite, setEditingSite] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   // Seeded by a Priority Action's "Fix this for me" — jumps to the AI Page
   // Builder with a topic already filled in, rather than a fake instant fix.
   const [builderKind, setBuilderKind] = useState<PageKind>('service_page');
@@ -50,18 +67,63 @@ export default function ScaleSeoHealthPage({
     setTab('AI Page Builder');
   }
 
+  async function onDelete() {
+    if (!site) return;
+    const named = [
+      site.crawl_count > 0 ? `${site.crawl_count} crawl${site.crawl_count === 1 ? '' : 's'}` : null,
+      site.page_count > 0 ? `${site.page_count} crawled page${site.page_count === 1 ? '' : 's'}` : null,
+      site.issue_count > 0 ? `${site.issue_count} open issue${site.issue_count === 1 ? '' : 's'}` : null,
+    ].filter(Boolean);
+    const what = named.length > 0 ? named.join(', ') : 'its crawl history';
+    if (!confirm(`Delete "${site.name}"? This permanently removes ${what}. This can't be undone.`)) return;
+
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await apiFetch(`/seo/sites/${siteId}`, { method: 'DELETE' });
+      await mutate(SITES_KEY);
+      const remaining = (sites ?? []).filter((s) => s.id !== siteId);
+      router.push(remaining.length > 0 ? `/scaleseo/${remaining[0]!.id}` : '/scaleseo');
+    } catch (err) {
+      setDeleteError(err instanceof ApiError ? err.message : 'Could not delete this site.');
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="font-display text-2xl font-bold tracking-tight">ScaleSEO</h1>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        {sites ? <SitePicker sites={sites} currentSiteId={siteId} /> : <h1 className="font-display text-2xl font-bold tracking-tight">ScaleSEO</h1>}
         <div className="flex items-center gap-3">
           <Link href={`/scaleseo/${siteId}/pages`} className="text-sm font-medium text-primary hover:underline">
             View pages →
           </Link>
-          <RenderToggle siteId={siteId} />
           <CrawlButton siteId={siteId} />
+          {canEdit && (
+            <>
+              <Button variant="ghost" onClick={() => setAddingSite(true)} className="inline-flex items-center gap-1.5">
+                <Plus size={14} weight="bold" /> Add site
+              </Button>
+              {site && (
+                <>
+                  <Button variant="ghost" onClick={() => setEditingSite(true)} className="inline-flex items-center gap-1.5">
+                    <PencilSimple size={14} weight="bold" /> Edit
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={onDelete}
+                    disabled={deleting}
+                    className="inline-flex items-center gap-1.5 text-destructive"
+                  >
+                    <Trash size={14} weight="bold" /> {deleting ? 'Deleting…' : 'Delete'}
+                  </Button>
+                </>
+              )}
+            </>
+          )}
         </div>
       </div>
+      {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
 
       <div className="flex w-fit gap-1 rounded-full border border-border bg-surface p-1 shadow-sm">
         {TABS.map((t) => (
@@ -76,6 +138,16 @@ export default function ScaleSeoHealthPage({
           </button>
         ))}
       </div>
+
+      <SiteDrawer
+        open={addingSite}
+        onOpenChange={setAddingSite}
+        defaultPrimary={(sites ?? []).length === 0}
+        onSaved={(newSiteId) => router.push(`/scaleseo/${newSiteId}`)}
+      />
+      {site && (
+        <SiteDrawer open={editingSite} onOpenChange={setEditingSite} site={site} onSaved={() => setEditingSite(false)} />
+      )}
 
       {tab === 'Scanner' && <ScannerTab siteId={siteId} onFixIssue={onFixIssue} />}
       {tab === 'Keywords' && <KeywordsTab siteId={siteId} />}
@@ -98,7 +170,12 @@ const SUBSCORE_LABELS = {
 } as const;
 
 function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code: string) => void }) {
-  const { data, isLoading, error } = useApi<SeoHealthDetail>(`/seo/health/${siteId}`);
+  // No score yet (brand-new site, or a crawl just queued) — poll until one
+  // lands instead of leaving a static "waiting" sentence up; stops itself
+  // the moment a real score arrives.
+  const { data, isLoading, error } = useApi<SeoHealthDetail>(`/seo/health/${siteId}`, {
+    refreshInterval: (latest) => (latest && latest.score?.health == null ? 3000 : 0),
+  });
   const { data: rankings } = useApi<SeoRanking[]>('/seo/rankings');
   const { data: summary } = useApi<SummaryResponse>('/command/summary');
 
@@ -147,7 +224,22 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
             </div>
           </div>
         ) : (
-          <p className="py-8 text-center text-sm text-muted-foreground">No score yet — waiting on the first crawl.</p>
+          <div className="flex flex-col items-center py-8">
+            <div className="flex gap-1.5" aria-hidden>
+              {[0, 1, 2].map((i) => (
+                <span
+                  key={i}
+                  className="h-2 w-2 animate-pulse rounded-full bg-primary"
+                  style={{ animationDelay: `${i * 150}ms` }}
+                />
+              ))}
+            </div>
+            <p className="mt-4 text-sm text-muted-foreground">Scanning your site…</p>
+            <p className="mt-1 max-w-xs text-center text-xs text-muted-foreground/70">
+              This usually takes a minute or two. The score and first findings will appear here as soon as
+              it's done.
+            </p>
+          </div>
         )}
         {score?.computed_at && (
           <p className="mt-6 text-center text-xs text-muted-foreground">

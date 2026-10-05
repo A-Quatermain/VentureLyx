@@ -5,11 +5,13 @@
  * caller's org automatically. None of these statements carry an org_id filter
  * and none of them need one.
  */
+import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../lib/auth.js';
 import { HttpError } from '../plugins/context.js';
 import { moduleWriteGate } from '../lib/moduleAccess.js';
+import { slugify } from '../lib/slug.js';
 
 // This file mixes two modules (plus Command Center, which is never gated)
 // under one router, so the module boundary is per-route here, not a
@@ -184,8 +186,16 @@ export default async function dataRoutes(app: FastifyInstance) {
     return req.db((q) =>
       q.rows(
         `SELECT s.id, s.key, s.name, s.url, s.enabled, s.render, s.max_pages,
+                s.environment, s.is_primary, s.in_health_score,
                 s.last_crawl_at, s.next_crawl_at, s.crawl_schedule,
-                sc.health, sc.pages, sc.critical_issues, sc.high_issues
+                sc.health, sc.pages, sc.critical_issues, sc.high_issues,
+                (SELECT count(*)::int FROM seo_crawls WHERE site_id = s.id) AS crawl_count,
+                (SELECT count(*)::int FROM seo_pages p
+                   JOIN seo_crawls c ON c.id = p.crawl_id
+                  WHERE c.site_id = s.id) AS page_count,
+                (SELECT count(*)::int FROM seo_issues i
+                   JOIN seo_crawls c ON c.id = i.crawl_id
+                  WHERE c.site_id = s.id) AS issue_count
            FROM seo_sites s
       LEFT JOIN LATERAL (
              SELECT * FROM seo_scores WHERE site_id = s.id
@@ -203,7 +213,8 @@ export default async function dataRoutes(app: FastifyInstance) {
     return req.db(async (q) => {
       const site = await q.one(
         `SELECT id, key, name, url, enabled, render, max_pages, concurrency,
-                delay_ms, timeout_s, respect_robots, crawl_schedule
+                delay_ms, timeout_s, respect_robots, crawl_schedule,
+                environment, is_primary, in_health_score
            FROM seo_sites WHERE id = $1`,
         [siteId],
       );
@@ -212,14 +223,97 @@ export default async function dataRoutes(app: FastifyInstance) {
     });
   });
 
-  // ---- ScaleSEO: toggle rendering for a site -----------------------------
+  // ---- ScaleSEO: create a site --------------------------------------------
+  // Mirrors the onboarding INSERT in routes/auth.ts (key = slugify(hostname),
+  // immediately queue a crawl) — this is the same action for an org that
+  // already finished onboarding and needs a second site (a new location, a
+  // staging rebuild, etc).
+  const seoSiteCreateInput = z.object({
+    url: z.string().trim().url(),
+    name: z.string().trim().min(1).max(200),
+    environment: z.enum(['production', 'staging', 'development']).default('production'),
+    is_primary: z.boolean().default(false),
+    render: z.boolean().default(false),
+    in_health_score: z.boolean().default(true),
+  });
+
+  app.post('/seo/sites', SCALESEO_WRITE, async (req, reply) => {
+    req.requireRole('admin');
+    const sess = req.requireAuth();
+    const body = seoSiteCreateInput.parse(req.body);
+
+    let host: string;
+    try { host = new URL(body.url).hostname.replace(/^www\./, ''); }
+    catch { host = body.url; }
+    const baseKey = slugify(host) || slugify(body.name) || 'site';
+
+    return req.db(async (q) => {
+      if (body.is_primary) {
+        await q.exec(`UPDATE seo_sites SET is_primary = false WHERE org_id = app.current_org() AND is_primary`);
+      }
+
+      let site: { id: string } | null = null;
+      let key = baseKey;
+      // seo_sites_org_id_key_key (org_id, key) is unique — a second site on
+      // the same hostname (e.g. a staging subdomain sharing the apex) is a
+      // real scenario, not a bug, so retry once with a short random suffix
+      // rather than reject the request.
+      for (let attempt = 0; attempt < 2 && !site; attempt++) {
+        try {
+          site = await q.one<{ id: string }>(
+            `INSERT INTO seo_sites (org_id, key, name, url, environment, is_primary, render, in_health_score)
+             VALUES (app.current_org(), $1, $2, $3, $4, $5, $6, $7)
+             RETURNING id`,
+            [key, body.name, body.url, body.environment, body.is_primary, body.render, body.in_health_score],
+          );
+        } catch (err) {
+          const constraint = (err as { constraint?: string }).constraint;
+          if (attempt === 0 && constraint === 'seo_sites_org_id_key_key') {
+            key = `${baseKey}-${randomBytes(2).toString('hex')}`;
+            continue;
+          }
+          throw err;
+        }
+      }
+      if (!site) throw new HttpError(500, 'Could not create this site', 'internal_error');
+
+      const job = await q.one<{ id: number }>(
+        `INSERT INTO job_queue (org_id, kind, payload, dedupe_key, priority)
+         VALUES (app.current_org(), 'seo.crawl',
+                 jsonb_build_object('site_id', $1::text, 'trigger', 'manual'),
+                 'seo.crawl:' || $1::text, 50)
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+        [site.id],
+      );
+
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'seo.site.create',
+        entityType: 'seo_sites', entityId: site.id, ip: req.ip, diff: body,
+      });
+
+      reply.status(201);
+      return { id: site.id, crawlQueued: !!job };
+    });
+  });
+
+  // ---- ScaleSEO: edit a site ---------------------------------------------
   // `render` decides whether workers/seo/crawler.py fetches this site with a
   // headless browser (client-rendered SPAs) or plain HTTP (static sites) —
   // previously only settable by re-running scripts/seed_sites.py by hand
   // (see nppools.com, which migrated to a client-rendered platform after
-  // being seeded static). Admin-gated like other technical/ops toggles
-  // (PATCH /orgs/current, PUT /service-area), not a day-to-day edit.
-  const seoSiteUpdateInput = z.object({ render: z.boolean() });
+  // being seeded static). `in_health_score` excludes a work-in-progress
+  // rebuild from the brand's headline score without hiding it. Admin-gated
+  // like other technical/ops toggles (PATCH /orgs/current, PUT
+  // /service-area), not a day-to-day edit.
+  const seoSiteUpdateInput = z.object({
+    url: z.string().trim().url().optional(),
+    name: z.string().trim().min(1).max(200).optional(),
+    environment: z.enum(['production', 'staging', 'development']).optional(),
+    is_primary: z.boolean().optional(),
+    render: z.boolean().optional(),
+    in_health_score: z.boolean().optional(),
+  });
 
   app.patch('/seo/sites/:siteId', SCALESEO_WRITE, async (req) => {
     req.requireRole('admin');
@@ -228,11 +322,26 @@ export default async function dataRoutes(app: FastifyInstance) {
     const body = seoSiteUpdateInput.parse(req.body);
 
     return req.db(async (q) => {
+      if (body.is_primary) {
+        await q.exec(
+          `UPDATE seo_sites SET is_primary = false WHERE org_id = app.current_org() AND is_primary AND id != $1`,
+          [siteId],
+        );
+      }
       const site = await q.one(
-        `UPDATE seo_sites SET render = $1 WHERE id = $2
+        `UPDATE seo_sites SET
+                url = COALESCE($1, url),
+                name = COALESCE($2, name),
+                environment = COALESCE($3, environment),
+                is_primary = COALESCE($4, is_primary),
+                render = COALESCE($5, render),
+                in_health_score = COALESCE($6, in_health_score)
+          WHERE id = $7
          RETURNING id, key, name, url, enabled, render, max_pages, concurrency,
-                   delay_ms, timeout_s, respect_robots, crawl_schedule`,
-        [body.render, siteId],
+                   delay_ms, timeout_s, respect_robots, crawl_schedule,
+                   environment, is_primary, in_health_score`,
+        [body.url ?? null, body.name ?? null, body.environment ?? null, body.is_primary ?? null,
+         body.render ?? null, body.in_health_score ?? null, siteId],
       );
       if (!site) throw new HttpError(404, 'Site not found', 'not_found');
       await audit(q, {
@@ -241,6 +350,32 @@ export default async function dataRoutes(app: FastifyInstance) {
       });
       return site;
     });
+  });
+
+  // ---- ScaleSEO: delete a site --------------------------------------------
+  // Every child table (seo_crawls, seo_pages, seo_issues, seo_keywords,
+  // seo_scores, seo_links, seo_competitors, seo_ga4_daily, seo_gsc_daily,
+  // seo_local_visibility) has ON DELETE CASCADE on site_id — the DB does the
+  // actual cleanup; this route's own job is confirming to the caller what
+  // that cascade is about to take, which the frontend shows before the user
+  // ever gets here.
+  app.delete('/seo/sites/:siteId', SCALESEO_WRITE, async (req, reply) => {
+    req.requireRole('admin');
+    const sess = req.requireAuth();
+    const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
+
+    await req.db(async (q) => {
+      const site = await q.one<{ id: string; name: string }>(
+        `SELECT id, name FROM seo_sites WHERE id = $1`, [siteId],
+      );
+      if (!site) throw new HttpError(404, 'Site not found', 'not_found');
+      await q.exec(`DELETE FROM seo_sites WHERE id = $1`, [siteId]);
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'seo.site.delete',
+        entityType: 'seo_sites', entityId: siteId, ip: req.ip, diff: { name: site.name },
+      });
+    });
+    reply.status(204);
   });
 
   // ---- ScaleSEO: health detail -----------------------------------------
