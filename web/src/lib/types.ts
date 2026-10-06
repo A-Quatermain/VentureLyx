@@ -20,7 +20,7 @@ export interface OrgProfile {
 export type AIFeature =
   | 'seo_recommendations' | 'page_generation' | 'review_response'
   | 'next_best_action' | 'metric_explanation' | 'business_blueprint' | 'sequence_writing'
-  | 'ai_visibility_check';
+  | 'ai_visibility_check' | 'reply_classification';
 
 export type AIProvider = 'anthropic' | 'openai';
 export type AIProviderPreference = 'auto' | AIProvider;
@@ -369,6 +369,13 @@ export interface Lead {
   phone: string | null;
   deal_title: string | null;
   deal_value: string | null;
+  owner_user_id: string | null;
+  owner_name: string | null;
+  reply_tag: ReplyTag | null;
+  reply_tag_source: 'ai' | 'human' | null;
+  last_reply_title: string | null;
+  last_reply_body: string | null;
+  last_reply_at: string | null;
 }
 
 export interface ScheduledJob {
@@ -443,6 +450,44 @@ export interface Party {
   last_activity_at: string | null;
 }
 
+export interface PartyCampaign {
+  campaign_id: string;
+  campaign_name: string;
+  status: string;
+  state: string | null;
+  current_step: number | null;
+  emails_sent: number;
+  replies: number;
+}
+
+export interface PartyJob {
+  id: string;
+  number: string | null;
+  title: string;
+  status: string;
+  scheduled_at: string | null;
+  created_at: string;
+}
+
+export interface PartyQuote {
+  id: string;
+  number: string | null;
+  status: string;
+  total: string;
+  sent_at: string | null;
+  created_at: string;
+}
+
+export interface PartyInvoice {
+  id: string;
+  number: string | null;
+  status: string;
+  total: string;
+  amount_paid: string;
+  due_on: string | null;
+  created_at: string;
+}
+
 export interface PartyDetail {
   party: Party & {
     first_touch_channel: string | null;
@@ -455,6 +500,10 @@ export interface PartyDetail {
     open_balance: string;
     last_payment: { amount: string; received_at: string } | null;
   };
+  campaigns: PartyCampaign[];
+  jobs: PartyJob[];
+  quotes: PartyQuote[];
+  invoices: PartyInvoice[];
 }
 
 export interface TimelineEvent {
@@ -466,6 +515,39 @@ export interface TimelineEvent {
   actor_type: string;
   actor_label: string | null;
   occurred_at: string;
+}
+
+// ---- Leads & Pipeline (Grow -> Operate bridge) -----------------------------
+
+export type ReplyTag = 'interested' | 'not_now' | 'not_a_fit' | 'question';
+
+export interface PipelineStageDef {
+  key: string;
+  label: string;
+  probability: number;
+  is_won: boolean;
+  is_lost: boolean;
+}
+
+export interface PipelineDeal {
+  id: string;
+  title: string;
+  stage: string;
+  status: string;
+  value: string | null;
+  owner_user_id: string | null;
+  owner_name: string | null;
+  created_at: string;
+  updated_at: string;
+  party_id: string;
+  party_name: string;
+  source: string;
+  days_in_stage: number;
+}
+
+export interface PipelineBoard {
+  pipeline: { id: string; stages: PipelineStageDef[] };
+  deals: PipelineDeal[];
 }
 
 // ---- Service area / market_targets --------------------------------------

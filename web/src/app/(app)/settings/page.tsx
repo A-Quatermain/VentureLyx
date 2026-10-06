@@ -34,6 +34,7 @@ const FEATURE_LABEL: Record<AIFeature, string> = {
   business_blueprint: 'Business blueprint',
   sequence_writing: 'Grow sequence writing',
   ai_visibility_check: 'AI visibility checks',
+  reply_classification: 'Grow reply classification',
 };
 
 export default function SettingsPage() {

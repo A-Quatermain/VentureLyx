@@ -45,6 +45,12 @@ export default function OperatePage() {
         subtitle="Every lead, from first contact to won customer."
         actions={
           <div className="flex items-center gap-4">
+            <Link href="/operate/leads" className="text-sm font-medium text-primary hover:underline">
+              Leads →
+            </Link>
+            <Link href="/operate/pipeline" className="text-sm font-medium text-primary hover:underline">
+              Pipeline board →
+            </Link>
             <Link href="/operate/customers" className="text-sm font-medium text-primary hover:underline">
               Customers →
             </Link>

@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { mutate } from 'swr';
 import {
   CaretLeft, Phone, EnvelopeSimple, Globe, ChatCircle, MapPin, Tag, Note,
-  PencilSimple, Trash, ClockCounterClockwise,
+  PencilSimple, Trash, ClockCounterClockwise, Megaphone, Briefcase, FileText, Receipt,
 } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -100,7 +100,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
     );
   }
 
-  const { party, contacts, money } = data;
+  const { party, contacts, money, campaigns, jobs, quotes, invoices } = data;
   const phone = contacts.find((c) => c.channel === 'phone' && c.is_primary);
   const email = contacts.find((c) => c.channel === 'email' && c.is_primary);
 
@@ -223,6 +223,56 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
               <p className="text-sm text-muted-foreground">No attribution recorded yet.</p>
             )}
           </Card>
+
+          {campaigns.length > 0 && (
+            <Card className="p-5">
+              <p className="mb-3 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <Megaphone size={13} /> Grow Campaigns
+              </p>
+              <div className="flex flex-col gap-3">
+                {campaigns.map((c) => (
+                  <div key={c.campaign_id} className="text-sm">
+                    <p className="font-medium">{c.campaign_name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {c.emails_sent} sent · {c.replies} repl{c.replies === 1 ? 'y' : 'ies'}
+                      {c.state && ` · ${c.state}`}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {(jobs.length > 0 || quotes.length > 0 || invoices.length > 0) && (
+            <Card className="p-5">
+              <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Work</p>
+              <div className="flex flex-col gap-2.5">
+                {jobs.map((j) => (
+                  <div key={j.id} className="flex items-center gap-2 text-sm">
+                    <Briefcase size={14} className="shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate">{j.title}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{j.status}</span>
+                  </div>
+                ))}
+                {quotes.map((q) => (
+                  <div key={q.id} className="flex items-center gap-2 text-sm">
+                    <FileText size={14} className="shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate">{q.number ?? 'Quote'}</span>
+                    <span className="shrink-0 font-mono text-xs tabular-nums">{formatMoney(q.total)}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{q.status}</span>
+                  </div>
+                ))}
+                {invoices.map((inv) => (
+                  <div key={inv.id} className="flex items-center gap-2 text-sm">
+                    <Receipt size={14} className="shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate">{inv.number ?? 'Invoice'}</span>
+                    <span className="shrink-0 font-mono text-xs tabular-nums">{formatMoney(inv.total)}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{inv.status}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
         </div>
 
         <Card className="lg:col-span-2">
