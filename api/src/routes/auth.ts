@@ -208,12 +208,13 @@ export default async function authRoutes(app: FastifyInstance) {
       if (collision) slug = `${baseSlug}-${randomBytes(3).toString('hex')}`;
 
       const org = await q.one<{ id: string; name: string; slug: string }>(
-        `INSERT INTO organizations (slug, name, vertical, website_url, status, settings)
+        `INSERT INTO organizations (slug, name, vertical, website_url, status, settings, created_by)
          VALUES ($1,$2,$3,$4,'onboarding',
                  CASE WHEN $5::text IS NULL THEN '{}'::jsonb
-                      ELSE jsonb_build_object('service_area', $5::text) END)
+                      ELSE jsonb_build_object('service_area', $5::text) END,
+                 $6)
          RETURNING id, name, slug`,
-        [slug, body.name, body.vertical ?? null, body.website_url ?? null, body.service_area ?? null],
+        [slug, body.name, body.vertical ?? null, body.website_url ?? null, body.service_area ?? null, sess.user_id],
       );
       const orgId = org!.id;
 

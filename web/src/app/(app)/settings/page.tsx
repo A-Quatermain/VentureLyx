@@ -11,10 +11,12 @@ import type {
   OrgProfile, AISettingsResponse, AIProviderPreference, AIFeature, AIModelOverride, AIProvider,
   ServiceArea, GscStatus, GrowSenderProfile,
 } from '@/lib/types';
+import type { MeResponse } from '@/lib/types';
 import { PageHeader } from '@/components/Primitives';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { BusinessProfileForm, type BusinessProfileValues } from '@/components/BusinessProfileForm';
+import { AddBusinessDrawer } from '@/components/AddBusinessDrawer';
 import { ServiceAreaForm, BLANK_CITY, realCities, type ServiceAreaValues } from '@/components/ServiceAreaForm';
 import {
   GrowSenderProfileForm, realProductUrls, type GrowSenderProfileValues,
@@ -45,6 +47,7 @@ export default function SettingsPage() {
         subtitle="Manage your business profile and how AI works across Venturelyx."
       />
       <div className="flex max-w-3xl flex-col gap-6">
+        <YourBusinessesCard />
         <BusinessCard canEdit={canEdit} />
         <ServiceAreaCard canEdit={canEdit} />
         <GrowSenderProfileCard canEdit={canEdit} />
@@ -52,6 +55,31 @@ export default function SettingsPage() {
         <AICard canEdit={canEdit} />
       </div>
     </div>
+  );
+}
+
+// Settings isn't where a business gets created (that's the org switcher's
+// "+ Add a business" row, which opens the same drawer this links to) — this
+// is just a reasonable place to see how many you have. Each one is a
+// separate org and, eventually, its own line on the bill.
+function YourBusinessesCard() {
+  const { data: me } = useApi<MeResponse>('/auth/me');
+  const [adding, setAdding] = useState(false);
+  const count = me?.organizations?.length ?? 0;
+
+  return (
+    <Card className="flex items-center justify-between gap-4 p-6">
+      <div>
+        <p className="font-display text-lg font-bold tracking-tight">Your businesses</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {me ? `${count} business${count === 1 ? '' : 'es'} on this account.` : 'Loading…'}
+        </p>
+      </div>
+      <Button variant="ghost" onClick={() => setAdding(true)}>
+        Add another business
+      </Button>
+      <AddBusinessDrawer open={adding} onOpenChange={setAdding} />
+    </Card>
   );
 }
 

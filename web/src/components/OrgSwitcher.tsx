@@ -3,9 +3,11 @@
 import { useEffect, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { mutate } from 'swr';
+import { Plus } from '@phosphor-icons/react';
 import { apiFetch } from '@/lib/api';
 import type { Organization } from '@/lib/types';
 import { healthTone, toneFill } from '@/components/ui/tone';
+import { AddBusinessDrawer } from '@/components/AddBusinessDrawer';
 
 // Switching orgs is a real state change: POST /auth/org updates
 // sessions.org_id server-side (that's what makes req.db()'s RLS context
@@ -25,6 +27,7 @@ export function OrgSwitcher({
   const [pending, startTransition] = useTransition();
   const [switching, setSwitching] = useState(false);
   const [open, setOpen] = useState(false);
+  const [addingBusiness, setAddingBusiness] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   const current = organizations.find((o) => o.id === currentOrgId);
@@ -121,8 +124,21 @@ export function OrgSwitcher({
               </span>
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              setAddingBusiness(true);
+            }}
+            className="flex w-full items-center gap-3 border-t border-border px-3 py-2 text-left text-primary hover:bg-muted"
+          >
+            <Plus size={14} weight="bold" className="shrink-0" />
+            <span className="text-sm font-medium">Add a business</span>
+          </button>
         </div>
       )}
+
+      <AddBusinessDrawer open={addingBusiness} onOpenChange={setAddingBusiness} />
     </div>
   );
 }
