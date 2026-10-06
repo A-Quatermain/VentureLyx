@@ -6,14 +6,14 @@ import { useRouter } from 'next/navigation';
 import { mutate } from 'swr';
 import {
   ChartBar, UsersThree, FilePlus, ClockCounterClockwise, MapPin, Target, Plug,
-  PencilSimple, Trash, Plus,
+  PencilSimple, Trash, Plus, CaretDown, Storefront, Megaphone, Star, Wrench, ArrowSquareOut,
 } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import { API_BASE } from '@/lib/config';
 import type {
   SeoHealthDetail, SeoRanking, SeoCompetitor, SeoCrawlHistoryEntry, ContentPage, SummaryResponse,
-  CoverageGap, GscQueriesResponse, SeoSite,
+  CoverageGap, GscQueriesResponse, SeoSite, SeoIssueGroup,
 } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -26,8 +26,9 @@ import { CrawlButton } from '@/components/CrawlButton';
 import { AIStreamPanel } from '@/components/AIStreamPanel';
 import { SitePicker } from '@/components/SitePicker';
 import { SiteDrawer } from '@/components/SiteDrawer';
+import { ISSUE_GUIDANCE, FALLBACK_GUIDANCE, WHO_LABEL, type WhoCanDo } from '@/lib/seoGuidance';
 
-const TABS = ['Scanner', 'Keywords', 'Coverage', 'Competitors', 'AI Page Builder', 'History'] as const;
+const TABS = ['Get Found', 'Scanner', 'Keywords', 'Coverage', 'Competitors', 'AI Page Builder', 'History'] as const;
 type Tab = (typeof TABS)[number];
 type PageKind = 'service_page' | 'location_page' | 'blog_post' | 'landing_page';
 
@@ -45,7 +46,7 @@ export default function ScaleSeoHealthPage({
   const { data: sites } = useApi<SeoSite[]>(SITES_KEY);
   const site = sites?.find((s) => s.id === siteId);
 
-  const [tab, setTab] = useState<Tab>('Scanner');
+  const [tab, setTab] = useState<Tab>('Get Found');
   const [addingSite, setAddingSite] = useState(false);
   const [editingSite, setEditingSite] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -149,6 +150,7 @@ export default function ScaleSeoHealthPage({
         <SiteDrawer open={editingSite} onOpenChange={setEditingSite} site={site} onSaved={() => setEditingSite(false)} />
       )}
 
+      {tab === 'Get Found' && <GetFoundTab siteId={siteId} onGoToTab={setTab} />}
       {tab === 'Scanner' && <ScannerTab siteId={siteId} onFixIssue={onFixIssue} />}
       {tab === 'Keywords' && <KeywordsTab siteId={siteId} />}
       {tab === 'Coverage' && <CoverageTab onBuildGap={onBuildGap} />}
@@ -158,6 +160,212 @@ export default function ScaleSeoHealthPage({
       )}
       {tab === 'History' && <HistoryTab siteId={siteId} />}
     </div>
+  );
+}
+
+const WHO_BADGE_CLASS: Record<WhoCanDo, string> = {
+  diy: 'bg-muted text-muted-foreground',
+  ai: 'bg-primary/10 text-primary',
+  pro: 'bg-warning/10 text-warning',
+};
+
+function WhoBadge({ who }: { who: WhoCanDo }) {
+  return (
+    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${WHO_BADGE_CLASS[who]}`}>
+      {who === 'diy' ? 'DIY' : who === 'ai' ? 'AI-assisted' : 'Needs a pro'}
+    </span>
+  );
+}
+
+// "Get Found" — the strategic, ordered-by-impact checklist. Deliberately
+// separate from Scanner's Priority Actions: that tab explains individual
+// crawl findings, this one is the bigger local-search picture (a free
+// listing, the crawl findings as one line item, the content gap, reviews,
+// and — only once those are real — paid traffic).
+function GetFoundTab({ siteId, onGoToTab }: { siteId: string; onGoToTab: (tab: Tab) => void }) {
+  const { data: health } = useApi<SeoHealthDetail>(`/seo/health/${siteId}`);
+  const { data: gaps } = useApi<CoverageGap[]>('/seo/coverage-gaps');
+  const { data: summary } = useApi<SummaryResponse>('/command/summary');
+
+  const issues = health?.issues ?? [];
+  const whoCounts: Record<WhoCanDo, number> = { diy: 0, ai: 0, pro: 0 };
+  for (const issue of issues) {
+    const who = (ISSUE_GUIDANCE[issue.code] ?? FALLBACK_GUIDANCE).who;
+    whoCounts[who] += 1;
+  }
+  const reviewCount = summary?.reputation.review_count ?? 0;
+  const gapCount = gaps?.length ?? 0;
+  // Already ranked by how many other services are missing in the same area
+  // (api/src/routes/data.ts's /seo/coverage-gaps query) — highest-value
+  // first is the existing sort, not a new one invented for this tab.
+  const topGaps = (gaps ?? []).slice(0, 3);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Card className="p-4">
+        <p className="text-sm text-muted-foreground">
+          Ordered by impact for a local service business — start at the top and work down.
+        </p>
+      </Card>
+
+      <GetFoundStep
+        n={1}
+        icon={Storefront}
+        title="Google Business Profile"
+        who="diy"
+        impact="Free, and the single biggest lever for local search."
+      >
+        <p>
+          Claim it if you haven’t, then complete every section: photos, the service areas you cover,
+          your real hours, and a clear description of what you do. This is what shows up on Google Maps
+          and next to local search results — often before your website does.
+        </p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Venturelyx doesn’t manage this today — it’s a free tool Google runs directly.
+        </p>
+        <a
+          href="https://business.google.com/"
+          target="_blank"
+          rel="noreferrer"
+          className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+        >
+          Open Google Business Profile <ArrowSquareOut size={13} weight="bold" />
+        </a>
+      </GetFoundStep>
+
+      <GetFoundStep
+        n={2}
+        icon={Wrench}
+        title="Fix what’s broken"
+        who={null}
+        impact={`${issues.length} finding${issues.length === 1 ? '' : 's'} from your last crawl.`}
+      >
+        {issues.length === 0 ? (
+          <p>No open findings right now — this step is done.</p>
+        ) : (
+          <p>
+            {whoCounts.diy > 0 && `${whoCounts.diy} you can fix yourself`}
+            {whoCounts.diy > 0 && (whoCounts.ai > 0 || whoCounts.pro > 0) && ', '}
+            {whoCounts.ai > 0 && `${whoCounts.ai} AI can draft for your approval`}
+            {whoCounts.ai > 0 && whoCounts.pro > 0 && ', '}
+            {whoCounts.pro > 0 && `${whoCounts.pro} need a developer`}
+            {'. Each one in Priority Actions explains what it means and how to fix it.'}
+          </p>
+        )}
+        <Button variant="ghost" className="mt-3" onClick={() => onGoToTab('Scanner')}>
+          Open Priority Actions
+        </Button>
+      </GetFoundStep>
+
+      <GetFoundStep
+        n={3}
+        icon={MapPin}
+        title="Build the missing pages"
+        who="ai"
+        impact={`${gapCount} coverage gap${gapCount === 1 ? '' : 's'} — a service you offer with no page for a city you serve.`}
+      >
+        <p>Highest-value gaps first (the ones missing for the most services in the same area).</p>
+        <Button variant="ghost" className="mt-3" onClick={() => onGoToTab('Coverage')}>
+          Open Coverage
+        </Button>
+      </GetFoundStep>
+
+      <GetFoundStep
+        n={4}
+        icon={Star}
+        title="Reviews"
+        who={null}
+        impact={`${reviewCount} review${reviewCount === 1 ? '' : 's'} on file.`}
+      >
+        <p>
+          Asking is on you — every happy customer you ask for a review is worth more than one you
+          don’t. Replying is where Venturelyx helps: AI can draft a reply to any review for you to
+          approve, good or bad.
+        </p>
+        <Link href="/reviews" className="mt-3 inline-block text-sm font-medium text-primary hover:underline">
+          Open Reviews →
+        </Link>
+      </GetFoundStep>
+
+      <GoogleAdsStep topGaps={topGaps} />
+    </div>
+  );
+}
+
+function GetFoundStep({
+  n,
+  icon: Icon,
+  title,
+  who,
+  impact,
+  children,
+}: {
+  n: number;
+  icon: typeof Storefront;
+  title: string;
+  who: WhoCanDo | null;
+  impact: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card className="p-5">
+      <div className="flex items-start gap-4">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 font-mono text-sm font-semibold text-primary">
+          {n}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <Icon size={16} weight="duotone" className="shrink-0 text-muted-foreground" />
+            <p className="text-sm font-semibold">{title}</p>
+            {who && <WhoBadge who={who} />}
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">{impact}</p>
+          <div className="mt-3 text-sm text-foreground">{children}</div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// Last, deliberately: paid traffic landing on a weak site (no GBP, broken
+// findings, missing pages, no reviews) wastes money, so this comes after
+// those steps rather than being hidden until they're done — "optionally"
+// per the brief, not blocked.
+function GoogleAdsStep({ topGaps }: { topGaps: CoverageGap[] }) {
+  return (
+    <GetFoundStep
+      n={5}
+      icon={Megaphone}
+      title="Google Ads (optional)"
+      who="pro"
+      impact="Paid and ongoing — most effective once the steps above are done."
+    >
+      <p>
+        Unlike the steps above, this costs money every month for as long as it runs, and stops bringing
+        in traffic the moment it stops. A realistic starting budget for a local service business is
+        roughly <span className="font-medium">$500–$1,500/month</span> — enough to learn what
+        works without betting the business on it. Treat that as a starting range to discuss with whoever
+        runs the campaign, not a guarantee of results.
+      </p>
+      {topGaps.length > 0 && (
+        <div className="mt-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Sensible first campaigns, from your real coverage gaps
+          </p>
+          <ul className="mt-1.5 space-y-1">
+            {topGaps.map((g) => (
+              <li key={`${g.catalog_item_id}-${g.location_id}`} className="text-sm">
+                “{g.service_name} in {g.location_name}”
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <p className="mt-3 rounded-lg bg-muted p-3 text-xs text-muted-foreground">
+        Venturelyx doesn’t manage ad campaigns today. This is guidance to bring to whoever runs your
+        ads — not a service we provide.
+      </p>
+    </GetFoundStep>
   );
 }
 
@@ -309,25 +517,7 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
         ) : (
           <ul className="divide-y divide-border">
             {issues.map((issue) => (
-              <li key={issue.code} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex min-w-0 flex-1 items-start gap-3">
-                  <SeverityBadge severity={issue.severity} />
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium">
-                      {issue.code.replace(/_/g, ' ')}
-                      <span className="text-muted-foreground"> — {issue.pages} pages</span>
-                    </p>
-                    {issue.example_detail && (
-                      <p className="mt-0.5 truncate text-xs text-muted-foreground">{issue.example_detail}</p>
-                    )}
-                  </div>
-                </div>
-                {issue.auto_fixable && (
-                  <Button variant="ai" className="shrink-0" onClick={() => onFixIssue(issue.code)}>
-                    Fix this for me
-                  </Button>
-                )}
-              </li>
+              <IssueRow key={issue.code} issue={issue} onFixIssue={onFixIssue} />
             ))}
           </ul>
         )}
@@ -382,6 +572,76 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
         triggerLabel="What should I fix first?"
       />
     </div>
+  );
+}
+
+// Every finding already says what's wrong (the row itself); expanding it
+// answers the actual question an owner has — what does this mean, why does
+// it matter, how long will it take, and can Venturelyx do it or do they
+// need to find someone. ISSUE_GUIDANCE is keyed by the crawler's own fixed
+// issue vocabulary (workers/seo/scoring.py), not generated per-row.
+function IssueRow({ issue, onFixIssue }: { issue: SeoIssueGroup; onFixIssue: (code: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const guidance = ISSUE_GUIDANCE[issue.code] ?? FALLBACK_GUIDANCE;
+
+  return (
+    <li className="p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex min-w-0 flex-1 items-start gap-3 text-left"
+        >
+          <SeverityBadge severity={issue.severity} />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">
+              {issue.code.replace(/_/g, ' ')}
+              <span className="text-muted-foreground"> — {issue.pages} pages</span>
+            </p>
+            {issue.example_detail && (
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">{issue.example_detail}</p>
+            )}
+          </div>
+          <CaretDown
+            size={14}
+            weight="bold"
+            className={`mt-1 shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        </button>
+        {issue.auto_fixable && (
+          <Button variant="ai" className="shrink-0" onClick={() => onFixIssue(issue.code)}>
+            Fix this for me
+          </Button>
+        )}
+      </div>
+
+      {open && (
+        <div className="mt-3 ml-0 space-y-3 rounded-lg bg-muted p-4 text-sm sm:ml-9">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">What to do</p>
+            <WhoBadge who={guidance.who} />
+          </div>
+          <p>
+            <span className="font-medium text-foreground">What this means for your customers: </span>
+            {guidance.customerImpact}
+          </p>
+          <p>
+            <span className="font-medium text-foreground">Why it matters: </span>
+            {guidance.whyItMatters}
+          </p>
+          <div>
+            <p className="font-medium text-foreground">Steps:</p>
+            <ol className="mt-1 list-decimal space-y-0.5 pl-5">
+              {guidance.steps.map((step, i) => (
+                <li key={i}>{step}</li>
+              ))}
+            </ol>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Roughly: {guidance.timeEstimate} — {WHO_LABEL[guidance.who]}
+          </p>
+        </div>
+      )}
+    </li>
   );
 }
 
