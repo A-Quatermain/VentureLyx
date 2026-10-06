@@ -36,6 +36,7 @@ import { claimDue, planTick } from '../lib/growScheduler.js';
 import { pollMailbox, matchGrowMessage, type MailboxCreds } from '../lib/growPoller.js';
 import { promoteOnReply } from '../lib/growPromote.js';
 import { classifyReply } from '../lib/growClassify.js';
+import { wrapClickableLinks } from '../lib/growClickTracking.js';
 import type { Querier } from '../lib/db.js';
 
 const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
@@ -194,7 +195,10 @@ async function sendOne(q: Querier, message: ClaimedMessage): Promise<void> {
 
   const senderProfile = await getSenderProfile(q);
   const unsubscribeUrl = `${GROW_BASE_URL}/u/${message.unsubscribe_token}`;
-  const body = renderUnsubscribeFooter(message.body, {
+  // Before the footer, not after — the unsubscribe link gets its own
+  // dedicated /u/ flow and must never be wrapped a second time here.
+  const clickableBody = await wrapClickableLinks(q, message.org_id, message.id, message.body, GROW_BASE_URL);
+  const body = renderUnsubscribeFooter(clickableBody, {
     mailingAddress: senderProfile.mailing_address ?? '',
     unsubscribeUrl,
   });

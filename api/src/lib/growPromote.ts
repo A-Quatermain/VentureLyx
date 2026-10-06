@@ -118,18 +118,15 @@ async function ensureOpenDeal(
 // A lead already working, qualified, or already a customer should never be
 // silently knocked back to "working" by a later reply — only a party that
 // hasn't been worked yet (or had gone cold/dormant) jumps there.
-const ADVANCES_ON_REPLY = new Set(['new', 'lost', 'dormant']);
+const ADVANCES_ON_ENGAGEMENT = new Set(['new', 'lost', 'dormant']);
 
-export async function promoteOnReply(q: Querier, input: {
-  orgId: string;
-  email: string;
-  nameHint: string | null;
-  campaignId: string;
-  campaignName: string;
-  stepNo: number;
-  replyText: string;
-  tag: ReplyTag | null;
-}): Promise<{ partyId: string; dealId: string }> {
+/** Shared by promoteOnReply and promoteOnClick: find-or-create the party,
+ *  record the campaign as an attribution touch, advance lifecycle/is_lead,
+ *  and ensure an open deal exists. Returns the touch id so the caller's own
+ *  timeline_events entry (reply text vs. a bare click) can reference it. */
+async function promoteOnEngagement(q: Querier, input: {
+  orgId: string; email: string; nameHint: string | null; campaignName: string; tag: ReplyTag | null;
+}): Promise<{ partyId: string; dealId: string; touchId: string; displayName: string }> {
   const party = await findOrCreateParty(q, input.email, input.nameHint);
 
   const touch = await q.one<{ id: string }>(
@@ -140,7 +137,7 @@ export async function promoteOnReply(q: Querier, input: {
   );
   const touchId = touch!.id;
 
-  const advance = ADVANCES_ON_REPLY.has(party.lifecycle);
+  const advance = ADVANCES_ON_ENGAGEMENT.has(party.lifecycle);
   await q.exec(
     `UPDATE parties SET
         is_lead = true,
@@ -154,16 +151,56 @@ export async function promoteOnReply(q: Querier, input: {
     [party.id, advance, touchId, input.tag],
   );
 
+  const dealId = await ensureOpenDeal(q, input.orgId, party.id, touchId, `${party.display_name} — inbound engagement`);
+  return { partyId: party.id, dealId, touchId, displayName: party.display_name };
+}
+
+export async function promoteOnReply(q: Querier, input: {
+  orgId: string;
+  email: string;
+  nameHint: string | null;
+  campaignId: string;
+  campaignName: string;
+  stepNo: number;
+  replyText: string;
+  tag: ReplyTag | null;
+}): Promise<{ partyId: string; dealId: string }> {
+  const { partyId, dealId } = await promoteOnEngagement(q, input);
+
   await logTimeline(q, {
-    orgId: input.orgId, partyId: party.id, eventType: 'grow.reply', module: 'grow',
+    orgId: input.orgId, partyId, eventType: 'grow.reply', module: 'grow',
     title: `Replied to "${input.campaignName}" (step ${input.stepNo})`,
     body: input.replyText, actorType: 'customer', direction: 'inbound',
     entityType: 'grow_campaign', entityId: input.campaignId,
     payload: { campaign_id: input.campaignId, step_no: input.stepNo, tag: input.tag, tag_source: input.tag ? 'ai' : null },
   });
 
-  const dealId = await ensureOpenDeal(q, input.orgId, party.id, touchId, `${party.display_name} — inbound reply`);
-  return { partyId: party.id, dealId };
+  return { partyId, dealId };
+}
+
+/** The other half of "replies or clicks through" — see migration 019's
+ *  header for the known false-positive source (mail-scanner link
+ *  prefetching) this inherits by being based on clicks at all. No AI tag:
+ *  there's no reply text to classify, just a link having been opened. */
+export async function promoteOnClick(q: Querier, input: {
+  orgId: string;
+  email: string;
+  nameHint: string | null;
+  campaignId: string;
+  campaignName: string;
+  stepNo: number;
+}): Promise<{ partyId: string; dealId: string }> {
+  const { partyId, dealId } = await promoteOnEngagement(q, { ...input, tag: null });
+
+  await logTimeline(q, {
+    orgId: input.orgId, partyId, eventType: 'grow.click', module: 'grow',
+    title: `Clicked a link in "${input.campaignName}" (step ${input.stepNo})`,
+    actorType: 'customer', direction: 'inbound',
+    entityType: 'grow_campaign', entityId: input.campaignId,
+    payload: { campaign_id: input.campaignId, step_no: input.stepNo },
+  });
+
+  return { partyId, dealId };
 }
 
 /** Finds, not creates — no reply, no engagement signal worth the "updates

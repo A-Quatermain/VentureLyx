@@ -23,6 +23,7 @@ import waitlistRoutes from './routes/waitlist.js';
 import setupRoutes from './routes/setup.js';
 import { healthy, shutdown } from './lib/db.js';
 import { processUnsubscribe } from './lib/growUnsubscribe.js';
+import { processClick } from './lib/growClickTracking.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -107,6 +108,24 @@ app.post('/u/:token', async (req, reply) => {
   const { token } = req.params as { token: string };
   const result = await processUnsubscribe(token);
   return reply.status(result.found ? 200 : 404).send();
+});
+
+// Same public, no-session shape as /u/:token above — a link redirect click
+// carries no Venturelyx session either. The destination comes only from
+// grow_link_clicks' own stored url, never from anything in this request —
+// see migration 019's header for why that specific property is the whole
+// point (an open redirect off a domain recipients are asked to trust would
+// be a real phishing vector, not a theoretical one).
+app.get('/c/:token', async (req, reply) => {
+  const { token } = req.params as { token: string };
+  if (!/^[0-9a-f]+$/i.test(token)) {
+    return reply.status(404).send('Not found');
+  }
+  const result = await processClick(token);
+  if (!result.found || !result.url) {
+    return reply.status(404).send('This link is not valid or has expired.');
+  }
+  return reply.redirect(result.url, 302);
 });
 
 await app.register(authRoutes, { prefix: '/v1' });
