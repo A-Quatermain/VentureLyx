@@ -686,16 +686,23 @@ function KeywordsTab({ siteId }: { siteId: string }) {
       ) : !data?.connected ? (
         <div className="flex flex-col items-center gap-3 p-8 text-center">
           <Plug size={24} className="text-muted-foreground" />
-          <p className="max-w-sm text-sm text-muted-foreground">
-            Connect Google Search Console to see real phrases this site already ranks for — actual
-            impressions, clicks and position, not estimates.
-          </p>
+          {data?.status === 'error' ? (
+            <p className="max-w-sm text-sm text-muted-foreground">
+              Google stopped accepting the saved Search Console connection — reconnect it in Settings to
+              keep seeing real phrases, impressions, clicks and position.
+            </p>
+          ) : (
+            <p className="max-w-sm text-sm text-muted-foreground">
+              Connect Google Search Console to see real phrases this site already ranks for — actual
+              impressions, clicks and position, not estimates.
+            </p>
+          )}
           {canConnect ? (
             <Button onClick={() => { window.location.href = `${API_BASE}/integrations/gsc/oauth/start`; }}>
-              Connect Google Search Console
+              {data?.status === 'error' ? 'Reconnect Google Search Console' : 'Connect Google Search Console'}
             </Button>
           ) : (
-            <p className="text-xs text-muted-foreground/70">Ask an admin to connect it in Settings.</p>
+            <p className="text-xs text-muted-foreground/70">Ask an admin to {data?.status === 'error' ? 'reconnect it' : 'connect it'} in Settings.</p>
           )}
         </div>
       ) : data.rows.length === 0 ? (

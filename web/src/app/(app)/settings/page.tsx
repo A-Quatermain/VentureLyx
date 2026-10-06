@@ -376,12 +376,34 @@ function GscCard({ canEdit }: { canEdit: boolean }) {
             <p className="truncate text-sm font-medium">{data.propertyUrl}</p>
             <p className="text-xs text-muted-foreground">
               {data.lastSyncAt ? `Last synced ${new Date(data.lastSyncAt).toLocaleString()}` : 'Not synced yet'}
-              {data.lastError ? ` · ${data.lastError}` : ''}
             </p>
           </div>
           {canEdit && (
             <Button variant="ghost" onClick={onDisconnect} disabled={busy} className="shrink-0 text-destructive">
               Disconnect
+            </Button>
+          )}
+        </div>
+      ) : data.status === 'error' ? (
+        // Was connected; Google rejected the refresh token (revoked access,
+        // or the grant otherwise expired) — workers/seo/gsc.py flips status
+        // to 'error' rather than retrying forever. Distinct from never
+        // having connected: this needs "reconnect", not "connect".
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-warning/40 bg-warning/5 p-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-warning">Connection needs to be renewed</p>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+              {data.propertyUrl}
+              {data.lastError ? ` · ${data.lastError}` : ' · Google stopped accepting the saved connection.'}
+            </p>
+          </div>
+          {canEdit && (
+            <Button
+              variant="ghost"
+              className="shrink-0"
+              onClick={() => { window.location.href = `${API_BASE}/integrations/gsc/oauth/start`; }}
+            >
+              Reconnect
             </Button>
           )}
         </div>

@@ -522,6 +522,7 @@ export interface GscQueryRow {
 
 export interface GscQueriesResponse {
   connected: boolean;
+  status: string;
   rows: GscQueryRow[];
 }
 

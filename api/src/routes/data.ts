@@ -327,6 +327,19 @@ export default async function dataRoutes(app: FastifyInstance) {
           `UPDATE seo_sites SET is_primary = false WHERE org_id = app.current_org() AND is_primary AND id != $1`,
           [siteId],
         );
+      } else if (body.is_primary === false) {
+        // Unsetting the current primary must not leave the org with none —
+        // promote the next-oldest other site so exactly one stays primary.
+        await q.exec(
+          `UPDATE seo_sites SET is_primary = true
+             WHERE id = (SELECT id FROM seo_sites
+                          WHERE org_id = app.current_org() AND id != $1
+                          ORDER BY created_at LIMIT 1)
+               AND NOT EXISTS (
+                 SELECT 1 FROM seo_sites WHERE org_id = app.current_org() AND is_primary AND id != $1
+               )`,
+          [siteId],
+        );
       }
       const site = await q.one(
         `UPDATE seo_sites SET
@@ -365,11 +378,20 @@ export default async function dataRoutes(app: FastifyInstance) {
     const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
 
     await req.db(async (q) => {
-      const site = await q.one<{ id: string; name: string }>(
-        `SELECT id, name FROM seo_sites WHERE id = $1`, [siteId],
+      const site = await q.one<{ id: string; name: string; is_primary: boolean }>(
+        `SELECT id, name, is_primary FROM seo_sites WHERE id = $1`, [siteId],
       );
       if (!site) throw new HttpError(404, 'Site not found', 'not_found');
       await q.exec(`DELETE FROM seo_sites WHERE id = $1`, [siteId]);
+      if (site.is_primary) {
+        // Deleting the primary site must not leave the org with none —
+        // promote whichever site is left (deterministic: oldest first) so
+        // every org with at least one site always has exactly one primary.
+        await q.exec(
+          `UPDATE seo_sites SET is_primary = true
+             WHERE id = (SELECT id FROM seo_sites WHERE org_id = app.current_org() ORDER BY created_at LIMIT 1)`,
+        );
+      }
       await audit(q, {
         orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'seo.site.delete',
         entityType: 'seo_sites', entityId: siteId, ip: req.ip, diff: { name: site.name },
@@ -550,8 +572,13 @@ export default async function dataRoutes(app: FastifyInstance) {
         `SELECT status FROM integrations
           WHERE org_id = app.current_org() AND provider = 'google_search_console'`,
       );
-      if (integration?.status !== 'connected') {
-        return { connected: false, rows: [] };
+      // Surfaced separately from `connected` so the UI can tell "never
+      // connected" apart from "was connected, Google revoked the grant" —
+      // both collapse to connected: false, but only the second one should
+      // read as "reconnect," not "connect".
+      const status = integration?.status ?? 'disconnected';
+      if (status !== 'connected') {
+        return { connected: false, status, rows: [] };
       }
 
       const order = sort === 'position' ? 'position ASC NULLS LAST' : 'impressions DESC';
@@ -567,7 +594,7 @@ export default async function dataRoutes(app: FastifyInstance) {
           LIMIT 200`,
         [siteId],
       );
-      return { connected: true, rows };
+      return { connected: true, status, rows };
     });
   });
 

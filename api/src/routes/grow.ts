@@ -1675,7 +1675,7 @@ export default async function growRoutes(app: FastifyInstance) {
       const [totals, events, enrollments, bySteps] = await Promise.all([
         q.one<{ sent: number; remaining: number; failed: number }>(
           `SELECT count(*) FILTER (WHERE status = 'sent')::int AS sent,
-                  count(*) FILTER (WHERE status = 'queued')::int AS remaining,
+                  count(*) FILTER (WHERE status IN ('queued','sending'))::int AS remaining,
                   count(*) FILTER (WHERE status IN ('failed','bounced'))::int AS failed
              FROM grow_messages WHERE campaign_id = $1`,
           [id],
@@ -1708,7 +1708,7 @@ export default async function growRoutes(app: FastifyInstance) {
         q.rows<{ step_no: number; sent: number; remaining: number; replied: number; unsubscribed: number }>(
           `SELECT m.step_no,
                   count(DISTINCT m.id) FILTER (WHERE m.status = 'sent')::int AS sent,
-                  count(DISTINCT m.id) FILTER (WHERE m.status = 'queued')::int AS remaining,
+                  count(DISTINCT m.id) FILTER (WHERE m.status IN ('queued','sending'))::int AS remaining,
                   count(DISTINCT e.contact_id) FILTER (WHERE e.type = 'reply')::int AS replied,
                   count(DISTINCT e.contact_id) FILTER (WHERE e.type = 'unsubscribe')::int AS unsubscribed
              FROM grow_messages m

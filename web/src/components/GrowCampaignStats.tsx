@@ -17,19 +17,19 @@ import { Skeleton } from '@/components/ui/Skeleton';
 export function GrowCampaignStats({ campaignId }: { campaignId: string }) {
   const { data, isLoading, error } = useApi<GrowCampaignStatsType>(`/grow/campaigns/${campaignId}/stats`);
 
+  if (error) {
+    return (
+      <Card className="p-4">
+        <p className="text-sm text-destructive">Could not load lifetime stats.</p>
+      </Card>
+    );
+  }
   if (isLoading || !data) {
     return (
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Skeleton className="h-24 rounded-xl bg-muted" />
         <Skeleton className="h-24 rounded-xl bg-muted" />
       </div>
-    );
-  }
-  if (error) {
-    return (
-      <Card className="p-4">
-        <p className="text-sm text-destructive">Could not load lifetime stats.</p>
-      </Card>
     );
   }
 
