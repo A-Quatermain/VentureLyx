@@ -58,34 +58,70 @@ interface PartyRow {
   lifecycle: string;
 }
 
+function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: string } | undefined)?.code === '23505';
+}
+
 /** Dedupe seam for the whole bridge: one person is one party no matter how
  *  many campaigns (or a website form, or manual entry) they came in through,
- *  matched on email via party_contacts, never on name (too ambiguous). */
+ *  matched on email via party_contacts, never on name (too ambiguous).
+ *  Case-insensitive — grow_contacts.email is only trimmed, not case-
+ *  normalized, at import, so "John@x.com" and "john@x.com" must still
+ *  resolve to one party. The actual uniqueness is enforced in the database
+ *  (migration 020's party_contacts_org_email_idx on lower(value)), not just
+ *  assumed here: a concurrent call for the same email (a reply landing at
+ *  the same moment as a click, say) can lose the race on the INSERT below,
+ *  in which case the loser deletes its own orphaned parties row and
+ *  re-reads the winner's instead, rather than leaving two parties for one
+ *  person. */
 export async function findOrCreateParty(
   q: Querier, email: string, nameHint: string | null,
 ): Promise<PartyRow> {
-  const existing = await q.one<PartyRow>(
+  const findExisting = () => q.one<PartyRow>(
     `SELECT p.id, p.display_name, p.lifecycle
        FROM party_contacts pc JOIN parties p ON p.id = pc.party_id
-      WHERE pc.org_id = app.current_org() AND pc.channel = 'email' AND pc.value = $1
+      WHERE pc.org_id = app.current_org() AND pc.channel = 'email' AND lower(pc.value) = lower($1)
         AND p.deleted_at IS NULL
       LIMIT 1`,
     [email],
   );
+
+  const existing = await findExisting();
   if (existing) return existing;
 
+  // A unique-violation on the party_contacts INSERT below aborts the
+  // enclosing transaction in Postgres until something rolls it back — a
+  // bare try/catch around the INSERT is not enough, every later statement
+  // in this same transaction (ensureOpenDeal, logTimeline, even the
+  // recovery SELECT itself) would fail with "current transaction is
+  // aborted" (verified live: that's exactly what happened before this
+  // savepoint was added). The savepoint scopes the rollback to just these
+  // two inserts, leaving the rest of the transaction usable.
+  await q.exec(`SAVEPOINT find_or_create_party`);
   const created = await q.one<PartyRow>(
     `INSERT INTO parties (org_id, kind, display_name, is_lead, lifecycle)
      VALUES (app.current_org(), 'person', $1, false, 'new')
      RETURNING id, display_name, lifecycle`,
     [nameHint && nameHint.trim() ? nameHint.trim() : email],
   );
-  await q.exec(
-    `INSERT INTO party_contacts (org_id, party_id, channel, value, is_primary)
-     VALUES (app.current_org(), $1, 'email', $2, true)
-     ON CONFLICT DO NOTHING`,
-    [created!.id, email],
-  );
+  try {
+    await q.exec(
+      `INSERT INTO party_contacts (org_id, party_id, channel, value, is_primary)
+       VALUES (app.current_org(), $1, 'email', $2, true)`,
+      [created!.id, email.toLowerCase()],
+    );
+    await q.exec(`RELEASE SAVEPOINT find_or_create_party`);
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    // Lost the race — someone else's party_contacts row won. Rolling back
+    // to the savepoint undoes both inserts above (our orphaned parties row
+    // included) and restores the transaction to a usable state.
+    await q.exec(`ROLLBACK TO SAVEPOINT find_or_create_party`);
+    await q.exec(`RELEASE SAVEPOINT find_or_create_party`);
+    const winner = await findExisting();
+    if (!winner) throw err; // shouldn't happen — the conflict implies a winner exists
+    return winner;
+  }
   return created!;
 }
 
@@ -213,7 +249,7 @@ export async function promoteOnUnsubscribe(q: Querier, input: {
 }): Promise<void> {
   const party = await q.one<{ id: string }>(
     `SELECT p.id FROM party_contacts pc JOIN parties p ON p.id = pc.party_id
-      WHERE pc.org_id = app.current_org() AND pc.channel = 'email' AND pc.value = $1
+      WHERE pc.org_id = app.current_org() AND pc.channel = 'email' AND lower(pc.value) = lower($1)
         AND p.deleted_at IS NULL
       LIMIT 1`,
     [input.email],
@@ -222,7 +258,7 @@ export async function promoteOnUnsubscribe(q: Querier, input: {
 
   await q.exec(
     `UPDATE party_contacts SET opted_out_at = now()
-      WHERE party_id = $1 AND channel = 'email' AND value = $2 AND opted_out_at IS NULL`,
+      WHERE party_id = $1 AND channel = 'email' AND lower(value) = lower($2) AND opted_out_at IS NULL`,
     [party.id, input.email],
   );
   await logTimeline(q, {

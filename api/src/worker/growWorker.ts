@@ -193,6 +193,25 @@ async function sendOne(q: Querier, message: ClaimedMessage): Promise<void> {
     return;
   }
 
+  // Checked on the raw template body first, before link-wrapping or the
+  // footer — wrapClickableLinks writes real grow_link_clicks rows (live,
+  // resolvable /c/ redirects) as a side effect, which must not happen for a
+  // message that's about to be refused and never sent.
+  const refusalPlaceholder = (subject: string, body: string) =>
+    hasUnrenderedPlaceholder(subject) || hasUnrenderedPlaceholder(body)
+      ? firstUnrenderedPlaceholder(hasUnrenderedPlaceholder(subject) ? subject : body)
+      : null;
+
+  const earlyPlaceholder = refusalPlaceholder(message.subject, message.body);
+  if (earlyPlaceholder) {
+    await q.exec(
+      `UPDATE grow_messages SET status = 'failed', error = $2 WHERE id = $1`,
+      [message.id, `refused to send: unrendered placeholder ${earlyPlaceholder}`],
+    );
+    log.error({ messageId: message.id, placeholder: earlyPlaceholder }, 'refused to send: unrendered template placeholder');
+    return;
+  }
+
   const senderProfile = await getSenderProfile(q);
   const unsubscribeUrl = `${GROW_BASE_URL}/u/${message.unsubscribe_token}`;
   // Before the footer, not after — the unsubscribe link gets its own
@@ -203,13 +222,16 @@ async function sendOne(q: Querier, message: ClaimedMessage): Promise<void> {
     unsubscribeUrl,
   });
 
-  if (hasUnrenderedPlaceholder(message.subject) || hasUnrenderedPlaceholder(body)) {
-    const placeholder = firstUnrenderedPlaceholder(hasUnrenderedPlaceholder(message.subject) ? message.subject : body);
+  // Re-checked post-footer: the one thing the early check above can't see
+  // is the footer render itself silently failing to fill
+  // {{unsubscribe_footer}} — still refused, same as before this reordering.
+  const latePlaceholder = refusalPlaceholder(message.subject, body);
+  if (latePlaceholder) {
     await q.exec(
       `UPDATE grow_messages SET status = 'failed', error = $2 WHERE id = $1`,
-      [message.id, `refused to send: unrendered placeholder ${placeholder}`],
+      [message.id, `refused to send: unrendered placeholder ${latePlaceholder}`],
     );
-    log.error({ messageId: message.id, placeholder }, 'refused to send: unrendered template placeholder');
+    log.error({ messageId: message.id, placeholder: latePlaceholder }, 'refused to send: unrendered footer placeholder');
     return;
   }
 
@@ -327,11 +349,20 @@ async function pollOneMailbox(q: Querier, orgId: string, mailbox: ImapMailboxRow
 async function handleClassifiedMessage(
   q: Querier, orgId: string, msg: Awaited<ReturnType<typeof pollMailbox>>['messages'][number],
 ): Promise<void> {
-  const match = await matchGrowMessage(q, msg.matchedMessageIds);
+  // Tier 1 (trusted In-Reply-To header) before tier 2 (full-source scan,
+  // which can pick up a Message-ID quoted or forwarded from an unrelated
+  // message) — see growPoller.ts's header for why these are never merged
+  // into one candidate pool.
+  const match = (msg.primaryMessageIds.length > 0 && await matchGrowMessage(q, msg.primaryMessageIds))
+    || await matchGrowMessage(q, msg.fallbackMessageIds);
   if (!match) {
     // A bounce/complaint report whose embedded original Message-ID didn't
     // match anything of ours, or a reply-shaped message with no thread
     // match at all — nothing to attribute this to.
+    if (msg.kind === 'bounce_hard' || msg.kind === 'bounce_soft' || msg.kind === 'complaint') {
+      log.warn({ orgId, kind: msg.kind, from: msg.fromAddress, subject: msg.subject },
+        'unmatched bounce/complaint — could not attribute to a sent message, no suppression added');
+    }
     return;
   }
 

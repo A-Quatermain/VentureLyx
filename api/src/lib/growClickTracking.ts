@@ -54,7 +54,17 @@ export async function processClick(token: string): Promise<ClickResult> {
   if (!hit) return { found: false, url: null };
 
   await withTenant({ orgId: hit.org_id, userId: null, isStaff: false }, async (q) => {
-    await q.exec(`UPDATE grow_link_clicks SET clicked_at = now() WHERE token = $1`, [token]);
+    // Idempotency guard, same shape as processUnsubscribe's `existing`
+    // check — a mail-safety scanner or a mail client reloading the message
+    // can hit this same token many times for what was really one click;
+    // the row only flips from NULL once, so the event/promotion below only
+    // ever fire on the first.
+    const firstClick = await q.exec(
+      `UPDATE grow_link_clicks SET clicked_at = now() WHERE token = $1 AND clicked_at IS NULL`,
+      [token],
+    );
+    if (firstClick === 0) return;
+
     await q.exec(
       `INSERT INTO grow_events (org_id, message_id, contact_id, type, payload)
        VALUES (app.current_org(), (SELECT message_id FROM grow_link_clicks WHERE token = $2), $1, 'click', $3)`,

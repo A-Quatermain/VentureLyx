@@ -11,13 +11,16 @@
  * Matching a message back to the grow_message it's replying to (and from
  * there to the contact/campaign/step) is the part classification can't
  * skip — an inbox the mailbox also receives other mail on must not treat
- * every unrelated email as a "reply." The match is a single regex scan of
- * the raw source for any Message-ID-shaped token (`<...@...>`), checked
- * against grow_messages.smtp_message_id. This deliberately covers both the
- * normal case (a mail client sets In-Reply-To/References to the original
- * Message-ID) and the DSN/bounce case (most MTAs embed the original
- * message's headers, Message-ID included, inside the delivery-status or
- * rfc822-headers part of the bounce) with one mechanism instead of two.
+ * every unrelated email as a "reply." Two tiers, tried in order, never
+ * merged into one pool: (1) the envelope's own In-Reply-To header, parsed
+ * by ImapFlow — a value the mail system itself asserts points at the
+ * original message; (2) a full-source regex scan for any Message-ID-shaped
+ * token, which also catches the DSN/bounce case (most MTAs embed the
+ * original message's headers inside the delivery-status or rfc822-headers
+ * part) but can equally pick up an unrelated Message-ID quoted or forwarded
+ * in a reply's own body. Tier 2 only runs when tier 1 found no match, so a
+ * genuine In-Reply-To never loses to an incidental string elsewhere in the
+ * message.
  */
 import { ImapFlow } from 'imapflow';
 import type { Querier } from './db.js';
@@ -30,14 +33,19 @@ export interface ClassifiedMessage {
   fromAddress: string | null;
   subject: string | null;
   bodyText: string;
-  matchedMessageIds: string[];
+  /** Tier 1 — envelope.inReplyTo, a trusted header. Try this match alone first. */
+  primaryMessageIds: string[];
+  /** Tier 2 — full-source scan, includes quoted/forwarded content. Fallback only. */
+  fallbackMessageIds: string[];
 }
 
 const CONNECT_TIMEOUT_MS = 15_000;
-// Bounded: classification only needs headers and the DSN/rfc822-headers
-// part, never a full multi-megabyte message, and this is scanned per
-// message on every poll.
-const SOURCE_SCAN_MAX_BYTES = 80_000;
+// Bounded, not unlimited — but generous enough that a DSN report with a
+// bulky human-readable preamble doesn't truncate before reaching the
+// embedded original headers (the whole point of scanning at all). A real
+// bounce was observed truncating at the original 80KB in review; raised
+// after that finding.
+const SOURCE_SCAN_MAX_BYTES = 250_000;
 // Response bodies get stored (truncated) on the resulting timeline event for
 // a real reply — bounded for the same reason response_excerpt is bounded in
 // db/migrations/017: transparency without pasting an unbounded blob.
@@ -170,11 +178,12 @@ export async function pollMailbox(creds: MailboxCreds): Promise<PollResult> {
           });
 
           const source = msg.source ?? Buffer.alloc(0);
-          const candidates = new Set<string>();
-          if (msg.envelope?.inReplyTo) candidates.add(msg.envelope.inReplyTo);
-          for (const m of source.toString('utf8').matchAll(MESSAGE_ID_RE)) candidates.add(m[0]);
+          const primaryMessageIds = msg.envelope?.inReplyTo ? [msg.envelope.inReplyTo] : [];
+          const fallbackMessageIds = [...new Set(
+            [...source.toString('utf8').matchAll(MESSAGE_ID_RE)].map((m) => m[0]),
+          )];
 
-          const kind = explicit ?? (candidates.size > 0 ? 'reply' : null);
+          const kind = explicit ?? (primaryMessageIds.length > 0 || fallbackMessageIds.length > 0 ? 'reply' : null);
           if (!kind) continue; // unrelated inbox mail — not Grow's concern
 
           messages.push({
@@ -183,7 +192,8 @@ export async function pollMailbox(creds: MailboxCreds): Promise<PollResult> {
             fromAddress,
             subject,
             bodyText: extractText(source).slice(0, BODY_EXCERPT_MAX_CHARS),
-            matchedMessageIds: [...candidates],
+            primaryMessageIds,
+            fallbackMessageIds,
           });
         } catch {
           // Malformed/unparseable single message — skip it, keep polling.
