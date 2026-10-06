@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlparse, urldefrag
@@ -54,6 +55,17 @@ class PageResult:
     response_ms: int | None = None
     depth: int = 0
     error: str | None = None
+    # AI/local visibility signals (workers/seo/scoring.py's compute_ai_visibility) —
+    # kept on PageResult rather than persisted to seo_pages: these feed a
+    # site-wide score and a handful of site-wide issue codes, not a per-page
+    # column anyone reads directly.
+    phone_numbers: list[str] = field(default_factory=list)
+    has_local_business_schema: bool = False
+    local_business_schema_complete: bool = False
+    has_faq_schema: bool = False
+    question_subheadings: int = 0
+    subheadings: int = 0
+    has_early_answer: bool = False
 
 
 @dataclass
@@ -139,22 +151,56 @@ def _text_of(node) -> str:
     return " ".join(node.text(separator=" ", strip=True).split()) if node else ""
 
 
-def extract_schema_types(tree) -> list[str]:
-    """Collect every @type in the page's JSON-LD, including nested graphs.
+#  schema.org has dozens of LocalBusiness subtypes (Plumber, Electrician,
+#  HVACBusiness, ...) — matching by suffix/substring rather than maintaining
+#  an exhaustive enum. A false positive here (an unrelated type that happens
+#  to end in "Business"/"Service") just means one extra page gets checked
+#  for complete properties, which is harmless; a missed real subtype would
+#  wrongly flag a site that actually has this.
+def _is_local_business_type(t: str) -> bool:
+    return t == "LocalBusiness" or t.endswith("Business") or t.endswith("Service")
 
-    Parse the JSON rather than scanning for the string: real-world blocks nest
-    (@graph, arrays, mixed types) and string-scanning silently captures the rest
-    of the object as the type name.
+# What an AI (or Google) needs from a LocalBusiness block to actually use it:
+# who, where, how to reach you, and when you're open. "address" accepts
+# either a full PostalAddress object or a plain string — both are valid
+# schema.org.
+_LOCAL_BUSINESS_REQUIRED = ("name", "address", "telephone")
+
+
+def extract_schema_signals(tree) -> dict:
+    """Collect every @type in the page's JSON-LD, including nested graphs,
+    plus whether a LocalBusiness-family block has the properties an AI or
+    Google would actually need, and whether an FAQPage block exists.
+
+    Parses the JSON rather than scanning for the string: real-world blocks
+    nest (@graph, arrays, mixed types) and string-scanning silently captures
+    the rest of the object as the type name.
     """
     types: set[str] = set()
+    has_local_business = False
+    local_business_complete = False
+    has_faq = False
 
     def walk(node):
+        nonlocal has_local_business, local_business_complete, has_faq
         if isinstance(node, dict):
             t = node.get("@type")
+            node_types: list[str] = []
             if isinstance(t, str):
-                types.add(t)
+                node_types = [t]
             elif isinstance(t, list):
-                types.update(x for x in t if isinstance(x, str))
+                node_types = [x for x in t if isinstance(x, str)]
+            types.update(node_types)
+
+            if any(_is_local_business_type(nt) for nt in node_types):
+                has_local_business = True
+                if all(node.get(k) for k in _LOCAL_BUSINESS_REQUIRED) and (
+                    node.get("openingHours") or node.get("openingHoursSpecification")
+                ):
+                    local_business_complete = True
+            if "FAQPage" in node_types:
+                has_faq = True
+
             for v in node.values():
                 walk(v)
         elif isinstance(node, list):
@@ -169,7 +215,55 @@ def extract_schema_types(tree) -> list[str]:
             walk(json.loads(raw))
         except (json.JSONDecodeError, ValueError, RecursionError):
             log.debug("unparseable JSON-LD block skipped")
-    return sorted(types)
+
+    return {
+        "schema_types": sorted(types),
+        "has_local_business_schema": has_local_business,
+        "local_business_schema_complete": local_business_complete,
+        "has_faq_schema": has_faq,
+    }
+
+
+# Deliberately strict-ish US-format matcher (optional leading 1, area code,
+# exchange, line number) to keep false positives — a price, a street
+# address number — rare. Normalised to the last 10 digits for comparison,
+# so (954) 555-0100, 954-555-0100 and 954.555.0100 all compare equal.
+_PHONE_RE = re.compile(r"(?:\+?1[-.\s]?)?\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})\b")
+
+# A heading phrased as a question is the single clearest "this page answers
+# something" signal available without guessing at meaning — either it ends
+# in "?", or opens with a question word. Both real, grep-able facts about
+# the markup, not a judgment about whether the content is actually good.
+_QUESTION_START_RE = re.compile(
+    r"^(how|what|why|when|where|who|which|can|does|do|is|are|should)\b", re.IGNORECASE,
+)
+
+
+def _looks_like_question(heading: str) -> bool:
+    h = heading.strip()
+    return h.endswith("?") or bool(_QUESTION_START_RE.match(h))
+
+
+def extract_phone_numbers(text: str) -> list[str]:
+    return sorted({"".join(m.groups()) for m in _PHONE_RE.finditer(text)})
+
+
+def extract_heading_signals(tree) -> dict:
+    headings = [_text_of(h) for h in tree.css("h2, h3") if _text_of(h)]
+    # "A direct answer near the top" is a heuristic proxy, not a semantic
+    # judgment: does either of the first two substantial (15+ word)
+    # paragraphs in document order exist at all. A page that opens with
+    # nothing but a nav/hero before any real sentence fails this; a page
+    # whose second paragraph happens to be the real answer still passes —
+    # exactness isn't the point, "is there prose here at all, early" is.
+    paragraphs = [_text_of(p) for p in tree.css("p")]
+    substantial = [p for p in paragraphs if len(p.split()) >= 15]
+    early_answer = any(p in substantial for p in paragraphs[:2]) if paragraphs else False
+    return {
+        "subheadings": len(headings),
+        "question_subheadings": sum(1 for h in headings if _looks_like_question(h)),
+        "has_early_answer": early_answer,
+    }
 
 
 def parse_page(url: str, html: str, base_url: str, depth: int) -> tuple[PageResult, list[LinkResult]]:
@@ -205,7 +299,17 @@ def parse_page(url: str, html: str, base_url: str, depth: int) -> tuple[PageResu
     p.images_total = len(imgs)
     p.images_no_alt = sum(1 for i in imgs if not (i.attributes.get("alt") or "").strip())
 
-    p.schema_types = extract_schema_types(tree)
+    schema = extract_schema_signals(tree)
+    p.schema_types = schema["schema_types"]
+    p.has_local_business_schema = schema["has_local_business_schema"]
+    p.local_business_schema_complete = schema["local_business_schema_complete"]
+    p.has_faq_schema = schema["has_faq_schema"]
+
+    p.phone_numbers = extract_phone_numbers(text)
+    headings = extract_heading_signals(tree)
+    p.subheadings = headings["subheadings"]
+    p.question_subheadings = headings["question_subheadings"]
+    p.has_early_answer = headings["has_early_answer"]
 
     links: list[LinkResult] = []
     seen: set[str] = set()

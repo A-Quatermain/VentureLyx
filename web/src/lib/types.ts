@@ -19,7 +19,8 @@ export interface OrgProfile {
 
 export type AIFeature =
   | 'seo_recommendations' | 'page_generation' | 'review_response'
-  | 'next_best_action' | 'metric_explanation' | 'business_blueprint' | 'sequence_writing';
+  | 'next_best_action' | 'metric_explanation' | 'business_blueprint' | 'sequence_writing'
+  | 'ai_visibility_check';
 
 export type AIProvider = 'anthropic' | 'openai';
 export type AIProviderPreference = 'auto' | AIProvider;
@@ -225,6 +226,7 @@ export interface SeoScoreDetail {
   content: number | null;
   performance: number | null;
   local_seo: number | null;
+  ai_visibility: number | null;
   pages: number | null;
   broken_links: number | null;
   critical_issues: number | null;
@@ -524,6 +526,29 @@ export interface GscQueriesResponse {
   connected: boolean;
   status: string;
   rows: GscQueryRow[];
+}
+
+export interface AiVisibilityTrendPoint {
+  ai_visibility: number | null;
+  computed_at: string;
+}
+
+// One row = one real model response to one real query, on the date checked.
+// Never a ranking, never a guarantee — see db/migrations/017's header.
+export interface AiAnswerCheck {
+  query: string;
+  provider: string;
+  model: string;
+  mentioned: boolean;
+  position: number | null;
+  competitors: string[];
+  checked_at: string;
+}
+
+export interface AiVisibilityResponse {
+  trend: AiVisibilityTrendPoint[];
+  answerChecks: AiAnswerCheck[];
+  lastChecked: string | null;
 }
 
 export type CatalogKind = 'service' | 'product' | 'package' | 'fee';

@@ -23,7 +23,7 @@ import coverage
 import db
 import gsc
 from crawler import SiteConfig, crawl_site
-from scoring import compute_scores, detect_issues, signal_rows
+from scoring import compute_scores, detect_issues, detect_visibility_issues, signal_rows
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -140,11 +140,11 @@ def persist(conn, org_id: str, site: dict, out, issues, scores, job_id: int, tri
 
         cur.execute(
             """INSERT INTO seo_scores (org_id, crawl_id, site_id, health, technical,
-                                       content, performance, pages, broken_links,
+                                       content, performance, ai_visibility, pages, broken_links,
                                        critical_issues, high_issues)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (org_id, crawl_id, site_id, scores["health"], scores["technical"],
-             scores["content"], scores["performance"], scores["pages"],
+             scores["content"], scores["performance"], scores["ai_visibility"], scores["pages"],
              scores["broken_links"], scores["critical_issues"], scores["high_issues"]),
         )
 
@@ -212,7 +212,7 @@ def run_crawl_job(conn, job: dict) -> None:
             log.info("  ... %d pages", n)
 
     out = asyncio.run(crawl_site(cfg, on_progress=progress))
-    issues = detect_issues(out, cfg.url)
+    issues = detect_issues(out, cfg.url) + detect_visibility_issues(out)
     scores = compute_scores(out, issues)
 
     crawl_id = persist(conn, org_id, site, out, issues, scores, job["id"],

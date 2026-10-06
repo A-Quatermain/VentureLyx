@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from crawler import CrawlOutput, PageResult
 
@@ -38,6 +39,16 @@ RULES = {
     "missing_canonical":     ("low",      1, True,  "Page does not state its preferred URL"),
     "broken_external_link":  ("low",      1, False, "Link to another site is dead"),
     "no_schema":             ("low",      1, True,  "Page has no structured data for Google"),
+    # AI/local visibility — site-wide checks (detect_visibility_issues),
+    # not per-page like everything above. Weight is irrelevant for these
+    # (compute_ai_visibility scores this family separately from
+    # health/technical/content/performance), kept at 0 so a weight sum
+    # elsewhere never silently double-counts them.
+    "missing_local_business_schema": ("high",   0, True,  "No LocalBusiness listing for search engines or AI to read"),
+    "incomplete_local_business_schema": ("medium", 0, True, "LocalBusiness listing is missing key details"),
+    "missing_faq_schema":    ("low",      0, True,  "No FAQ structured data"),
+    "inconsistent_phone_number": ("high", 0, False, "Different phone numbers appear on different pages"),
+    "weak_qa_structure":     ("medium",   0, True,  "Pages don't read as direct answers to real questions"),
 }
 
 
@@ -153,6 +164,104 @@ def detect_issues(out: CrawlOutput, site_url: str) -> list[Issue]:
     return issues
 
 
+# ---------------------------------------------------------------------------
+# AI / local visibility — site-wide, not per-page
+# ---------------------------------------------------------------------------
+#
+# Everything above is "is this one page broken." These four checks ask a
+# different question: can a search engine or an AI model actually tell who
+# this business is, where it is, and whether a given page answers something
+# real. One issue per *problem* across the whole site, not one per page —
+# "your LocalBusiness schema is missing" is one thing to fix no matter how
+# many pages lack it.
+QA_MIN_WORDS = 100          # skip near-empty pages (nav-only, redirects) — nothing to judge
+QA_WEAK_THRESHOLD = 0.5     # share of eligible pages that must fail before this is "a problem"
+
+
+def detect_visibility_issues(out: CrawlOutput) -> list[Issue]:
+    issues: list[Issue] = []
+    html_pages = [p for p in out.pages if p.content_hash and p.status_code == 200]
+    if not html_pages:
+        return issues
+
+    homepage = next((p for p in html_pages if urlparse(p.url).path in ("", "/")), html_pages[0])
+
+    has_local_business = any(p.has_local_business_schema for p in html_pages)
+    local_business_complete = any(p.local_business_schema_complete for p in html_pages)
+    if not has_local_business:
+        issues.append(Issue(
+            "missing_local_business_schema", "high", homepage.url,
+            "No page has LocalBusiness (or a matching subtype) structured data", True,
+        ))
+    elif not local_business_complete:
+        issues.append(Issue(
+            "incomplete_local_business_schema", "medium", homepage.url,
+            "LocalBusiness data is present but missing name, address, phone, or hours", True,
+        ))
+
+    if not any(p.has_faq_schema for p in html_pages):
+        issues.append(Issue(
+            "missing_faq_schema", "low", homepage.url, "No FAQPage structured data found anywhere on the site", True,
+        ))
+
+    all_phones: set[str] = set()
+    for p in html_pages:
+        all_phones.update(p.phone_numbers)
+    if len(all_phones) > 1:
+        issues.append(Issue(
+            "inconsistent_phone_number", "high", homepage.url,
+            f"{len(all_phones)} different phone numbers found across the site", False,
+        ))
+
+    qa_eligible = [p for p in html_pages if p.word_count >= QA_MIN_WORDS]
+    if qa_eligible:
+        weak = [p for p in qa_eligible if not (p.has_early_answer and p.question_subheadings > 0)]
+        if len(weak) / len(qa_eligible) > QA_WEAK_THRESHOLD:
+            issues.append(Issue(
+                "weak_qa_structure", "medium", weak[0].url,
+                f"{len(weak)} of {len(qa_eligible)} pages don't open with a direct answer or use "
+                "question-style headings",
+                True,
+            ))
+
+    return issues
+
+
+def compute_ai_visibility(out: CrawlOutput, issues: list[Issue]) -> int:
+    """0-100, purely from what this crawl actually found: structured-data
+    presence and completeness (up to 40), whether the phone number is
+    consistent across pages (20), and what share of substantial pages read
+    as a direct answer to a real question rather than company description
+    (up to 40). A real, deterministic computation from the crawl — not an
+    estimate of traffic, rankings, or anything an AI model was actually
+    asked (see the separate weekly ai_answer_checks job for that)."""
+    html_pages = [p for p in out.pages if p.content_hash and p.status_code == 200]
+    if not html_pages:
+        return 0
+
+    codes = {i.code for i in issues}
+    if "missing_local_business_schema" in codes:
+        schema_score = 0
+    elif "incomplete_local_business_schema" in codes:
+        schema_score = 25
+    else:
+        schema_score = 35
+    if "missing_faq_schema" not in codes:
+        schema_score += 5
+    schema_score = min(40, schema_score)
+
+    nap_score = 0 if "inconsistent_phone_number" in codes else 20
+
+    qa_eligible = [p for p in html_pages if p.word_count >= QA_MIN_WORDS]
+    if qa_eligible:
+        strong = sum(1 for p in qa_eligible if p.has_early_answer and p.question_subheadings > 0)
+        qa_score = round(40 * strong / len(qa_eligible))
+    else:
+        qa_score = 0
+
+    return max(0, min(100, schema_score + nap_score + qa_score))
+
+
 def compute_scores(out: CrawlOutput, issues: list[Issue]) -> dict:
     """Sub-scores start at 100 and lose weighted points per issue, normalised by
     page count so a 200-page site is not punished for scale."""
@@ -182,6 +291,11 @@ def compute_scores(out: CrawlOutput, issues: list[Issue]) -> dict:
         "technical": scores["technical"],
         "content": scores["content"],
         "performance": scores["performance"],
+        # Independent of health/technical/content/performance above (none of
+        # the visibility issue codes carry a RULES weight) — a site can be
+        # technically flawless and still invisible to an AI model, or vice
+        # versa, and blending the two would hide that.
+        "ai_visibility": compute_ai_visibility(out, issues),
         "pages": pages,
         "broken_links": sum(1 for i in issues if i.code == "broken_internal_link"),
         "critical_issues": sev["critical"],

@@ -20,11 +20,13 @@ export type Feature =
   | 'next_best_action'
   | 'metric_explanation'
   | 'business_blueprint'
-  | 'sequence_writing';
+  | 'sequence_writing'
+  | 'ai_visibility_check';
 
 export const FEATURES: Feature[] = [
   'seo_recommendations', 'page_generation', 'review_response',
   'next_best_action', 'metric_explanation', 'business_blueprint', 'sequence_writing',
+  'ai_visibility_check',
 ];
 
 export type Provider = 'anthropic' | 'openai';
@@ -38,6 +40,11 @@ export const FEATURE_TIER: Record<Feature, Tier> = {
   metric_explanation: 'cheap',
   business_blueprint: 'heavy',
   sequence_writing: 'primary',
+  // Runs several queries per org, weekly, unattended (scripts/ai-visibility-check) —
+  // cheap by default since this is a sampling exercise, not a one-off
+  // high-stakes generation; an org can still override it in Settings like
+  // any other feature.
+  ai_visibility_check: 'cheap',
 };
 
 // claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5-20251001 are the current

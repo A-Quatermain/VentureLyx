@@ -66,6 +66,13 @@ services:
       VAULT_KEY: ${VAULT_KEY}
       GROW_BASE_URL: ${GROW_BASE_URL:-https://app.venturelyx.com}
       LOG_LEVEL: info
+      # Only consumed by the weekly `docker compose run --rm grow-worker node
+      # dist/worker/aiVisibilityCheck.js --all-due` one-off (see that file and
+      # docs/DEPLOY-GSC.md's cron section) — the grow-worker loop itself never
+      # calls AI. Same shared-fallback env vars as the api service
+      # (docker-compose.app.yml), so an org without a BYO key still works.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

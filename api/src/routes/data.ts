@@ -598,6 +598,43 @@ export default async function dataRoutes(app: FastifyInstance) {
     });
   });
 
+  // ---- ScaleSEO: AI & local search visibility -------------------------------
+  // Two different things, both surfaced here:
+  //   - schemaIssues / qaScore: the per-crawl visibility audit (schema
+  //     presence, NAP consistency, Q&A structure) — real, computed from the
+  //     site's own HTML every crawl (workers/seo/scoring.py).
+  //   - answerChecks: a SAMPLE of what a configured LLM said when asked a
+  //     real local-search query, from ai_answer_checks (populated weekly by
+  //     api/src/worker/aiVisibilityCheck.ts, never per-crawl). This is never
+  //     a ranking or a guarantee of placement — the UI must say so wherever
+  //     this is rendered. An empty array means no check has run yet, not
+  //     "not mentioned anywhere."
+  app.get('/seo/ai-visibility/:siteId', async (req) => {
+    req.requireRole('viewer');
+    const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const trend = await q.rows(
+        `SELECT ai_visibility, computed_at FROM seo_scores
+          WHERE site_id = $1 ORDER BY computed_at DESC LIMIT 12`,
+        [siteId],
+      );
+
+      const answerChecks = await q.rows(
+        `SELECT query, provider, model, mentioned, position, competitors, checked_at
+           FROM ai_answer_checks
+          WHERE site_id = $1
+          ORDER BY checked_at DESC, query
+          LIMIT 50`,
+        [siteId],
+      );
+
+      const lastChecked = answerChecks[0]?.checked_at ?? null;
+
+      return { trend, answerChecks, lastChecked };
+    });
+  });
+
   // ---- ScaleSEO: competitors -----------------------------------------------
   app.get('/seo/competitors/:siteId', async (req) => {
     req.requireRole('viewer');

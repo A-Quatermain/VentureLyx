@@ -7,13 +7,14 @@ import { mutate } from 'swr';
 import {
   ChartBar, UsersThree, FilePlus, ClockCounterClockwise, MapPin, Target, Plug,
   PencilSimple, Trash, Plus, CaretDown, Storefront, Megaphone, Star, Wrench, ArrowSquareOut,
+  Code, Buildings, Robot,
 } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import { API_BASE } from '@/lib/config';
 import type {
   SeoHealthDetail, SeoRanking, SeoCompetitor, SeoCrawlHistoryEntry, ContentPage, SummaryResponse,
-  CoverageGap, GscQueriesResponse, SeoSite, SeoIssueGroup,
+  CoverageGap, GscQueriesResponse, SeoSite, SeoIssueGroup, AiVisibilityResponse,
 } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -182,12 +183,20 @@ function WhoBadge({ who }: { who: WhoCanDo }) {
 // crawl findings, this one is the bigger local-search picture (a free
 // listing, the crawl findings as one line item, the content gap, reviews,
 // and — only once those are real — paid traffic).
+// Schema issues get their own checklist step (below), so "Fix what's broken"
+// counts everything else — a crawl finding isn't double-counted across steps.
+const SCHEMA_ISSUE_CODES = new Set([
+  'missing_local_business_schema', 'incomplete_local_business_schema', 'missing_faq_schema',
+]);
+
 function GetFoundTab({ siteId, onGoToTab }: { siteId: string; onGoToTab: (tab: Tab) => void }) {
   const { data: health } = useApi<SeoHealthDetail>(`/seo/health/${siteId}`);
   const { data: gaps } = useApi<CoverageGap[]>('/seo/coverage-gaps');
   const { data: summary } = useApi<SummaryResponse>('/command/summary');
 
-  const issues = health?.issues ?? [];
+  const allIssues = health?.issues ?? [];
+  const issues = allIssues.filter((i) => !SCHEMA_ISSUE_CODES.has(i.code));
+  const schemaIssues = allIssues.filter((i) => SCHEMA_ISSUE_CODES.has(i.code));
   const whoCounts: Record<WhoCanDo, number> = { diy: 0, ai: 0, pro: 0 };
   for (const issue of issues) {
     const who = (ISSUE_GUIDANCE[issue.code] ?? FALLBACK_GUIDANCE).who;
@@ -272,6 +281,52 @@ function GetFoundTab({ siteId, onGoToTab }: { siteId: string; onGoToTab: (tab: T
 
       <GetFoundStep
         n={4}
+        icon={Code}
+        title="Add LocalBusiness and FAQ structured data"
+        who="ai"
+        impact={
+          schemaIssues.length === 0
+            ? 'In place on your last crawl.'
+            : `${schemaIssues.length} finding${schemaIssues.length === 1 ? '' : 's'} — this is how search engines and AI answers read your name, address, phone, and services.`
+        }
+      >
+        {schemaIssues.length === 0 ? (
+          <p>No open findings here — this step is done.</p>
+        ) : (
+          <>
+            <ul className="space-y-1">
+              {schemaIssues.map((i) => (
+                <li key={i.code} className="text-sm">
+                  {(ISSUE_GUIDANCE[i.code] ?? FALLBACK_GUIDANCE).customerImpact}
+                </li>
+              ))}
+            </ul>
+            <Button variant="ghost" className="mt-3" onClick={() => onGoToTab('Scanner')}>
+              Open Priority Actions
+            </Button>
+          </>
+        )}
+      </GetFoundStep>
+
+      <GetFoundStep
+        n={5}
+        icon={Buildings}
+        title="Consistent listings"
+        who="diy"
+        impact="Yelp, BBB, your local Chamber, and other local directories."
+      >
+        <p>
+          The same name, address, and phone number everywhere — Google and AI answers both use
+          agreement across these listings as a trust signal. Claim or update each one so none of
+          them show an old address, a different phone number, or a closed status.
+        </p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Venturelyx doesn’t manage these listings today — each is free to claim directly.
+        </p>
+      </GetFoundStep>
+
+      <GetFoundStep
+        n={6}
         icon={Star}
         title="Reviews"
         who={null}
@@ -280,7 +335,8 @@ function GetFoundTab({ siteId, onGoToTab }: { siteId: string; onGoToTab: (tab: T
         <p>
           Asking is on you — every happy customer you ask for a review is worth more than one you
           don’t. Replying is where Venturelyx helps: AI can draft a reply to any review for you to
-          approve, good or bad.
+          approve, good or bad. Reviews that mention a real service and a real place (“fixed our
+          pool heater in Coral Springs”) carry more weight than a generic star rating.
         </p>
         <Link href="/reviews" className="mt-3 inline-block text-sm font-medium text-primary hover:underline">
           Open Reviews →
@@ -334,7 +390,7 @@ function GetFoundStep({
 function GoogleAdsStep({ topGaps }: { topGaps: CoverageGap[] }) {
   return (
     <GetFoundStep
-      n={5}
+      n={7}
       icon={Megaphone}
       title="Google Ads (optional)"
       who="pro"
@@ -373,6 +429,7 @@ const SUBSCORE_LABELS = {
   technical: 'Technical',
   content: 'Content',
   local_seo: 'Local SEO',
+  ai_visibility: 'AI Visibility',
   reviews: 'Reviews',
   performance: 'Performance',
 } as const;
@@ -421,6 +478,7 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
     { key: 'technical', value: score?.technical ?? null },
     { key: 'content', value: score?.content ?? null },
     { key: 'local_seo', value: score?.local_seo ?? null },
+    { key: 'ai_visibility', value: score?.ai_visibility ?? null },
     { key: 'reviews', value: reviewsScore, sub: reviewCount > 0 ? `${avgRating}★ · ${reviewCount} reviews` : 'no reviews yet' },
     { key: 'performance', value: score?.performance ?? null },
   ];
@@ -566,12 +624,68 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
         )}
       </Card>
 
+      <AiAnswerChecksCard siteId={siteId} />
+
       <AIStreamPanel
         path="/ai/growth-strategist/stream"
         title="AI Recommendation"
         triggerLabel="What should I fix first?"
       />
     </div>
+  );
+}
+
+// A SAMPLE of what a configured LLM said when asked a real local-search
+// query — never a ranking, never a guarantee of placement. Populated weekly
+// (api/src/worker/aiVisibilityCheck.ts), not per-crawl, so an empty list
+// before the first run is expected, not an error.
+function AiAnswerChecksCard({ siteId }: { siteId: string }) {
+  const { data } = useApi<AiVisibilityResponse>(`/seo/ai-visibility/${siteId}`);
+  const checks = data?.answerChecks ?? [];
+
+  return (
+    <Card className="p-0">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <Robot size={16} className="text-muted-foreground" />
+        <p className="text-sm font-semibold">AI Answer Checks</p>
+      </div>
+      <div className="border-b border-border bg-muted/40 px-4 py-2.5">
+        <p className="text-xs text-muted-foreground">
+          A sample of how one AI model answered a real local-search question — not a ranking and
+          not a guarantee your business gets mentioned. Checked weekly.
+        </p>
+      </div>
+      {checks.length === 0 ? (
+        <p className="p-4 text-sm text-muted-foreground">
+          No checks yet — these run weekly once this site has services and cities on file.
+        </p>
+      ) : (
+        <ul className="divide-y divide-border">
+          {checks.map((c) => (
+            <li key={`${c.query}-${c.checked_at}`} className="flex flex-col gap-1 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">“{c.query}”</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {c.model} · {new Date(c.checked_at).toLocaleDateString()}
+                  {c.competitors.length > 0 && ` · mentioned instead: ${c.competitors.slice(0, 3).join(', ')}`}
+                </p>
+              </div>
+              <div className="shrink-0">
+                {c.mentioned ? (
+                  <span className="rounded-full bg-success/10 px-2.5 py-1 text-xs font-medium text-success">
+                    Mentioned{c.position ? ` · #${c.position}` : ''}
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+                    Not mentioned
+                  </span>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }
 

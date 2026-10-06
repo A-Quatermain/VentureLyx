@@ -175,6 +175,41 @@ export const ISSUE_GUIDANCE: Record<string, IssueGuidance> = {
     timeEstimate: 'A few minutes to draft, then a quick add by a developer',
     who: 'ai',
   },
+  missing_local_business_schema: {
+    customerImpact: 'Not something a visitor sees directly — but it’s exactly the kind of fact a search engine or an AI assistant looks for to confirm you’re a real, local business.',
+    whyItMatters: 'Without it, Google and AI answers have to guess your name, address, phone, and hours from page text instead of reading them directly — some skip a business that doesn’t make this easy.',
+    steps: ['Venturelyx can draft LocalBusiness structured data from your business details.', 'A developer (or Venturelyx, where supported) adds it to the site.'],
+    timeEstimate: 'A few minutes to draft, then a quick add by a developer',
+    who: 'ai',
+  },
+  incomplete_local_business_schema: {
+    customerImpact: 'Not something a visitor sees directly.',
+    whyItMatters: 'The structured data is there, but missing a required detail (like address, phone, or hours) — search engines may ignore the whole block rather than use a partial one.',
+    steps: ['Venturelyx can draft the missing fields.', 'A developer adds them to the existing structured data.'],
+    timeEstimate: 'A few minutes to draft, then a quick add by a developer',
+    who: 'ai',
+  },
+  missing_faq_schema: {
+    customerImpact: 'Not something a visitor sees directly.',
+    whyItMatters: 'FAQ structured data is one of the clearest signals an AI assistant uses to quote a direct answer from your site instead of a competitor’s.',
+    steps: ['Venturelyx can draft FAQ structured data from the questions your service pages already answer.', 'A developer adds it to the page template.'],
+    timeEstimate: 'A few minutes to draft, then a quick add by a developer',
+    who: 'ai',
+  },
+  inconsistent_phone_number: {
+    customerImpact: 'A customer calls the number on one page and it’s not the number your team actually answers.',
+    whyItMatters: 'Search engines and AI answers treat a mismatched phone number across your own site as a trust problem — it can suppress how confidently they show your business at all.',
+    steps: ['Pick the one correct number.', 'A developer finds and updates every page showing a different one — this usually means a shared template or an old copy-paste, not one-off typos.'],
+    timeEstimate: 'Depends on how many pages are affected — a developer should search the whole site, not just the obvious ones',
+    who: 'pro',
+  },
+  weak_qa_structure: {
+    customerImpact: 'A visitor — or an AI assistant reading the page — has to dig through company-description text instead of getting a direct answer near the top.',
+    whyItMatters: 'AI answers tend to quote pages that open with a plain answer and use question-style headings; pages written as general company copy get passed over.',
+    steps: ['Venturelyx’s AI Page Builder can redraft a page’s opening to lead with a direct answer and question-style subheadings.', 'Review it and publish.'],
+    timeEstimate: '20–30 minutes to review and publish once drafted',
+    who: 'ai',
+  },
 };
 
 export const FALLBACK_GUIDANCE: IssueGuidance = {
