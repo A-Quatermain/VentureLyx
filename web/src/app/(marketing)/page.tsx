@@ -72,10 +72,12 @@ const CASE_STUDY = {
   ownerName: 'Noel',
 };
 
-// Module sections get a real screenshot each. Grow and ScaleSEO have more
-// than one real capture, shown as a crossfading carousel (components/
-// ImageCarousel.tsx) rather than picking just one; Operate/AI Team/Reviews
-// still have no capture, so they keep the dashed placeholder box below.
+// Module sections get a real screenshot each, rendered through the same
+// ImageCarousel (components/ImageCarousel.tsx) whether there's one capture
+// or several — a single-image array just renders statically (no dots, no
+// auto-advance; see that component). Grow (3) and ScaleSEO (2) are the only
+// ones with more than one; the placeholder box below only still applies to
+// a module with no screenshotImages at all, which is none of them today.
 const MODULE_SECTIONS: Array<{
   key: string;
   eyebrow: string;
@@ -90,6 +92,7 @@ const MODULE_SECTIONS: Array<{
     title: 'Every lead in one pipeline',
     copy: 'Track leads from first contact to paid invoice. See your catalog, your open jobs, and exactly who owes you money — all in one place.',
     screenshotCaption: 'Operate — pipeline view',
+    screenshotImages: ['/brand/Operate.png'],
   },
   {
     key: 'scaleseo',
@@ -113,6 +116,7 @@ const MODULE_SECTIONS: Array<{
     title: 'AI drafts. You approve.',
     copy: 'Growth Strategist recommends what to do next. Content Writer drafts service and location pages. Reputation Assistant drafts review replies. Nothing publishes or sends until you approve it. A phone attendant is coming.',
     screenshotCaption: 'AI Team — assistant roster',
+    screenshotImages: ['/brand/AI Team 1.png'],
   },
   {
     key: 'reviews',
@@ -120,6 +124,7 @@ const MODULE_SECTIONS: Array<{
     title: 'Every review, one inbox',
     copy: 'Collect reviews from Google, Facebook, and Yelp, or add them manually. See your rating trend and reply with an AI-drafted response you approve before it goes live.',
     screenshotCaption: 'Reviews — inbox and rating trend',
+    screenshotImages: ['/brand/Reviews.png'],
   },
 ];
 
@@ -301,10 +306,9 @@ export default async function LandingPage() {
       </section>
 
       {/* ---- Module sections: real screenshots, not illustrations --------
-          Operate/AI Team/Reviews have no real capture yet (see the chat
-          response this shipped with for how to get one in) and keep the
-          dashed ImageSquare placeholder; Grow and ScaleSEO have real
-          screenshots and render as a crossfading carousel instead. */}
+          Every module has a real screenshotImages entry now; the dashed
+          ImageSquare placeholder only renders for a future module added
+          without one yet. */}
       <section className="mx-auto max-w-6xl px-6 py-20">
         <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">See it, don&rsquo;t just take our word for it</h2>
         <div className="mt-10 flex flex-col gap-16">
