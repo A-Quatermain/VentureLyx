@@ -7,6 +7,7 @@ import {
 import { getServerSession } from '@/lib/session';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { VideoHero } from '@/components/VideoHero';
+import { ImageCarousel } from '@/components/ImageCarousel';
 import { WaitlistCTA } from '@/components/WaitlistCTA';
 import { MODULES, type ModuleInfo } from '@/lib/modules';
 import { TIERS, PRICING_CTA_LABEL } from '@/lib/pricing';
@@ -71,16 +72,17 @@ const CASE_STUDY = {
   ownerName: 'Noel',
 };
 
-// Module sections get a real screenshot each, not an illustration — none
-// are captured yet (see the PLACEHOLDER note below and the chat response
-// this shipped with). Build/Source have no screenshot slot: they don't
-// exist to screenshot yet, and stay in the compact status grid instead.
+// Module sections get a real screenshot each. Grow and ScaleSEO have more
+// than one real capture, shown as a crossfading carousel (components/
+// ImageCarousel.tsx) rather than picking just one; Operate/AI Team/Reviews
+// still have no capture, so they keep the dashed placeholder box below.
 const MODULE_SECTIONS: Array<{
   key: string;
   eyebrow: string;
   title: string;
   copy: string;
   screenshotCaption: string;
+  screenshotImages?: string[];
 }> = [
   {
     key: 'operate',
@@ -95,6 +97,7 @@ const MODULE_SECTIONS: Array<{
     title: 'Find out why customers can’t find you',
     copy: 'A real crawl of your site, a health score out of 100, and a page-by-page account of what’s broken — the same engine behind the N&P Pools result above.',
     screenshotCaption: 'ScaleSEO — site health dashboard',
+    screenshotImages: ['/brand/ScaleSEO.png', '/brand/ScaleSEO 1.png'],
   },
   {
     key: 'grow',
@@ -102,6 +105,7 @@ const MODULE_SECTIONS: Array<{
     title: 'Email campaigns that respect your list',
     copy: 'Import your contacts, write a sequence, and send real campaigns with mailbox warmup and one-click unsubscribe built in. SMS, funnels, and paid ads are coming.',
     screenshotCaption: 'Grow — campaign sequence editor',
+    screenshotImages: ['/brand/Grow 1.png', '/brand/Grow 2.png', '/brand/Grow 3.png'],
   },
   {
     key: 'ai-team',
@@ -297,10 +301,10 @@ export default async function LandingPage() {
       </section>
 
       {/* ---- Module sections: real screenshots, not illustrations --------
-          PLACEHOLDER: no screenshot has been captured for any of these yet
-          (see the chat response this shipped with for why, and how to get
-          real ones in). Swap each ImageSquare block for an actual
-          screenshot — nothing else in this section needs to change. */}
+          Operate/AI Team/Reviews have no real capture yet (see the chat
+          response this shipped with for how to get one in) and keep the
+          dashed ImageSquare placeholder; Grow and ScaleSEO have real
+          screenshots and render as a crossfading carousel instead. */}
       <section className="mx-auto max-w-6xl px-6 py-20">
         <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">See it, don&rsquo;t just take our word for it</h2>
         <div className="mt-10 flex flex-col gap-16">
@@ -314,12 +318,20 @@ export default async function LandingPage() {
                 <h3 className="mt-2 font-display text-xl font-bold tracking-tight sm:text-2xl">{m.title}</h3>
                 <p className="mt-3 text-sm leading-relaxed text-muted-foreground sm:text-base">{m.copy}</p>
               </div>
-              <div className="flex aspect-[16/10] items-center justify-center rounded-xl border border-dashed border-border bg-muted/40">
-                <div className="flex flex-col items-center gap-2 text-muted-foreground/60">
-                  <ImageSquare size={32} weight="duotone" />
-                  <span className="text-xs">{m.screenshotCaption}</span>
+              {m.screenshotImages ? (
+                <ImageCarousel
+                  images={m.screenshotImages}
+                  alt={m.screenshotCaption}
+                  className="aspect-[16/10] rounded-xl border border-border shadow-sm"
+                />
+              ) : (
+                <div className="flex aspect-[16/10] items-center justify-center rounded-xl border border-dashed border-border bg-muted/40">
+                  <div className="flex flex-col items-center gap-2 text-muted-foreground/60">
+                    <ImageSquare size={32} weight="duotone" />
+                    <span className="text-xs">{m.screenshotCaption}</span>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           ))}
         </div>
