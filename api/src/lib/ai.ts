@@ -231,6 +231,15 @@ export interface StreamAIOptions {
   clients: AIClients;
   /** From AISettings.modelOverrides[feature], if the org set one. */
   modelOverride?: { provider: Provider; model: string };
+  // Grounds the completion in a live, server-side web search instead of the
+  // model's training data alone. Both providers bill search requests
+  // separately from tokens — estimateCost/getMonthlySpend only see
+  // approxTokens, so a feature with this on will under-report real spend
+  // against the org's cap. Opt-in per call, not a global default, because
+  // most features here (page drafting, reply drafting, explaining an org's
+  // own metrics) have no business reason to leave the org's own data and
+  // shouldn't silently start doing so.
+  webSearch?: boolean;
   onUsage: (entry: { provider: Provider; model: string; approxTokens: number }) => Promise<void>;
 }
 
@@ -245,6 +254,12 @@ interface UsageInfo {
   approxTokens: number;
 }
 
+// Capped low (not "unlimited") because this is a cheap-tier, unattended,
+// weekly-per-org feature — a model that gets curious and searches a dozen
+// times per query would multiply both latency and the uncounted search cost
+// noted on StreamAIOptions.webSearch.
+const WEB_SEARCH_MAX_USES = 3;
+
 async function* streamAnthropic(
   client: Anthropic, model: string, opts: StreamAIOptions, usage: UsageInfo,
 ): AsyncGenerator<string> {
@@ -254,6 +269,9 @@ async function* streamAnthropic(
     max_tokens: opts.maxTokens ?? 1024,
     system: opts.system,
     messages: opts.messages,
+    ...(opts.webSearch
+      ? { tools: [{ type: 'web_search_20260318', name: 'web_search', max_uses: WEB_SEARCH_MAX_USES }] as const }
+      : {}),
   });
   for await (const event of stream) {
     if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
@@ -269,12 +287,19 @@ async function* streamOpenAI(
 ): AsyncGenerator<string> {
   usage.model = model;
 
-  if (OPENAI_RESPONSES_ONLY.has(model)) {
+  // web_search is a Responses-API-only tool (not available to Chat
+  // Completions outside the separate `-search-preview` model family, which
+  // would mean overriding the tier's chosen model) — route there whenever
+  // it's requested, not just for the models that require Responses anyway.
+  if (OPENAI_RESPONSES_ONLY.has(model) || opts.webSearch) {
     const stream = await client.responses.create({
       model,
       instructions: opts.system,
       input: opts.messages.map((m) => ({ role: m.role, content: m.content })),
       stream: true,
+      ...(opts.webSearch
+        ? { tools: [{ type: 'web_search', search_context_size: 'low' }] as const }
+        : {}),
     });
     for await (const event of stream) {
       if (event.type === 'response.output_text.delta') {

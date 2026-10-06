@@ -115,6 +115,38 @@ async function collectText(
   return { text, meta };
 }
 
+// Web search results get spliced into the model's context, which pushes a
+// query's token cost well above a plain completion — verified live: this
+// tripped OpenAI's per-minute token limit after 2-3 of 5 queries in testing,
+// where a non-search call never came close. A 429 here is a "wait," not a
+// "give up" — one retry on the provider's own suggested delay recovers the
+// query instead of silently dropping it from the week's sample.
+function rateLimitDelayMs(err: unknown): number | null {
+  const status = (err as { status?: number })?.status;
+  if (status !== 429) return null;
+  const headers = (err as { headers?: Record<string, string> })?.headers;
+  const ms = Number(headers?.['retry-after-ms']);
+  if (Number.isFinite(ms) && ms > 0) return ms;
+  const secs = Number(headers?.['retry-after']);
+  if (Number.isFinite(secs) && secs > 0) return secs * 1000;
+  return 5000;
+}
+
+async function collectTextWithRetry(
+  makeGen: () => AsyncGenerator<AIStreamEvent>,
+): Promise<{ text: string; meta: { provider: string; model: string } | null }> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await collectText(makeGen());
+    } catch (err) {
+      const delay = rateLimitDelayMs(err);
+      if (delay === null || attempt >= 2) throw err;
+      log.warn({ attempt, delayMs: delay }, 'rate limited, retrying after delay');
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 interface OrgSetup {
   orgName: string;
   siteId: string;
@@ -187,15 +219,23 @@ async function checkOrg(orgId: string): Promise<number> {
   for (const target of targets) {
     // No Querier held open across the AI call itself — same reasoning as
     // every HTTP route in routes/ai.ts (see ai.ts's StreamAIOptions comment).
-    const gen = streamAI({
+    // A function, not a value: collectTextWithRetry needs a fresh generator
+    // per attempt, since a partially-consumed one can't be replayed.
+    const makeGen = () => streamAI({
       orgId,
       feature: FEATURE,
-      system: 'You answer local-search questions the way a knowledgeable local resident would, '
-        + 'naming only real businesses you actually have information about.',
+      system: 'You answer local-search questions the way a knowledgeable local resident would. '
+        + 'Search the web for real, current businesses rather than relying on memory, and name '
+        + 'only ones you actually found.',
       messages: [{ role: 'user', content: buildPrompt(target.query) }],
       providerPreference: setup.ctx.providerPreference,
       clients: setup.ctx.clients,
       modelOverride: setup.ctx.modelOverride,
+      // Without this, the model is answering from stale training data alone
+      // and almost always declines rather than naming real businesses — the
+      // whole point is to sample what a customer asking a browsing-grounded
+      // assistant (ChatGPT, Perplexity, AI Overviews) actually sees today.
+      webSearch: true,
       onUsage: (usage) =>
         withTenant({ orgId, userId: null, isStaff: false }, (q) =>
           logAiUsage(q, { orgId, feature: FEATURE, ...usage })),
@@ -203,7 +243,7 @@ async function checkOrg(orgId: string): Promise<number> {
 
     let result: { text: string; meta: { provider: string; model: string } | null };
     try {
-      result = await collectText(gen);
+      result = await collectTextWithRetry(makeGen);
     } catch (err) {
       log.error({ orgId, query: target.query, err }, 'AI call failed for this query, skipping');
       continue;
