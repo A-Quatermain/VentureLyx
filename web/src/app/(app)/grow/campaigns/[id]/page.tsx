@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { SequenceAssistBar } from '@/components/SequenceAssistBar';
 import { GrowSendWindowCard } from '@/components/GrowSendWindowCard';
+import { GrowCampaignStats } from '@/components/GrowCampaignStats';
 import { GrowDomainCapsTable } from '@/components/GrowDomainCapsTable';
 import { GrowScheduleProjection } from '@/components/GrowScheduleProjection';
 import { GrowTestSendCard, stepSignature } from '@/components/GrowTestSendCard';
@@ -317,6 +318,8 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
           </p>
         </Card>
       )}
+
+      <GrowCampaignStats campaignId={id} />
 
       <GrowSendWindowCard campaign={campaign} canEdit={canEdit} />
 

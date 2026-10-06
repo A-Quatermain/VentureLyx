@@ -1652,6 +1652,90 @@ export default async function growRoutes(app: FastifyInstance) {
     });
   });
 
+  // ---- Lifetime stats -----------------------------------------------------------------
+  //
+  // The dashboard's "Sent today" tile (GET /grow/stats, used by app/grow/page.tsx)
+  // is the only send count anywhere in Grow today — nothing says how a
+  // campaign has done since it started. This reads grow_messages (lifetime
+  // sent/queued, by step) and grow_events (replies, unsubscribes, both
+  // joined back to a campaign through the message that triggered them,
+  // since events carry no campaign_id of their own) for the full picture.
+  // completion_date/remaining_sends already exist on
+  // /schedule-projection (a capacity-aware simulation); this endpoint is
+  // what-happened-so-far, that one is what-happens-next — deliberately not
+  // duplicated here.
+  app.get('/grow/campaigns/:id/stats', async (req) => {
+    req.requireRole('viewer');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const campaign = await q.one<{ id: string }>(`SELECT id FROM grow_campaigns WHERE id = $1`, [id]);
+      if (!campaign) throw new HttpError(404, 'Campaign not found', 'not_found');
+
+      const [totals, events, enrollments, bySteps] = await Promise.all([
+        q.one<{ sent: number; remaining: number; failed: number }>(
+          `SELECT count(*) FILTER (WHERE status = 'sent')::int AS sent,
+                  count(*) FILTER (WHERE status = 'queued')::int AS remaining,
+                  count(*) FILTER (WHERE status IN ('failed','bounced'))::int AS failed
+             FROM grow_messages WHERE campaign_id = $1`,
+          [id],
+        ),
+        q.one<{ replied: number; unsubscribed: number }>(
+          `SELECT count(DISTINCT e.contact_id) FILTER (WHERE e.type = 'reply')::int AS replied,
+                  count(DISTINCT e.contact_id) FILTER (WHERE e.type = 'unsubscribe')::int AS unsubscribed
+             FROM grow_events e
+             JOIN grow_messages m ON m.id = e.message_id
+            WHERE m.campaign_id = $1`,
+          [id],
+        ),
+        // "pending" = still has a next step coming (active/held); every
+        // other state (completed, replied, bounced, unsubscribed, failed)
+        // is done with the sequence one way or another, which is what
+        // "completed" means here — not necessarily "finished every step".
+        q.one<{ enrolled: number; pending: number; completed: number }>(
+          `SELECT count(*)::int AS enrolled,
+                  count(*) FILTER (WHERE state IN ('active','held'))::int AS pending,
+                  count(*) FILTER (WHERE state NOT IN ('active','held'))::int AS completed
+             FROM grow_enrollments WHERE campaign_id = $1`,
+          [id],
+        ),
+        // DISTINCT m.id on the message-side counts, not plain count(*) — the
+        // LEFT JOIN fans a message out into one row per event against it
+        // (sent + reply + unsubscribe can all reference the same message),
+        // so an ungated count(*) here would count one sent message multiple
+        // times. The event-side counts are already DISTINCT on contact_id
+        // and unaffected.
+        q.rows<{ step_no: number; sent: number; remaining: number; replied: number; unsubscribed: number }>(
+          `SELECT m.step_no,
+                  count(DISTINCT m.id) FILTER (WHERE m.status = 'sent')::int AS sent,
+                  count(DISTINCT m.id) FILTER (WHERE m.status = 'queued')::int AS remaining,
+                  count(DISTINCT e.contact_id) FILTER (WHERE e.type = 'reply')::int AS replied,
+                  count(DISTINCT e.contact_id) FILTER (WHERE e.type = 'unsubscribe')::int AS unsubscribed
+             FROM grow_messages m
+        LEFT JOIN grow_events e ON e.message_id = m.id
+            WHERE m.campaign_id = $1
+            GROUP BY m.step_no
+            ORDER BY m.step_no`,
+          [id],
+        ),
+      ]);
+
+      return {
+        sent: totals?.sent ?? 0,
+        remaining: totals?.remaining ?? 0,
+        failed: totals?.failed ?? 0,
+        replied: events?.replied ?? 0,
+        unsubscribed: events?.unsubscribed ?? 0,
+        contacts: {
+          enrolled: enrollments?.enrolled ?? 0,
+          pending: enrollments?.pending ?? 0,
+          completed: enrollments?.completed ?? 0,
+        },
+        steps: bySteps,
+      };
+    });
+  });
+
   // ---- Schedule projection ----------------------------------------------------------
   //
   // Everything the "schedule & pacing" tab needs beyond the campaign row

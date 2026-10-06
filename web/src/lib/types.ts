@@ -568,6 +568,29 @@ export interface GrowCampaign {
   updated_at: string;
 }
 
+// ---- GET /grow/campaigns/:id/stats — lifetime, not just today ------------
+export interface GrowCampaignStepStats {
+  step_no: number;
+  sent: number;
+  remaining: number;
+  replied: number;
+  unsubscribed: number;
+}
+
+export interface GrowCampaignStats {
+  sent: number;
+  remaining: number;
+  failed: number;
+  replied: number;
+  unsubscribed: number;
+  contacts: {
+    enrolled: number;
+    pending: number;
+    completed: number;
+  };
+  steps: GrowCampaignStepStats[];
+}
+
 export interface GrowSequenceStep {
   id: string;
   campaign_id: string;
