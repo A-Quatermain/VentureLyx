@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Star, Plus, MagnifyingGlass } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import type { SeoSite } from '@/lib/types';
@@ -12,10 +12,19 @@ import { SiteDrawer } from '@/components/SiteDrawer';
 
 export default function ScaleSeoSitesPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const role = useRole();
   const canEdit = atLeast(role, 'admin');
   const { data: sites, isLoading, error } = useApi<SeoSite[]>('/seo/sites');
   const [adding, setAdding] = useState(false);
+
+  // Guided setup's "Add your website" step links here with ?add=1 to open
+  // the drawer immediately, instead of landing on a list and making the
+  // person find the button themselves.
+  useEffect(() => {
+    if (searchParams.get('add') === '1' && canEdit) setAdding(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, canEdit]);
 
   if (isLoading) return <div className="p-4 text-sm text-muted-foreground">Loading…</div>;
   if (error) {

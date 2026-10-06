@@ -16,6 +16,7 @@ import { syncMarketTargets } from '../lib/marketTargets.js';
 import { slugify } from '../lib/slug.js';
 import { HttpError } from '../plugins/context.js';
 import { moduleWriteGate } from '../lib/moduleAccess.js';
+import { ingestFile } from '../lib/growContactImportXlsx.js';
 
 async function logTimeline(
   q: Querier,
@@ -214,6 +215,114 @@ export default async function operateRoutes(app: FastifyInstance) {
         title: `Added ${p.display_name}`, actorUserId: sess.user_id, actorLabel: sess.full_name,
       });
       return party;
+    });
+  });
+
+  // ---- Bulk-import customers from a CSV/XLSX file ---------------------------
+  // Deliberately simpler than Grow's contact importer (growContactImport*.ts):
+  // fixed column names matched flexibly by alias, no mapping screen, no saved
+  // import profile. Grow's richer pipeline exists because marketing contacts
+  // have many optional fields and get re-imported repeatedly; a customer list
+  // is name/contact/city/company and is typically imported once. Reuses
+  // ingestFile() — the actual CSV/XLSX parsing, not the contact-shaping logic
+  // — since turning a file into rows is identical work either way.
+  const IMPORT_COLUMN_ALIASES: Record<string, string[]> = {
+    name: ['name', 'fullname', 'customername', 'contactname', 'client'],
+    email: ['email', 'emailaddress'],
+    phone: ['phone', 'phonenumber', 'mobile', 'cell', 'telephone'],
+    city: ['city'],
+    company: ['company', 'companyname', 'business', 'businessname'],
+  };
+
+  function findColumn(headers: string[], field: keyof typeof IMPORT_COLUMN_ALIASES): string | null {
+    const aliases = IMPORT_COLUMN_ALIASES[field]!;
+    for (const h of headers) {
+      if (aliases.includes(h.toLowerCase().replace(/[^a-z0-9]/g, ''))) return h;
+    }
+    return null;
+  }
+
+  app.post('/operate/customers/import', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+
+    const fields: Record<string, string> = {};
+    let file: { buffer: Buffer; filename: string } | null = null;
+    for await (const part of req.parts()) {
+      if (part.type === 'file') {
+        const buffer = await part.toBuffer();
+        if (part.file.truncated) throw new HttpError(400, 'File is too large (15MB limit)', 'file_too_large');
+        file = { buffer, filename: part.filename };
+      } else {
+        fields[part.fieldname] = String(part.value ?? '');
+      }
+    }
+    if (!file) throw new HttpError(400, 'No file was uploaded', 'no_file');
+
+    const { headers, records } = ingestFile(file.buffer, file.filename);
+    if (headers.length === 0) throw new HttpError(400, 'No columns found in this file', 'empty_file');
+
+    const nameCol = findColumn(headers, 'name');
+    if (!nameCol) {
+      throw new HttpError(400, 'Could not find a name column — expected a header like "Name"', 'missing_column');
+    }
+    const emailCol = findColumn(headers, 'email');
+    const phoneCol = findColumn(headers, 'phone');
+    const cityCol = findColumn(headers, 'city');
+    const companyCol = findColumn(headers, 'company');
+
+    return req.db(async (db) => {
+      let imported = 0;
+      const skipped: Array<{ line: number; reason: string }> = [];
+
+      for (const { record, line } of records) {
+        const name = record[nameCol]?.trim();
+        if (!name) {
+          skipped.push({ line, reason: 'Missing name' });
+          continue;
+        }
+        const email = emailCol ? record[emailCol]?.trim() : '';
+        const phone = phoneCol ? record[phoneCol]?.trim() : '';
+        const city = cityCol ? record[cityCol]?.trim() : '';
+        const company = companyCol ? record[companyCol]?.trim() : '';
+
+        const party = await db.one<{ id: string }>(
+          `INSERT INTO parties (org_id, kind, display_name, company_name, is_lead, is_customer, lifecycle, city)
+           VALUES (app.current_org(), 'person', $1, $2, false, true, 'customer', $3)
+           RETURNING id`,
+          [name, company || null, city || null],
+        );
+        const partyId = party!.id;
+
+        if (email) {
+          await db.exec(
+            `INSERT INTO party_contacts (org_id, party_id, channel, value, is_primary)
+             VALUES (app.current_org(), $1, 'email', $2, true)
+             ON CONFLICT DO NOTHING`,
+            [partyId, email],
+          );
+        }
+        if (phone) {
+          await db.exec(
+            `INSERT INTO party_contacts (org_id, party_id, channel, value, is_primary)
+             VALUES (app.current_org(), $1, 'phone', $2, true)
+             ON CONFLICT DO NOTHING`,
+            [partyId, phone],
+          );
+        }
+        await logTimeline(db, {
+          orgId: req.ctx.orgId, partyId, eventType: 'party.created',
+          title: `Added ${name} (CSV import)`, actorUserId: sess.user_id, actorLabel: sess.full_name,
+        });
+        imported++;
+      }
+
+      await audit(db, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'operate.customers.import',
+        entityType: 'parties', ip: req.ip, diff: { imported, skipped: skipped.length, filename: file.filename },
+      });
+
+      return { imported, skipped };
     });
   });
 

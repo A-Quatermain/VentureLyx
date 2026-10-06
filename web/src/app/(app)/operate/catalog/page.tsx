@@ -132,7 +132,8 @@ export default function CatalogPage() {
               {!adding && (items?.length ?? 0) === 0 && (
                 <tr>
                   <td colSpan={canEdit ? 7 : 6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    Nothing in the catalog yet.
+                    Nothing in the catalog yet — the services you add here, crossed with the cities you
+                    serve, are what finds your coverage gaps in ScaleSEO.
                     {canEdit && ' Add the first item above.'}
                   </td>
                 </tr>

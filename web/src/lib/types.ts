@@ -1055,6 +1055,26 @@ export interface AdminOrganizationDetail {
   sites: AdminOrgSite[];
 }
 
+// ---- Guided setup checklist ------------------------------------------------
+export type SetupStepKey = 'website' | 'business' | 'cities' | 'services' | 'gsc' | 'customers' | 'review';
+
+export interface SetupStep {
+  key: SetupStepKey;
+  done: boolean;
+}
+
+export interface SetupProgress {
+  steps: SetupStep[];
+  done: number;
+  total: number;
+  dismissed: boolean;
+}
+
+export interface CustomerImportResult {
+  imported: number;
+  skipped: Array<{ line: number; reason: string }>;
+}
+
 export type WaitlistStatus = 'new' | 'contacted' | 'converted';
 
 export interface WaitlistEntry {

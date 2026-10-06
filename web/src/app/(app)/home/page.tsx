@@ -1,15 +1,17 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import {
   TrendUp, Users, CurrencyDollar, MagnifyingGlass, Briefcase, Sparkle, ArrowUpRight,
   Wallet, Star, Target, FunnelSimple,
 } from '@phosphor-icons/react';
 import { AreaChart, Area, ResponsiveContainer, Tooltip, XAxis } from 'recharts';
 import { useApi } from '@/lib/useApi';
-import type { SummaryResponse, Signal, Lead, MeResponse, Opportunity, RevenueTrendPoint } from '@/lib/types';
+import type { SummaryResponse, Signal, Lead, MeResponse, Opportunity, RevenueTrendPoint, SetupProgress } from '@/lib/types';
 import { formatMoney } from '@/lib/format';
 import { AIStreamPanel } from '@/components/AIStreamPanel';
+import { SetupChecklist } from '@/components/SetupChecklist';
 import { PageHeader, Stagger, StaggerItem } from '@/components/Primitives';
 import { Card } from '@/components/ui/Card';
 import { Skeleton, ShimmerBlock } from '@/components/ui/Skeleton';
@@ -78,6 +80,8 @@ export default function CommandCenter() {
   const { data: leads } = useApi<Lead[]>('/operate/leads');
   const { data: me } = useApi<MeResponse>('/auth/me');
   const { data: revenueTrend } = useApi<RevenueTrendPoint[]>('/command/revenue-trend');
+  const { data: setupProgress } = useApi<SetupProgress>('/setup/progress');
+  const setupIncomplete = !!setupProgress && setupProgress.done < setupProgress.total;
 
   if (isLoading) return <CommandCenterSkeleton />;
 
@@ -108,6 +112,8 @@ export default function CommandCenter() {
         title="Command Center"
         subtitle="Everything reporting into one place. Here's what's driving your growth right now."
       />
+
+      <SetupChecklist />
 
       <Stagger className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Metric
@@ -160,7 +166,11 @@ export default function CommandCenter() {
           ) : (
             <div className="divide-y divide-white/10">
               {actions.length === 0 && (
-                <p className="px-6 py-8 text-sm text-white/80">You&apos;re all caught up. Nice work.</p>
+                <p className="px-6 py-8 text-sm text-white/80">
+                  {setupIncomplete
+                    ? 'Finish the setup checklist below — recommendations show up here once there’s real data to work from.'
+                    : 'You’re all caught up. Nice work.'}
+                </p>
               )}
               {actions.map((a, i) => (
                 <div key={`${a.kind}-${a.id}`} className="flex flex-col gap-3 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
@@ -195,8 +205,11 @@ export default function CommandCenter() {
               <div className="flex h-40 flex-col items-center justify-center text-center">
                 <p className="text-sm text-muted-foreground">No revenue recorded yet.</p>
                 <p className="mt-1 max-w-xs text-xs text-muted-foreground/70">
-                  This chart fills in as payments come through Operate.
+                  This fills in once customers and their payments are on file.
                 </p>
+                <Link href="/operate/customers" className="mt-2 text-xs font-medium text-primary hover:underline">
+                  Add your customers →
+                </Link>
               </div>
             ) : (
               <div className="h-40">

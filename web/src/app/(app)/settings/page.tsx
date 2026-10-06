@@ -98,7 +98,7 @@ function BusinessCard({ canEdit }: { canEdit: boolean }) {
   }
 
   return (
-    <Card className="p-6">
+    <Card id="business" className="scroll-mt-20 p-6">
       <p className="mb-4 font-display text-lg font-bold tracking-tight">Business profile</p>
       {isLoading || !profile ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
@@ -180,7 +180,7 @@ function ServiceAreaCard({ canEdit }: { canEdit: boolean }) {
   }
 
   return (
-    <Card className="p-6">
+    <Card id="service-area" className="scroll-mt-20 p-6">
       <div className="mb-1 flex items-center gap-2">
         <MapPin size={18} className="text-primary" />
         <p className="font-display text-lg font-bold tracking-tight">Service area</p>
@@ -330,7 +330,7 @@ function GscCard({ canEdit }: { canEdit: boolean }) {
   }
 
   return (
-    <Card className="p-6">
+    <Card id="gsc" className="scroll-mt-20 p-6">
       <div className="mb-1 flex items-center gap-2">
         <MagnifyingGlass size={18} className="text-primary" />
         <p className="font-display text-lg font-bold tracking-tight">Google Search Console</p>

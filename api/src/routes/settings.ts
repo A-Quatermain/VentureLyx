@@ -74,11 +74,15 @@ export default async function settingsRoutes(app: FastifyInstance) {
     const body = businessProfileInput.parse(req.body);
 
     return req.db(async (q) => {
+      // Saving this form at all is what "Confirm your business details"
+      // (guided setup's step 2) means — merged on unconditionally, after
+      // the service_area branch, not a separate "confirm" button.
       const org = await q.one(
         `UPDATE organizations
             SET name = $1, website_url = $2, vertical = $3,
-                settings = CASE WHEN $4::text IS NULL THEN settings - 'service_area'
-                                ELSE jsonb_set(settings, '{service_area}', to_jsonb($4::text), true) END
+                settings = (CASE WHEN $4::text IS NULL THEN settings - 'service_area'
+                                 ELSE jsonb_set(settings, '{service_area}', to_jsonb($4::text), true) END)
+                           || '{"setup_confirmed_profile": true}'::jsonb
           WHERE id = app.current_org()
         RETURNING id, name, website_url, vertical, settings->>'service_area' AS service_area`,
         [body.name, body.website_url ?? null, body.vertical ?? null, body.service_area ?? null],

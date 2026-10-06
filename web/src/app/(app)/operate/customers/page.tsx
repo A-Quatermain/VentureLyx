@@ -11,6 +11,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { SkeletonCard } from '@/components/ui/Skeleton';
 import { CustomerDrawer } from '@/components/CustomerDrawer';
+import { CustomerImportDrawer } from '@/components/CustomerImportDrawer';
 import { toneSoft, type Tone } from '@/components/ui/tone';
 
 type ChipFilter = 'all' | 'lead' | 'customer' | 'dormant';
@@ -87,6 +88,7 @@ export default function CustomersPage() {
   const [sort, setSort] = useState<SortKey>('activity');
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const params = new URLSearchParams();
   if (q.trim()) params.set('q', q.trim());
@@ -135,7 +137,14 @@ export default function CustomersPage() {
           <Link href="/operate" className="text-sm text-primary">
             ← Operate
           </Link>
-          {canEdit && !adding && <Button onClick={() => setAdding(true)}>Add customer</Button>}
+          {canEdit && !adding && !importing && (
+            <>
+              <Button variant="ghost" onClick={() => setImporting(true)}>
+                Import CSV
+              </Button>
+              <Button onClick={() => setAdding(true)}>Add customer</Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -176,10 +185,19 @@ export default function CustomersPage() {
           </p>
         ) : sorted.length === 0 ? (
           <div className="flex flex-col items-center gap-3 px-4 py-12 text-center">
-            <p className="text-sm text-muted-foreground">
-              {isFiltered ? 'No customers match this search or filter.' : 'No customers yet.'}
+            <p className="max-w-sm text-sm text-muted-foreground">
+              {isFiltered
+                ? 'No customers match this search or filter.'
+                : 'No customers yet — add them by CSV import or one at a time. This is what makes revenue tracking work.'}
             </p>
-            {canEdit && !isFiltered && <Button onClick={() => setAdding(true)}>Add your first customer</Button>}
+            {canEdit && !isFiltered && (
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => setImporting(true)}>
+                  Import CSV
+                </Button>
+                <Button onClick={() => setAdding(true)}>Add your first customer</Button>
+              </div>
+            )}
           </div>
         ) : (
           <table className="w-full min-w-[760px] text-left text-sm">
@@ -248,6 +266,7 @@ export default function CustomersPage() {
         onOpenChange={setAdding}
         onSaved={(id) => router.push(`/operate/customers/${id}`)}
       />
+      <CustomerImportDrawer open={importing} onOpenChange={setImporting} />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useState } from 'react';
+import { use, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { mutate } from 'swr';
@@ -179,6 +179,19 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
   const { data: rankings } = useApi<SeoRanking[]>('/seo/rankings');
   const { data: summary } = useApi<SummaryResponse>('/command/summary');
 
+  // Surfaces the first real finding the moment a crawl we were watching
+  // finishes — "undefined" (never observed) vs "null" (observed, still
+  // running) matters here: only a transition actually seen while this tab
+  // was open counts as "just finished," not simply loading an
+  // already-scored site.
+  const [justFinished, setJustFinished] = useState(false);
+  const prevHealthRef = useRef<number | null | undefined>(undefined);
+  useEffect(() => {
+    const health = data?.score?.health ?? null;
+    if (prevHealthRef.current === null && health !== null) setJustFinished(true);
+    prevHealthRef.current = health;
+  }, [data?.score?.health]);
+
   if (isLoading) return <p className="p-4 text-sm text-muted-foreground">Loading…</p>;
   if (error || !data) {
     return (
@@ -191,6 +204,7 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
   }
 
   const { score, issues, trend } = data;
+  const topIssue = issues[0];
   const avgRating = summary?.reputation.avg_rating != null ? Number(summary.reputation.avg_rating) : null;
   const reviewCount = summary?.reputation.review_count ?? 0;
   const reviewsScore = reviewCount > 0 && avgRating != null ? Math.round((avgRating / 5) * 100) : null;
@@ -205,6 +219,29 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
 
   return (
     <div className="flex flex-col gap-4">
+      {justFinished && score?.health != null && (
+        <Card className="overflow-hidden border-primary/30 bg-primary/5 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-foreground">
+                Your first scan is done — health score {score.health}/100
+              </p>
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                {topIssue
+                  ? `Top finding: ${topIssue.code.replace(/_/g, ' ')} on ${topIssue.pages} page${topIssue.pages === 1 ? '' : 's'}.`
+                  : 'No issues found on the first pass — nice start.'}
+              </p>
+            </div>
+            <button
+              onClick={() => setJustFinished(false)}
+              className="shrink-0 text-xs font-medium text-muted-foreground hover:text-foreground"
+            >
+              Dismiss
+            </button>
+          </div>
+        </Card>
+      )}
+
       <Card className="p-6">
         {score && score.health !== null ? (
           <div className="flex flex-col items-center gap-8 lg:flex-row lg:items-center lg:justify-center">
@@ -465,11 +502,20 @@ function CoverageTab({ onBuildGap }: { onBuildGap: (serviceName: string, locatio
       ) : error ? (
         <p className="p-4 text-sm text-destructive">Could not load coverage gaps.</p>
       ) : !data || data.length === 0 ? (
-        <p className="p-4 text-sm text-muted-foreground">
-          No gaps found — either every service has a page for every place you serve, or your catalog and
-          service area aren't set up yet in Settings. A freshly-added service or location also needs a
-          crawl to run before its coverage is known.
-        </p>
+        <div className="p-4 text-sm text-muted-foreground">
+          <p>
+            No gaps found — either every service has a page for every place you serve, or your{' '}
+            <Link href="/operate/catalog" className="font-medium text-primary hover:underline">
+              catalog
+            </Link>{' '}
+            and{' '}
+            <Link href="/settings#service-area" className="font-medium text-primary hover:underline">
+              service area
+            </Link>{' '}
+            aren&apos;t set up yet.
+          </p>
+          <p className="mt-1">A freshly-added service or location also needs a crawl to run before its coverage is known.</p>
+        </div>
       ) : (
         <ul className="divide-y divide-border">
           {data.map((g) => (
