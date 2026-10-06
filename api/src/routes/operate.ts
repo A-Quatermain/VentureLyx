@@ -11,32 +11,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../lib/auth.js';
-import type { Querier } from '../lib/db.js';
 import { syncMarketTargets } from '../lib/marketTargets.js';
 import { slugify } from '../lib/slug.js';
 import { HttpError } from '../plugins/context.js';
 import { moduleWriteGate } from '../lib/moduleAccess.js';
 import { ingestFile } from '../lib/growContactImportXlsx.js';
-
-async function logTimeline(
-  q: Querier,
-  entry: {
-    orgId: string | null; partyId?: string | null; eventType: string; title: string;
-    body?: string | null; actorUserId?: string | null; actorLabel?: string | null;
-    module?: string; payload?: unknown;
-  },
-): Promise<void> {
-  await q.exec(
-    `INSERT INTO timeline_events
-       (org_id, party_id, event_type, module, title, body, actor_type, actor_user_id, actor_label, payload)
-     VALUES ($1,$2,$3,$4,$5,$6,'user',$7,$8,$9)`,
-    [
-      entry.orgId, entry.partyId ?? null, entry.eventType, entry.module ?? 'operate',
-      entry.title, entry.body ?? null, entry.actorUserId ?? null, entry.actorLabel ?? null,
-      entry.payload ? JSON.stringify(entry.payload) : '{}',
-    ],
-  );
-}
+import { logTimeline } from '../lib/timeline.js';
+import { getOrCreateDefaultPipeline, type PipelineStage as PipelineStageRow } from '../lib/growPromote.js';
 
 const partyInput = z.object({
   kind: z.enum(['person', 'company']).default('person'),
@@ -180,7 +161,49 @@ export default async function operateRoutes(app: FastifyInstance) {
         [id],
       );
 
-      return { party, contacts, money: { ...money, last_payment: lastPayment } };
+      // Matched by email, same as the Grow -> Operate bridge's own dedupe
+      // (lib/growPromote.ts) — a party isn't only the ones a reply created;
+      // this also shows campaigns an as-yet-unreplied contact is enrolled
+      // in, for a party that already existed from manual/website entry.
+      // "Opens" is deliberately absent: Grow has no open-tracking pixel, so
+      // showing one would be a fabricated number.
+      const campaigns = await db.rows(
+        `SELECT gc.id AS campaign_id, gc.name AS campaign_name, gc.status,
+                e.state, e.current_step,
+                count(m.id) FILTER (WHERE m.status = 'sent')::int AS emails_sent,
+                count(DISTINCT ev.id) FILTER (WHERE ev.type = 'reply')::int AS replies
+           FROM party_contacts pc
+           JOIN grow_contacts c ON c.email = pc.value AND pc.channel = 'email'
+           JOIN grow_enrollments e ON e.contact_id = c.id
+           JOIN grow_campaigns gc ON gc.id = e.campaign_id
+      LEFT JOIN grow_messages m ON m.campaign_id = gc.id AND m.contact_id = c.id
+      LEFT JOIN grow_events ev ON ev.contact_id = c.id AND ev.type = 'reply'
+          WHERE pc.party_id = $1
+          GROUP BY gc.id, gc.name, gc.status, e.state, e.current_step
+          ORDER BY gc.created_at DESC`,
+        [id],
+      );
+
+      const jobs = await db.rows(
+        `SELECT id, number, title, status, scheduled_at, created_at
+           FROM work_orders WHERE party_id = $1 ORDER BY created_at DESC LIMIT 20`,
+        [id],
+      );
+      const quotes = await db.rows(
+        `SELECT id, number, status, total::text, sent_at, created_at
+           FROM quotes WHERE party_id = $1 ORDER BY created_at DESC LIMIT 20`,
+        [id],
+      );
+      const invoiceList = await db.rows(
+        `SELECT id, number, status, total::text, amount_paid::text, due_on, created_at
+           FROM invoices WHERE party_id = $1 ORDER BY created_at DESC LIMIT 20`,
+        [id],
+      );
+
+      return {
+        party, contacts, money: { ...money, last_payment: lastPayment },
+        campaigns, jobs, quotes, invoices: invoiceList,
+      };
     });
   });
 
@@ -508,6 +531,189 @@ export default async function operateRoutes(app: FastifyInstance) {
         [id],
       ),
     );
+  });
+
+  // ---- Leads --------------------------------------------------------------
+  // The list itself is GET /operate/leads in routes/data.ts (extended there,
+  // not duplicated here, since it already backed the Operate Kanban widget —
+  // see that file's comment). These two actions are the write side.
+  app.post('/operate/leads/:id/start-working', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (db) => {
+      const party = await db.one<{ id: string; display_name: string; lifecycle: string }>(
+        `UPDATE parties SET
+            owner_user_id = COALESCE(owner_user_id, $2),
+            lifecycle = CASE WHEN lifecycle = 'new' THEN 'working' ELSE lifecycle END,
+            last_activity_at = now()
+          WHERE id = $1 AND is_lead AND deleted_at IS NULL
+        RETURNING id, display_name, lifecycle`,
+        [id, sess.user_id],
+      );
+      if (!party) throw new HttpError(404, 'Lead not found', 'not_found');
+
+      await logTimeline(db, {
+        orgId: req.ctx.orgId, partyId: id, eventType: 'lead.started',
+        title: `${sess.full_name} started working this lead`,
+        actorUserId: sess.user_id, actorLabel: sess.full_name,
+      });
+      return party;
+    });
+  });
+
+  app.patch('/operate/leads/:id/tag', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const { tag } = z.object({ tag: z.enum(['interested', 'not_now', 'not_a_fit', 'question']) }).parse(req.body);
+
+    return req.db(async (db) => {
+      // The human call always wins, and is recorded as having won — reply_tag_source
+      // flips to 'human' here and growPromote.ts never overwrites a 'human'
+      // tag on a later reply (COALESCE only fills a NULL tag, and a fresh
+      // reply still carries the AI's own call on ITS OWN timeline event
+      // regardless, so the override never rewrites history).
+      const party = await db.one<{ id: string; reply_tag: string }>(
+        `UPDATE parties SET reply_tag = $2, reply_tag_source = 'human'
+          WHERE id = $1 AND is_lead AND deleted_at IS NULL
+        RETURNING id, reply_tag`,
+        [id, tag],
+      );
+      if (!party) throw new HttpError(404, 'Lead not found', 'not_found');
+
+      await logTimeline(db, {
+        orgId: req.ctx.orgId, partyId: id, eventType: 'lead.tag_overridden',
+        title: `Tag set to "${tag}"`, actorUserId: sess.user_id, actorLabel: sess.full_name,
+        payload: { tag, tag_source: 'human' },
+      });
+      return party;
+    });
+  });
+
+  // ---- Pipeline -------------------------------------------------------------
+  // Reads/writes the exact same deals/pipelines tables the Command Center
+  // funnel reads (api/src/routes/data.ts's /command/summary) — moving a card
+  // here is immediately what the funnel shows, by construction, not by
+  // keeping two queries in sync by hand.
+  app.get('/operate/pipeline', async (req) => {
+    req.requireRole('viewer');
+    return req.db(async (db) => {
+      const pipeline = await getOrCreateDefaultPipeline(db);
+      const deals = await db.rows(
+        `SELECT d.id, d.title, d.stage, d.status, d.value::text, d.owner_user_id,
+                d.created_at, d.updated_at,
+                p.id AS party_id, p.display_name AS party_name,
+                u.full_name AS owner_name,
+                CASE WHEN t.source = 'grow' THEN 'Campaign: ' || t.campaign
+                     WHEN t.id IS NOT NULL THEN 'Website'
+                     ELSE 'Manual' END AS source,
+                extract(day FROM now() - d.updated_at)::int AS days_in_stage
+           FROM deals d
+           JOIN parties p ON p.id = d.party_id
+      LEFT JOIN users u ON u.id = d.owner_user_id
+      LEFT JOIN attribution_touches t ON t.id = d.source_touch_id
+          WHERE d.pipeline_id = $1 AND d.status = 'open'
+          ORDER BY d.updated_at DESC`,
+        [pipeline.id],
+      );
+      return { pipeline, deals };
+    });
+  });
+
+  const dealStageInput = z.object({ stage: z.string().min(1) });
+
+  app.patch('/operate/pipeline/deals/:id/stage', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const { stage } = dealStageInput.parse(req.body);
+
+    return req.db(async (db) => {
+      const deal = await db.one<{ id: string; pipeline_id: string | null; party_id: string; title: string; stage: string }>(
+        `SELECT id, pipeline_id, party_id, title, stage FROM deals WHERE id = $1 AND status = 'open'`,
+        [id],
+      );
+      if (!deal) throw new HttpError(404, 'Deal not found', 'not_found');
+
+      const pipeline = deal.pipeline_id
+        ? await db.one<{ stages: PipelineStageRow[] }>(`SELECT stages FROM pipelines WHERE id = $1`, [deal.pipeline_id])
+        : null;
+      const stageDef = pipeline?.stages.find((s) => s.key === stage);
+      if (!stageDef) throw new HttpError(400, `"${stage}" is not a stage in this pipeline`, 'invalid_input');
+
+      const updated = await db.one(
+        `UPDATE deals SET
+            stage = $2,
+            status = CASE WHEN $3 THEN 'won' WHEN $4 THEN 'lost' ELSE status END,
+            closed_at = CASE WHEN $3 OR $4 THEN now() ELSE closed_at END,
+            updated_at = now()
+          WHERE id = $1
+        RETURNING id, title, stage, status, value::text`,
+        [id, stage, stageDef.is_won, stageDef.is_lost],
+      );
+
+      // Moving stage is itself a real pipeline-change signal for the party's
+      // lifecycle too — a won deal makes them a customer; a lost one keeps
+      // them a lead but out of active work.
+      if (stageDef.is_won) {
+        await db.exec(`UPDATE parties SET is_customer = true, lifecycle = 'customer' WHERE id = $1`, [deal.party_id]);
+      } else if (stageDef.is_lost) {
+        await db.exec(`UPDATE parties SET lifecycle = 'lost' WHERE id = $1`, [deal.party_id]);
+      } else {
+        await db.exec(`UPDATE parties SET lifecycle = $2 WHERE id = $1 AND lifecycle NOT IN ('customer','lost')`,
+          [deal.party_id, stage === 'new' ? 'new' : stage === 'working' ? 'working' : 'qualified']);
+      }
+
+      await logTimeline(db, {
+        orgId: req.ctx.orgId, partyId: deal.party_id, eventType: 'deal.stage_changed', module: 'operate',
+        title: `${deal.title}: moved from "${deal.stage}" to "${stageDef.label}"`,
+        actorUserId: sess.user_id, actorLabel: sess.full_name,
+        entityType: 'deal', entityId: id, payload: { from: deal.stage, to: stage },
+      });
+      return updated;
+    });
+  });
+
+  const dealCreateInput = z.object({
+    party_id: z.string().uuid(),
+    title: z.string().min(1),
+    // No fabricated values — absent/null until someone who knows the real
+    // number sets it, never estimated or defaulted.
+    value: z.union([z.number().positive(), z.null()]).optional(),
+  });
+
+  app.post('/operate/pipeline/deals', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const body = dealCreateInput.parse(req.body);
+
+    return req.db(async (db) => {
+      const party = await db.one<{ id: string }>(
+        `SELECT id FROM parties WHERE id = $1 AND deleted_at IS NULL`, [body.party_id],
+      );
+      if (!party) throw new HttpError(404, 'Party not found', 'not_found');
+
+      const pipeline = await getOrCreateDefaultPipeline(db);
+      const deal = await db.one<{ id: string }>(
+        `INSERT INTO deals (org_id, pipeline_id, party_id, title, stage, status, value, owner_user_id)
+         VALUES (app.current_org(), $1, $2, $3, 'new', 'open', $4, $5)
+         RETURNING id`,
+        [pipeline.id, body.party_id, body.title, body.value ?? null, sess.user_id],
+      );
+      await db.exec(`UPDATE parties SET is_lead = true WHERE id = $1 AND lifecycle = 'new'`, [body.party_id]);
+      await logTimeline(db, {
+        orgId: req.ctx.orgId, partyId: body.party_id, eventType: 'deal.created', module: 'operate',
+        title: `Entered pipeline: ${body.title}`, actorUserId: sess.user_id, actorLabel: sess.full_name,
+        entityType: 'deal', entityId: (deal as { id: string }).id,
+      });
+      await audit(db, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'operate.deal.create',
+        entityType: 'deals', entityId: (deal as { id: string }).id, ip: req.ip,
+      });
+      return deal;
+    });
   });
 
   // ---- Catalog ------------------------------------------------------------

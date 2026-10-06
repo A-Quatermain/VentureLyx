@@ -21,12 +21,13 @@ export type Feature =
   | 'metric_explanation'
   | 'business_blueprint'
   | 'sequence_writing'
-  | 'ai_visibility_check';
+  | 'ai_visibility_check'
+  | 'reply_classification';
 
 export const FEATURES: Feature[] = [
   'seo_recommendations', 'page_generation', 'review_response',
   'next_best_action', 'metric_explanation', 'business_blueprint', 'sequence_writing',
-  'ai_visibility_check',
+  'ai_visibility_check', 'reply_classification',
 ];
 
 export type Provider = 'anthropic' | 'openai';
@@ -45,6 +46,11 @@ export const FEATURE_TIER: Record<Feature, Tier> = {
   // high-stakes generation; an org can still override it in Settings like
   // any other feature.
   ai_visibility_check: 'cheap',
+  // One word out of four, from a single short reply — a cheap model
+  // classifies this exactly as reliably as a bigger one, run per real reply
+  // (every poll, not weekly) so cost per call matters more here than on the
+  // sampling features above.
+  reply_classification: 'cheap',
 };
 
 // claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5-20251001 are the current

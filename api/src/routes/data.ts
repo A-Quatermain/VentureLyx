@@ -103,22 +103,26 @@ export default async function dataRoutes(app: FastifyInstance) {
              FROM expenses WHERE incurred_on >= date_trunc('month', now())`,
         ),
 
-        // Sales pipeline funnel — parties.lifecycle is the real, populated
-        // field (deals.stage/value exist but nothing writes them yet), so
-        // these four stages are friendlier display labels over four of its
-        // six real values. lost/dormant are deliberately excluded from an
-        // *active* pipeline view. Dollar values still come from deals
-        // (correctly $0 today — no deal has ever been created) rather than
-        // inventing a number parties has no column for.
+        // Sales pipeline funnel — reads the exact same deals/pipelines data
+        // as Operate's Pipeline board (routes/operate.ts's GET
+        // /operate/pipeline), by design: moving a card there is immediately
+        // reflected here, not kept in sync by two queries that happen to
+        // agree. Stage keys/labels match lib/growPromote.ts's
+        // DEFAULT_STAGES exactly. 'lost' is deliberately excluded from this
+        // *active* pipeline view, same as before. An org with no pipeline
+        // yet (never touched Operate's pipeline board, never had a Grow
+        // reply) has no matching deals, so every stage is a real, honest
+        // zero rather than an error.
         q.rows<{ stage: string; count: number; value: string }>(
           `SELECT stages.label AS stage,
-                  count(DISTINCT p.id)::int AS count,
+                  count(d.id)::int AS count,
                   COALESCE(sum(d.value), 0)::text AS value
-             FROM (VALUES ('New Lead',1,'new'),('Contacted',2,'working'),
-                          ('Quoted',3,'qualified'),('Won',4,'customer'))
-                    AS stages(label, ord, lifecycle)
-        LEFT JOIN parties p ON p.lifecycle = stages.lifecycle AND p.is_lead AND p.deleted_at IS NULL
-        LEFT JOIN deals d ON d.party_id = p.id AND d.status = 'open'
+             FROM (VALUES ('New',1,'new'),('Working',2,'working'),
+                          ('Qualified',3,'qualified'),('Won',4,'won'))
+                    AS stages(label, ord, stage_key)
+        LEFT JOIN deals d ON d.stage = stages.stage_key
+                         AND d.pipeline_id = (SELECT id FROM pipelines
+                                                WHERE org_id = app.current_org() AND is_default LIMIT 1)
             GROUP BY stages.label, stages.ord
             ORDER BY stages.ord`,
         ),
@@ -725,25 +729,49 @@ export default async function dataRoutes(app: FastifyInstance) {
   // so the filter is gone. LIMIT bumped from 25 (a short "attention" list)
   // to 500 (the whole pipeline); real pagination is parties.js's job later
   // per OPERATE-SPEC.md, not this endpoint, for now.
+  //
+  // Also backs Operate's dedicated lead list (reply_tag/owner/last-reply
+  // fields, `sort=recent` + `tag` filter) — one endpoint, two frontends,
+  // rather than a second query that could quietly drift from this one.
+  const leadsQuery = z.object({
+    tag: z.enum(['interested', 'not_now', 'not_a_fit', 'question']).optional(),
+    sort: z.enum(['attention', 'recent']).default('attention'),
+  });
+
   app.get('/operate/leads', async (req) => {
     req.requireRole('viewer');
+    const { tag, sort } = leadsQuery.parse(req.query);
+    const order = sort === 'recent'
+      ? 'p.last_activity_at DESC NULLS LAST, p.first_seen_at DESC'
+      : 'p.last_activity_at NULLS FIRST, p.first_seen_at DESC';
+
     return req.db((q) =>
       q.rows(
         `SELECT p.id, p.display_name, p.lifecycle, p.city, p.last_activity_at,
                 p.first_seen_at, t.channel, t.source,
+                p.owner_user_id, p.reply_tag, p.reply_tag_source, u.full_name AS owner_name,
                 (SELECT value FROM party_contacts
                   WHERE party_id = p.id AND channel = 'phone' AND is_primary LIMIT 1) AS phone,
-                d.title AS deal_title, d.value::text AS deal_value
+                d.title AS deal_title, d.value::text AS deal_value,
+                lr.title AS last_reply_title, lr.body AS last_reply_body, lr.occurred_at AS last_reply_at
            FROM parties p
       LEFT JOIN attribution_touches t ON t.id = p.first_touch_id
+      LEFT JOIN users u ON u.id = p.owner_user_id
       LEFT JOIN LATERAL (
                 SELECT title, value FROM deals
                  WHERE party_id = p.id AND status = 'open'
                  ORDER BY created_at DESC LIMIT 1
               ) d ON true
+      LEFT JOIN LATERAL (
+                SELECT title, body, occurred_at FROM timeline_events
+                 WHERE party_id = p.id AND event_type = 'grow.reply'
+                 ORDER BY occurred_at DESC LIMIT 1
+              ) lr ON true
           WHERE p.is_lead AND p.deleted_at IS NULL
-          ORDER BY p.last_activity_at NULLS FIRST, p.first_seen_at DESC
+            AND ($1::app.reply_tag IS NULL OR p.reply_tag = $1)
+          ORDER BY ${order}
           LIMIT 500`,
+        [tag ?? null],
       ),
     );
   });

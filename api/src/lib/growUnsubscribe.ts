@@ -16,6 +16,7 @@
  * for that org so RLS still applies to them like everything else.
  */
 import { withPlatform, withTenant } from './db.js';
+import { promoteOnUnsubscribe } from './growPromote.js';
 
 export interface UnsubscribeResult {
   found: boolean;
@@ -65,6 +66,7 @@ export async function processUnsubscribe(token: string): Promise<UnsubscribeResu
                    (SELECT id FROM grow_messages WHERE unsubscribe_token = $2), $1, 'unsubscribe', '{}'::jsonb)`,
           [hit.contact_id, token],
         );
+        await promoteOnUnsubscribe(q, { orgId: hit.org_id, email: hit.email });
       }
       return !!existing;
     },
