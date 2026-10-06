@@ -82,6 +82,7 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveWarning, setSaveWarning] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -139,11 +140,22 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
     if (!draft) return;
     setSaving(true);
     setSaveError(null);
+    setSaveWarning(null);
     try {
-      await apiFetch(stepsKey(id), { method: 'PATCH', body: JSON.stringify({ steps: draft }) });
+      const result = await apiFetch<{ warnings: Array<{ step_no: number; tokens: string[] }> }>(
+        stepsKey(id), { method: 'PATCH', body: JSON.stringify({ steps: draft }) },
+      );
       await mutate(stepsKey(id));
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
+      // Not one of the fixed merge fields (growTemplate.ts's
+      // KNOWN_CONTACT_FIELDS) or a send-time/sender-profile token — likely
+      // a real custom attrs.* field this route can't verify without contact
+      // data, but most often a typo. Doesn't block the save either way.
+      if (result.warnings.length > 0) {
+        const tokenList = [...new Set(result.warnings.flatMap((w) => w.tokens))].map((t) => `{{${t}}}`).join(', ');
+        setSaveWarning(`Unrecognized token(s), saved anyway — check for a typo: ${tokenList}`);
+      }
     } catch (err) {
       setSaveError(err instanceof ApiError ? err.message : 'Could not save these steps.');
     } finally {
@@ -341,6 +353,7 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
           {canEdit && (
             <div className="flex flex-wrap items-center gap-3">
               {saved && <span className="text-xs text-success">Saved.</span>}
+              {saveWarning && <span className="text-xs text-warning">{saveWarning}</span>}
               {saveError && <span className="text-xs text-destructive">{saveError}</span>}
               {generateError && <span className="text-xs text-destructive">{generateError}</span>}
               {draft.length > 0 && (

@@ -29,7 +29,7 @@ import { ingestFile } from '../lib/growContactImportXlsx.js';
 import { enrollAllContacts } from '../lib/growEnroll.js';
 import type { Querier } from '../lib/db.js';
 import {
-  firstUnrenderedPlaceholder, getSenderProfile, GROW_BASE_URL, GROW_BASE_URL_USABLE,
+  checkTemplateTokens, firstUnrenderedPlaceholder, getSenderProfile, GROW_BASE_URL, GROW_BASE_URL_USABLE,
   hasUnrenderedPlaceholder, render, renderSenderFields, renderUnsubscribeFooter,
   type RenderableContact,
 } from '../lib/growTemplate.js';
@@ -788,6 +788,31 @@ export default async function growRoutes(app: FastifyInstance) {
       const campaign = await q.one(`SELECT id FROM grow_campaigns WHERE id = $1`, [id]);
       if (!campaign) throw new HttpError(404, 'Campaign not found', 'not_found');
 
+      // Caught here, not just at send time — render()'s own fallback for an
+      // unrecognized merge field is to quietly blank it (never "unrendered",
+      // so hasUnrenderedPlaceholder() never sees a typo'd contact field at
+      // all), and a RESERVED_KEYS token (unsubscribe_footer, sender_*) is
+      // *supposed* to survive as a literal {{...}} until send time — by
+      // design, not a bug (see growScheduler.ts's comment on why) — so
+      // hasUnrenderedPlaceholder() there is a last-resort guard, not where a
+      // real typo should first be caught. A product_url:Label naming a link
+      // this org never configured is unambiguous and blocks the save;
+      // anything else unrecognized (most likely a real attrs.* custom
+      // field this route has no way to verify) is returned as a warning
+      // instead of blocking it.
+      const senderProfile = await getSenderProfile(q);
+      const invalidByStep: Array<{ step_no: number; token: string; reason: string }> = [];
+      const warningsByStep: Array<{ step_no: number; tokens: string[] }> = [];
+      for (const s of body.steps) {
+        const report = checkTemplateTokens(`${s.subject_tmpl}\n${s.body_tmpl}`, senderProfile.product_urls);
+        for (const inv of report.invalid) invalidByStep.push({ step_no: s.step_no, ...inv });
+        if (report.unknown.length > 0) warningsByStep.push({ step_no: s.step_no, tokens: report.unknown });
+      }
+      if (invalidByStep.length > 0) {
+        const detail = invalidByStep.map((i) => `step ${i.step_no}: ${i.reason}`).join('; ');
+        throw new HttpError(400, `Invalid template token(s) — ${detail}`, 'invalid_template_token');
+      }
+
       await q.exec(`DELETE FROM grow_sequence_steps WHERE campaign_id = $1`, [id]);
       for (const s of body.steps) {
         await q.exec(
@@ -808,7 +833,7 @@ export default async function growRoutes(app: FastifyInstance) {
         orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_sequence_steps.update',
         entityType: 'grow_campaigns', entityId: id, ip: req.ip, diff: body,
       });
-      return steps;
+      return { steps, warnings: warningsByStep };
     });
   });
 

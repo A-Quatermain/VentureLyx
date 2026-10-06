@@ -193,47 +193,43 @@ async function sendOne(q: Querier, message: ClaimedMessage): Promise<void> {
     return;
   }
 
-  // Checked on the raw template body first, before link-wrapping or the
-  // footer — wrapClickableLinks writes real grow_link_clicks rows (live,
-  // resolvable /c/ redirects) as a side effect, which must not happen for a
-  // message that's about to be refused and never sent.
-  const refusalPlaceholder = (subject: string, body: string) =>
-    hasUnrenderedPlaceholder(subject) || hasUnrenderedPlaceholder(body)
-      ? firstUnrenderedPlaceholder(hasUnrenderedPlaceholder(subject) ? subject : body)
-      : null;
-
-  const earlyPlaceholder = refusalPlaceholder(message.subject, message.body);
-  if (earlyPlaceholder) {
+  // {{unsubscribe_footer}} is a send-time token BY DESIGN (growScheduler.ts's
+  // own comment on why: the message's own unsubscribe_token doesn't exist
+  // until this row was created) — message.body legitimately still contains
+  // that literal placeholder here for every message, not just a broken one.
+  // A prior version of this check tested message.body directly and failed
+  // EVERY send, unsubscribe_footer included — caught live, from real
+  // production sends, when this exact bug blocked the campaign it's named
+  // after no differently than a real typo would have. Stripping just that
+  // one expected token before testing catches a genuine typo (or an
+  // org-profile field left unfilled, which renderSenderFields() leaves
+  // unresolved on purpose — see growTemplate.ts) without ever flagging the
+  // one placeholder that's supposed to still be there.
+  const withoutFooterToken = message.body.replace(/\{\{\s*unsubscribe_footer\s*\}\}/g, '');
+  if (hasUnrenderedPlaceholder(message.subject) || hasUnrenderedPlaceholder(withoutFooterToken)) {
+    const placeholder = firstUnrenderedPlaceholder(
+      hasUnrenderedPlaceholder(message.subject) ? message.subject : withoutFooterToken);
     await q.exec(
       `UPDATE grow_messages SET status = 'failed', error = $2 WHERE id = $1`,
-      [message.id, `refused to send: unrendered placeholder ${earlyPlaceholder}`],
+      [message.id, `refused to send: unrendered placeholder ${placeholder}`],
     );
-    log.error({ messageId: message.id, placeholder: earlyPlaceholder }, 'refused to send: unrendered template placeholder');
+    log.error({ messageId: message.id, placeholder }, 'refused to send: unrendered template placeholder');
     return;
   }
 
+  // wrapClickableLinks runs on the PRE-footer body — the unsubscribe URL
+  // doesn't exist in it yet, so it can never become a wrapping candidate;
+  // renderUnsubscribeFooter runs after, appending the real, untouched
+  // unsubscribe URL last. Order matters here for exactly that reason, not
+  // just style: swapping it would make the unsubscribe link itself get
+  // wrapped into a second, unnecessary /c/ redirect.
   const senderProfile = await getSenderProfile(q);
   const unsubscribeUrl = `${GROW_BASE_URL}/u/${message.unsubscribe_token}`;
-  // Before the footer, not after — the unsubscribe link gets its own
-  // dedicated /u/ flow and must never be wrapped a second time here.
   const clickableBody = await wrapClickableLinks(q, message.org_id, message.id, message.body, GROW_BASE_URL);
   const body = renderUnsubscribeFooter(clickableBody, {
     mailingAddress: senderProfile.mailing_address ?? '',
     unsubscribeUrl,
   });
-
-  // Re-checked post-footer: the one thing the early check above can't see
-  // is the footer render itself silently failing to fill
-  // {{unsubscribe_footer}} — still refused, same as before this reordering.
-  const latePlaceholder = refusalPlaceholder(message.subject, body);
-  if (latePlaceholder) {
-    await q.exec(
-      `UPDATE grow_messages SET status = 'failed', error = $2 WHERE id = $1`,
-      [message.id, `refused to send: unrendered placeholder ${latePlaceholder}`],
-    );
-    log.error({ messageId: message.id, placeholder: latePlaceholder }, 'refused to send: unrendered footer placeholder');
-    return;
-  }
 
   let mailbox: Mailbox;
   let transporter: Transporter;

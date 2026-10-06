@@ -139,6 +139,71 @@ export function firstUnrenderedPlaceholder(body: string): string | null {
   return body.match(PLACEHOLDER_RE)?.[0] ?? null;
 }
 
+// Exactly growScheduler.ts's contactForRender object, kept in sync by hand
+// (not imported from there, to avoid a dependency the other direction) —
+// this is the complete set of fields render() can ever actually resolve
+// from a contact. A template token that isn't one of these, isn't a
+// RESERVED_KEYS send-time/org-profile token, and isn't a valid
+// product_url:Label reference is not provably wrong (an org's grow_contacts
+// rows can carry arbitrary attrs.* keys this list has no way to know about
+// in advance) but is worth surfacing — most of the time it's a typo of one
+// of the names below, not a real custom field.
+export const KNOWN_CONTACT_FIELDS = [
+  'email', 'first_name', 'contact_name', 'role', 'entity_name',
+  'recipient_domain', 'is_free_provider', 'contact_rank',
+];
+
+const TOKEN_RE = /\{\{\s*([\w.:]+?)\s*\}\}/g;
+
+export interface TemplateTokenReport {
+  /** Every distinct token found, raw (e.g. "first_name", "product_url:Catalog"). */
+  tokens: string[];
+  /** Provably wrong — a product_url:Label naming a label this org hasn't
+   *  configured. Save-time failure material: there's no plausible reading
+   *  under which this was meant to resolve to anything. */
+  invalid: Array<{ token: string; reason: string }>;
+  /** Not one of the known names above, but not provably wrong either — a
+   *  real custom attrs.* field or a typo, indistinguishable from the
+   *  template text alone. Surfaced as a warning, never blocks a save. */
+  unknown: string[];
+}
+
+/** Checked at template-save time (routes/grow.ts's PATCH
+ *  /grow/campaigns/:id/steps), not just left for send time to discover —
+ *  the whole point being a typo'd or mis-cased token (`{{ first_name }}`
+ *  with a cased variant render() doesn't recognize, `{{product_url:Pricing}}`
+ *  naming a product link that was never added under Sender Profile) is
+ *  caught before it can enter the send queue at all, rather than quietly
+ *  rendering blank (render()'s own fallback for any unrecognized key) or —
+ *  for a RESERVED_KEYS token specifically — correctly surviving as a
+ *  literal `{{...}}` all the way to send time, where hasUnrenderedPlaceholder()
+ *  is the last line of defense, not the first. */
+export function checkTemplateTokens(
+  text: string, productUrls: Array<{ label: string }>,
+): TemplateTokenReport {
+  const tokens = [...new Set([...text.matchAll(TOKEN_RE)].map((m) => m[1]!))];
+  const invalid: Array<{ token: string; reason: string }> = [];
+  const unknown: string[] = [];
+
+  for (const token of tokens) {
+    if (RESERVED_KEYS.has(token)) continue; // send-time or org-profile — see growScheduler.ts's own comment on why these survive render()
+    if (KNOWN_CONTACT_FIELDS.includes(token)) continue;
+
+    const productMatch = /^product_url:(.+)$/.exec(token);
+    if (productMatch) {
+      const label = productMatch[1]!.trim();
+      if (!productUrls.some((p) => p.label === label)) {
+        invalid.push({ token, reason: `No product link named "${label}" — add it under Sender Profile, or fix the label.` });
+      }
+      continue;
+    }
+
+    unknown.push(token);
+  }
+
+  return { tokens, invalid, unknown };
+}
+
 // GROW_BASE_URL was defaulting to http://localhost:8080 with nothing
 // overriding it anywhere in the deployed environment, so every unsubscribe
 // link built against it was unreachable for a real recipient. Moved here
