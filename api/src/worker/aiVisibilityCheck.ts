@@ -42,6 +42,15 @@ for (const key of ['DATABASE_URL', 'VAULT_KEY']) {
 
 const FEATURE = 'ai_visibility_check' as const;
 const MAX_QUERIES_PER_ORG = 5;
+// --all-due runs every org's queries back to back against the same shared
+// OpenAI key (unless an org has BYO) — web search's heavier token cost
+// trips the account's per-minute limit well before any one org's 5 queries
+// are done, let alone many orgs'. A flat pace between calls, not just a
+// reactive retry after the fact, keeps a multi-org run from front-loading
+// a burst the retry then has to spend most of its budget recovering from.
+const QUERY_PACING_MS = 4000;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface QueryTarget {
   service: string;
@@ -142,7 +151,7 @@ async function collectTextWithRetry(
       const delay = rateLimitDelayMs(err);
       if (delay === null || attempt >= 2) throw err;
       log.warn({ attempt, delayMs: delay }, 'rate limited, retrying after delay');
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await sleep(delay);
     }
   }
 }
@@ -216,7 +225,8 @@ async function checkOrg(orgId: string): Promise<number> {
 
   const targets = buildQueries(setup.services, setup.cities);
   let n = 0;
-  for (const target of targets) {
+  for (const [i, target] of targets.entries()) {
+    if (i > 0) await sleep(QUERY_PACING_MS);
     // No Querier held open across the AI call itself — same reasoning as
     // every HTTP route in routes/ai.ts (see ai.ts's StreamAIOptions comment).
     // A function, not a value: collectTextWithRetry needs a fresh generator
@@ -289,7 +299,8 @@ async function main() {
   log.info({ orgs: orgIds.length }, 'ai visibility check starting');
 
   let totalQueries = 0;
-  for (const orgId of orgIds) {
+  for (const [i, orgId] of orgIds.entries()) {
+    if (i > 0) await sleep(QUERY_PACING_MS);
     try {
       const n = await checkOrg(orgId);
       totalQueries += n;
