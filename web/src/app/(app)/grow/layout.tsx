@@ -9,7 +9,7 @@ export default async function GrowLayout({ children }: { children: React.ReactNo
   const org = me.organizations?.find((o) => o.id === me.currentOrgId);
   const modules = (org?.modules as Record<string, boolean> | undefined) ?? {};
   if (modules.grow === false) {
-    return <ModuleDisabledPage icon={TrendUp} label="Grow" />;
+    return <ModuleDisabledPage icon={TrendUp} label="Grow" moduleKey="grow" />;
   }
   return <>{children}</>;
 }

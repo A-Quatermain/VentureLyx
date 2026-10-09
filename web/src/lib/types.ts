@@ -587,6 +587,19 @@ export interface CoverageGap {
 }
 
 // ---- Google Search Console ------------------------------------------------
+export interface BillingSubscription {
+  status: string;
+  price_lookup_keys: string[];
+  current_period_end: string | null;
+  cancel_at: string | null;
+}
+
+export interface BillingStatus {
+  subscription: BillingSubscription | null;
+  siblingBusinessCount: number;
+  recommendedVolumeTierKey: string | null;
+}
+
 export interface GscStatus {
   connected: boolean;
   propertyUrl: string | null;

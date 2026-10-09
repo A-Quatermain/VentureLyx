@@ -53,6 +53,12 @@ services:
       # this still resolves to localhost/127.0.0.1, so a stack missing this
       # var fails loudly instead of shipping a broken compliance link.
       GROW_BASE_URL: ${GROW_BASE_URL:-https://app.venturelyx.com}
+      # lib/stripe.ts / routes/billing.ts — test mode until told otherwise.
+      # No default: lib/stripe.ts exits at boot if this is unset, and
+      # server.ts does the same for the webhook secret, rather than this
+      # service silently starting with billing dark.
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 20s

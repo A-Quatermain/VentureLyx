@@ -9,7 +9,7 @@ import { apiFetch, ApiError } from '@/lib/api';
 import { API_BASE } from '@/lib/config';
 import type {
   OrgProfile, AISettingsResponse, AIProviderPreference, AIFeature, AIModelOverride, AIProvider,
-  ServiceArea, GscStatus, GrowSenderProfile,
+  ServiceArea, GscStatus, GrowSenderProfile, BillingStatus,
 } from '@/lib/types';
 import type { MeResponse } from '@/lib/types';
 import { PageHeader } from '@/components/Primitives';
@@ -50,6 +50,7 @@ export default function SettingsPage() {
       />
       <div className="flex max-w-3xl flex-col gap-6">
         <YourBusinessesCard />
+        <BillingCard canEdit={canEdit} />
         <BusinessCard canEdit={canEdit} />
         <ServiceAreaCard canEdit={canEdit} />
         <GrowSenderProfileCard canEdit={canEdit} />
@@ -81,6 +82,106 @@ function YourBusinessesCard() {
         Add another business
       </Button>
       <AddBusinessDrawer open={adding} onOpenChange={setAdding} />
+    </Card>
+  );
+}
+
+const BILLING_KEY = '/billing/status';
+
+// Human label per lookup_key family — purely cosmetic, never used to
+// compute price or entitlement (that's lib/billingEntitlements.ts's job,
+// server-side). A subscription's price_lookup_keys can combine several of
+// these (someone who bought ScaleSEO and Grow separately, say).
+const PLAN_LABEL: Record<string, string> = {
+  plan_single: 'Single Business Plan',
+  volume_tier1: 'Additional Business (2–4 businesses)',
+  volume_tier2: 'Additional Business (5–9 businesses)',
+  volume_tier3: 'Additional Business (10+ businesses)',
+  module_scaleseo: 'ScaleSEO',
+  module_operate: 'Operate',
+  module_reviews: 'Reviews',
+  module_grow: 'Grow',
+};
+
+function planLabel(lookupKeys: string[]): string {
+  const names = [...new Set(lookupKeys.map((k) => PLAN_LABEL[k.replace(/_(monthly|annual)$/, '')] ?? k))];
+  return names.join(' + ') || 'Unknown plan';
+}
+
+const STATUS_TONE: Record<string, string> = {
+  active: 'bg-success/10 text-success',
+  trialing: 'bg-success/10 text-success',
+  past_due: 'bg-warning/10 text-warning',
+  canceled: 'bg-muted text-muted-foreground',
+  unpaid: 'bg-destructive/10 text-destructive',
+};
+
+function formatDate(iso: string | null): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function BillingCard({ canEdit }: { canEdit: boolean }) {
+  const { data, isLoading } = useApi<BillingStatus>(BILLING_KEY);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function goTo(path: string, body: unknown) {
+    setBusy(true);
+    setError(null);
+    try {
+      const { url } = await apiFetch<{ url: string }>(path, { method: 'POST', body: JSON.stringify(body) });
+      window.location.href = url;
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not reach billing.');
+      setBusy(false);
+    }
+  }
+
+  const sub = data?.subscription ?? null;
+
+  return (
+    <Card id="billing" className="scroll-mt-20 p-6">
+      <div className="mb-1 flex items-center gap-2">
+        <Key size={18} className="text-primary" />
+        <p className="font-display text-lg font-bold tracking-tight">Billing</p>
+      </div>
+      {isLoading ? (
+        <p className="mt-3 text-sm text-muted-foreground">Loading…</p>
+      ) : !sub ? (
+        <div className="mt-3">
+          <p className="text-sm text-muted-foreground">No active subscription yet.</p>
+          {canEdit && (
+            <Button className="mt-3" onClick={() => goTo('/billing/checkout', { lookupKeys: ['plan_single_monthly'] })} disabled={busy}>
+              {busy ? 'Starting checkout…' : 'Subscribe — Single Business Plan'}
+            </Button>
+          )}
+        </div>
+      ) : (
+        <div className="mt-3 flex items-center justify-between gap-4 rounded-lg border border-border p-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-medium">{planLabel(sub.price_lookup_keys)}</p>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${STATUS_TONE[sub.status] ?? 'bg-muted text-muted-foreground'}`}>
+                {sub.status.replace(/_/g, ' ')}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {sub.status === 'past_due'
+                ? 'Your last payment failed — update your card to keep your modules unlocked.'
+                : sub.cancel_at
+                  ? `Cancels ${formatDate(sub.cancel_at)}`
+                  : `Renews ${formatDate(sub.current_period_end)}`}
+            </p>
+          </div>
+          {canEdit && (
+            <Button variant="ghost" className="shrink-0" onClick={() => goTo('/billing/portal', {})} disabled={busy}>
+              Manage billing
+            </Button>
+          )}
+        </div>
+      )}
+      {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
     </Card>
   );
 }

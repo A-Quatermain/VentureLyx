@@ -15,7 +15,7 @@ export default async function OperateLayout({ children }: { children: React.Reac
   const org = me.organizations?.find((o) => o.id === me.currentOrgId);
   const modules = (org?.modules as Record<string, boolean> | undefined) ?? {};
   if (modules.operate === false) {
-    return <ModuleDisabledPage icon={Kanban} label="Operate" />;
+    return <ModuleDisabledPage icon={Kanban} label="Operate" moduleKey="operate" />;
   }
   return <>{children}</>;
 }

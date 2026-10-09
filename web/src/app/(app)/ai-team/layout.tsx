@@ -9,7 +9,7 @@ export default async function AiTeamLayout({ children }: { children: React.React
   const org = me.organizations?.find((o) => o.id === me.currentOrgId);
   const modules = (org?.modules as Record<string, boolean> | undefined) ?? {};
   if (modules.ai_team === false) {
-    return <ModuleDisabledPage icon={Robot} label="AI Team" />;
+    return <ModuleDisabledPage icon={Robot} label="AI Team" moduleKey="ai_team" />;
   }
   return <>{children}</>;
 }

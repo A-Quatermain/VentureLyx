@@ -9,7 +9,7 @@ export default async function ReviewsLayout({ children }: { children: React.Reac
   const org = me.organizations?.find((o) => o.id === me.currentOrgId);
   const modules = (org?.modules as Record<string, boolean> | undefined) ?? {};
   if (modules.reviews === false) {
-    return <ModuleDisabledPage icon={Star} label="Reviews" />;
+    return <ModuleDisabledPage icon={Star} label="Reviews" moduleKey="reviews" />;
   }
   return <>{children}</>;
 }

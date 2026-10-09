@@ -21,6 +21,7 @@ import growRoutes from './routes/grow.js';
 import adminRoutes from './routes/admin.js';
 import waitlistRoutes from './routes/waitlist.js';
 import setupRoutes from './routes/setup.js';
+import billingRoutes from './routes/billing.js';
 import { healthy, shutdown } from './lib/db.js';
 import { processUnsubscribe } from './lib/growUnsubscribe.js';
 import { processClick } from './lib/growClickTracking.js';
@@ -29,7 +30,12 @@ const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? '0.0.0.0';
 
 // Fail fast and loudly rather than starting half-configured.
-for (const key of ['DATABASE_URL', 'SESSION_SECRET', 'VAULT_KEY']) {
+// STRIPE_SECRET_KEY itself is checked in lib/stripe.ts (the module that
+// actually needs it) rather than duplicated here; STRIPE_WEBHOOK_SECRET is
+// checked here because nothing imports it directly — only routes/billing.ts's
+// webhook handler reads process.env for it at request time, which would
+// otherwise fail quietly (a 500 on the first real webhook, not at boot).
+for (const key of ['DATABASE_URL', 'SESSION_SECRET', 'VAULT_KEY', 'STRIPE_WEBHOOK_SECRET']) {
   if (!process.env[key]) {
     console.error(`FATAL: ${key} is not set`);
     process.exit(1);
@@ -137,6 +143,7 @@ await app.register(settingsRoutes, { prefix: '/v1' });
 await app.register(locationsRoutes, { prefix: '/v1' });
 await app.register(integrationsRoutes, { prefix: '/v1' });
 await app.register(growRoutes, { prefix: '/v1' });
+await app.register(billingRoutes, { prefix: '/v1' });
 await app.register(adminRoutes, { prefix: '/v1' });
 await app.register(waitlistRoutes, { prefix: '/v1' });
 await app.register(setupRoutes, { prefix: '/v1' });

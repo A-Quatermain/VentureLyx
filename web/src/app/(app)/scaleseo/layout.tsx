@@ -9,7 +9,7 @@ export default async function ScaleSeoLayout({ children }: { children: React.Rea
   const org = me.organizations?.find((o) => o.id === me.currentOrgId);
   const modules = (org?.modules as Record<string, boolean> | undefined) ?? {};
   if (modules.scaleseo === false) {
-    return <ModuleDisabledPage icon={MagnifyingGlass} label="ScaleSEO" />;
+    return <ModuleDisabledPage icon={MagnifyingGlass} label="ScaleSEO" moduleKey="scaleseo" />;
   }
   return <>{children}</>;
 }
