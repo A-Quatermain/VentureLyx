@@ -91,7 +91,7 @@ async function resolveTransport(): Promise<ResolvedSmtp> {
 export type EmailTemplate =
   | 'password_reset' | 'email_verification' | 'org_invite'
   | 'billing_receipt' | 'billing_payment_failed' | 'waitlist_confirmation'
-  | 'growth_scan_report' | 'payment_link' | 'onboarding_welcome';
+  | 'growth_scan_report' | 'payment_link' | 'onboarding_welcome' | 'smtp_test';
 
 export interface SendEmailInput {
   to: string;

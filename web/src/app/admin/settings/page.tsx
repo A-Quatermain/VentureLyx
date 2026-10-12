@@ -90,6 +90,28 @@ function SmtpCard() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [testTo, setTestTo] = useState('');
+  const [testStatus, setTestStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [testError, setTestError] = useState<string | null>(null);
+
+  async function sendTest() {
+    setTestStatus('sending');
+    setTestError(null);
+    try {
+      const result = await apiFetch<{ ok: boolean; error?: string }>('/admin/settings/smtp/test', {
+        method: 'POST', body: JSON.stringify({ to: testTo }),
+      });
+      if (result.ok) {
+        setTestStatus('sent');
+      } else {
+        setTestStatus('error');
+        setTestError(result.error ?? 'Send failed.');
+      }
+    } catch (err) {
+      setTestStatus('error');
+      setTestError(err instanceof ApiError ? err.message : 'Could not send.');
+    }
+  }
 
   useEffect(() => {
     if (!data) return;
@@ -176,6 +198,23 @@ function SmtpCard() {
           </Button>
         </form>
       )}
+
+      <div className="mt-6 border-t border-border pt-4">
+        <p className="text-sm font-medium">Send a test email</p>
+        <p className="mt-1 text-xs text-muted-foreground">Sends through whatever&rsquo;s saved above right now.</p>
+        <div className="mt-2 flex gap-2">
+          <input
+            type="email" placeholder="you@business.com" value={testTo}
+            onChange={(e) => setTestTo(e.target.value)}
+            className={`${inputCls} flex-1`}
+          />
+          <Button type="button" variant="ghost" disabled={testStatus === 'sending' || !testTo} onClick={sendTest}>
+            {testStatus === 'sending' ? 'Sending…' : 'Send test'}
+          </Button>
+        </div>
+        {testStatus === 'sent' && <p className="mt-1 text-sm text-success">Sent — check the inbox.</p>}
+        {testStatus === 'error' && <p className="mt-1 text-sm text-destructive">{testError}</p>}
+      </div>
     </Card>
   );
 }

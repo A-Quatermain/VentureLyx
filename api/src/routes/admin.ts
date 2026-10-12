@@ -26,7 +26,7 @@ import { withPlatform, type Querier } from '../lib/db.js';
 import { requireStaffOrNotFound } from '../lib/staffGuard.js';
 import { encryptSecret } from '../lib/auth.js';
 import { invalidatePaymentGateCache, HttpError } from '../plugins/context.js';
-import { invalidateSmtpCache } from '../lib/email.js';
+import { invalidateSmtpCache, sendEmail } from '../lib/email.js';
 
 async function auditAdmin(
   q: Querier, req: FastifyRequest, action: string, diff?: unknown,
@@ -389,5 +389,26 @@ export default async function adminRoutes(app: FastifyInstance) {
     });
     invalidateSmtpCache();
     return { ok: true };
+  });
+
+  // Sends through whatever's currently saved/resolved (lib/email.ts) —
+  // never takes a password or any other credential in the request body.
+  // Repeatable verification after any SMTP change, not a one-off.
+  app.post('/admin/settings/smtp/test', async (req, reply) => {
+    if (!requireStaffOrNotFound(req, reply)) return;
+    const { to } = z.object({ to: z.string().trim().toLowerCase().email() }).parse(req.body);
+
+    const result = await withPlatform(async (q) => {
+      const sent = await sendEmail(q, {
+        to,
+        subject: 'Venturelyx SMTP test',
+        html: '<p>This is a test email from Venturelyx admin settings. If you got this, SMTP is working.</p>',
+        text: 'This is a test email from Venturelyx admin settings. If you got this, SMTP is working.',
+        template: 'smtp_test',
+      });
+      await auditAdmin(q, req, 'admin.settings.smtp.test', { to, ok: sent.ok });
+      return sent;
+    });
+    return result;
   });
 }
