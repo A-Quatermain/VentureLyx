@@ -50,6 +50,28 @@ class HttpError extends Error {
   }
 }
 
+// Administrative kill switch (db/migrations/025_payment_gate_toggle.sql,
+// platform_settings.payment_gate_enabled) — OFF by default per explicit
+// instruction: until venturelyx.com and every module are fully working,
+// no org should be locked out of anything for not having paid. Flipping
+// it back to true re-enables requireProvisioned below with no redeploy.
+// Cached briefly, not refetched on every request — this is an admin
+// toggle expected to change rarely, not per-request state.
+let gateCache: { enabled: boolean; expiresAt: number } | null = null;
+const GATE_CACHE_TTL_MS = 30_000;
+
+async function isPaymentGateEnabled(): Promise<boolean> {
+  if (gateCache && gateCache.expiresAt > Date.now()) return gateCache.enabled;
+  const row = await withPlatform((q) =>
+    q.one<{ value: boolean }>(`SELECT value FROM platform_settings WHERE key = 'payment_gate_enabled'`),
+  );
+  // Missing row defaults to OFF, not the usual deny-by-default — this
+  // specific flag's safe default right now IS "don't block anyone."
+  const enabled = row?.value ?? false;
+  gateCache = { enabled, expiresAt: Date.now() + GATE_CACHE_TTL_MS };
+  return enabled;
+}
+
 /**
  * The pre-payment lockout: attach via `app.addHook('preHandler',
  * requireProvisioned)` at the top of a business-tool route file (same
@@ -66,6 +88,7 @@ class HttpError extends Error {
  */
 export async function requireProvisioned(req: FastifyRequest, _reply: FastifyReply): Promise<void> {
   if (req.ctx.isStaff || !req.ctx.orgId) return;
+  if (!(await isPaymentGateEnabled())) return;
   if (req.accessTier === 'pre_payment') {
     throw new HttpError(403, 'Finish setting up and paying for your plan to access this.', 'payment_required');
   }
