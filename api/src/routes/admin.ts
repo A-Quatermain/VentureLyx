@@ -187,6 +187,25 @@ export default async function adminRoutes(app: FastifyInstance) {
     });
   });
 
+  // ---- Email log ------------------------------------------------------------
+  const emailLogQuery = z.object({ status: z.enum(['sent', 'failed']).optional() });
+
+  app.get('/admin/email-log', async (req, reply) => {
+    if (!requireStaffOrNotFound(req, reply)) return;
+    const { status } = emailLogQuery.parse(req.query);
+
+    return withPlatform((q) =>
+      q.rows(
+        `SELECT id, to_address, template, status, error, org_id, created_at
+           FROM email_log
+          WHERE ($1::text IS NULL OR status = $1)
+          ORDER BY created_at DESC
+          LIMIT 200`,
+        [status ?? null],
+      ),
+    );
+  });
+
   // ---- Waitlist -----------------------------------------------------------
   const waitlistQuery = z.object({ status: z.enum(WAITLIST_STATUSES).optional() });
 

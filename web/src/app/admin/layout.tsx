@@ -13,6 +13,7 @@ const NAV = [
   { href: '/admin/organizations', label: 'Organizations' },
   { href: '/admin/waitlist', label: 'Waitlist' },
   { href: '/admin/subscriptions', label: 'Subscriptions' },
+  { href: '/admin/email-log', label: 'Email Log' },
 ] as const;
 
 // Staff-only, and "staff-only" means invisible, not forbidden — notFound()

@@ -94,7 +94,12 @@ export default function SignInPage() {
               />
             </label>
             <label className="flex flex-col gap-1.5 text-sm font-medium text-muted-foreground">
-              Password
+              <span className="flex items-center justify-between">
+                Password
+                <Link href="/forgot-password" className="text-xs font-medium text-primary hover:underline">
+                  Forgot password?
+                </Link>
+              </span>
               <input
                 type="password"
                 required

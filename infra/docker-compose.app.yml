@@ -59,6 +59,17 @@ services:
       # service silently starting with billing dark.
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      # lib/email.ts — transactional account/billing mail, deliberately a
+      # separate mailbox/domain from Grow's campaign sending (that file's
+      # own header explains why). Unset is handled gracefully (every send
+      # logs 'failed' to email_log rather than the process refusing to
+      # boot) since this can go in after a deploy, not before one.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-no-reply@venturelyx.com}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Venturelyx}
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 20s

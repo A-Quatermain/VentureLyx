@@ -24,6 +24,8 @@ import { syncEntitlements } from '../lib/billingEntitlements.js';
 import { HttpError } from '../plugins/context.js';
 import { withPlatform, withTenant } from '../lib/db.js';
 import type { Querier } from '../lib/db.js';
+import { sendEmail } from '../lib/email.js';
+import { billingReceiptEmail, billingPaymentFailedEmail } from '../lib/emailTemplates.js';
 
 const APP_BASE_URL = process.env.APP_BASE_URL ?? 'https://app.venturelyx.com';
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -103,6 +105,41 @@ async function syncSubscriptionFromStripe(stripeSubscriptionId: string): Promise
       ],
     );
     await syncEntitlements(q, orgId, sub.status, lookupKeys);
+  });
+}
+
+/** Resolves the org and a real contact email straight from Stripe's own
+ *  invoice/customer objects — never guesses which Venturelyx user to
+ *  notify, since the Stripe customer's email is exactly the address that
+ *  actually completed checkout. orgId comes from the subscription's
+ *  metadata (set at checkout) exactly like syncSubscriptionFromStripe. */
+async function notifyBillingEmail(invoice: Stripe.Invoice, kind: 'paid' | 'payment_failed'): Promise<void> {
+  const subField = invoice.parent?.subscription_details?.subscription;
+  const subId = typeof subField === 'string' ? subField : subField?.id;
+  if (!subId) return;
+
+  const sub = await stripe.subscriptions.retrieve(subId);
+  const orgId = sub.metadata.org_id;
+  if (!orgId) return;
+
+  const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
+  const customer = customerId ? await stripe.customers.retrieve(customerId) : null;
+  const email = customer && !customer.deleted ? customer.email : null;
+  if (!email) return;
+
+  await withTenant({ orgId, userId: null, isStaff: false }, async (q) => {
+    const org = await q.one<{ name: string }>(`SELECT name FROM organizations WHERE id = $1`, [orgId]);
+    if (!org) return;
+
+    if (kind === 'paid') {
+      const { subject, html, text } = billingReceiptEmail(
+        org.name, `$${(invoice.amount_paid / 100).toFixed(2)}`, sub.items.data[0]?.price.lookup_key ?? 'Venturelyx',
+      );
+      await sendEmail(q, { to: email, subject, html, text, template: 'billing_receipt', orgId });
+    } else {
+      const { subject, html, text } = billingPaymentFailedEmail(org.name, `${process.env.APP_BASE_URL ?? 'https://app.venturelyx.com'}/settings`);
+      await sendEmail(q, { to: email, subject, html, text, template: 'billing_payment_failed', orgId });
+    }
   });
 }
 
@@ -254,6 +291,11 @@ export default async function billingRoutes(app: FastifyInstance) {
             const subField = invoice.parent?.subscription_details?.subscription;
             const subId = typeof subField === 'string' ? subField : subField?.id;
             if (subId) await syncSubscriptionFromStripe(subId);
+            await notifyBillingEmail(invoice, 'payment_failed');
+            break;
+          }
+          case 'invoice.paid': {
+            await notifyBillingEmail(event.data.object as Stripe.Invoice, 'paid');
             break;
           }
           default:

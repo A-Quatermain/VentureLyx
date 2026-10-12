@@ -11,6 +11,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withPlatform } from '../lib/db.js';
+import { sendEmail } from '../lib/email.js';
+import { waitlistConfirmationEmail } from '../lib/emailTemplates.js';
 
 const waitlistInput = z.object({
   email: z.string().trim().toLowerCase().email(),
@@ -34,8 +36,8 @@ export default async function waitlistRoutes(app: FastifyInstance) {
     // a double submit (double-click, a retried request after a flaky
     // connection) must not create a duplicate row or silently overwrite
     // whatever a staff member has since typed into notes/status for it.
-    await withPlatform((q) =>
-      q.exec(
+    await withPlatform(async (q) => {
+      const inserted = await q.exec(
         `INSERT INTO waitlist (email, business_name, website_url, phone, interest, source_page)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (email) DO NOTHING`,
@@ -43,14 +45,14 @@ export default async function waitlistRoutes(app: FastifyInstance) {
           body.email, body.business_name ?? null, body.website_url ?? null,
           body.phone ?? null, body.interest ?? null, body.source_page ?? null,
         ],
-      ),
-    );
-
-    // TODO: email the team on each new submission once transactional email
-    // is set up (no provider is configured anywhere in this app yet — see
-    // the chat response this shipped with). Until then, the row itself is
-    // the only record; the admin console's Waitlist page is how this gets
-    // seen.
+      );
+      // Only on a real new row — a double-submit (see the ON CONFLICT
+      // comment above) must not re-send the confirmation a second time.
+      if (inserted > 0) {
+        const { subject, html, text } = waitlistConfirmationEmail(body.business_name ?? null);
+        await sendEmail(q, { to: body.email, subject, html, text, template: 'waitlist_confirmation' });
+      }
+    });
 
     reply.status(201);
     return { ok: true };

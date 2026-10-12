@@ -6,7 +6,7 @@
  * code is verified, and requireAuth() rejects those.
  */
 import { randomBytes } from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withPlatform } from '../lib/db.js';
 import {
@@ -15,9 +15,26 @@ import {
 } from '../lib/auth.js';
 import { slugify } from '../lib/slug.js';
 import { HttpError } from '../plugins/context.js';
+import { sendEmail } from '../lib/email.js';
+import { passwordResetEmail, emailVerificationEmail, orgInviteEmail } from '../lib/emailTemplates.js';
 
 const LOCK_AFTER = 8;
 const LOCK_MINUTES = 15;
+
+const APP_BASE_URL = process.env.APP_BASE_URL ?? 'https://app.venturelyx.com';
+const RESET_TOKEN_TTL_MIN = 30;
+const VERIFY_TOKEN_TTL_HOURS = 24;
+const INVITE_TOKEN_TTL_DAYS = 7;
+
+// Rate-limited by the email in the request body, not by IP — the brief's
+// own wording ("per email," not "per requester") matters here: without
+// this, every request from behind one corporate NAT or VPN would share a
+// single IP-keyed bucket, and an attacker rotating IPs would face no limit
+// at all on hammering one victim's inbox with reset emails.
+function emailKeyGenerator(req: FastifyRequest): string {
+  const body = req.body as { email?: string } | undefined;
+  return `forgot:${(body?.email ?? '').toLowerCase()}`;
+}
 
 export default async function authRoutes(app: FastifyInstance) {
 
@@ -164,6 +181,7 @@ export default async function authRoutes(app: FastifyInstance) {
           ],
         );
         await audit(q, { orgId: null, actorUser: created!.id, action: 'auth.register', ip: req.ip });
+        await sendVerificationEmail(q, created!.id, body.email);
         return created;
       });
     } catch (err) {
@@ -464,4 +482,200 @@ export default async function authRoutes(app: FastifyInstance) {
     });
     return { ok: true };
   });
+
+  // ---- forgot password ---------------------------------------------------
+  // Always the same response whether or not the email exists — the actual
+  // enumeration-safety work happens inside: a real token is only generated,
+  // and a real email only sent, when a matching user is found.
+  app.post('/auth/forgot', {
+    config: {
+      rateLimit: { max: 5, timeWindow: '30 minutes', hook: 'preHandler', keyGenerator: emailKeyGenerator },
+    },
+  }, async (req) => {
+    const { email } = z.object({ email: z.string().email() }).parse(req.body);
+
+    const user = await withPlatform((q) =>
+      q.one<{ id: string }>(`SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL`, [email]),
+    );
+
+    if (user) {
+      const token = newSessionToken();
+      await withPlatform(async (q) => {
+        await q.exec(
+          `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+           VALUES ($1, $2, now() + ($3 || ' minutes')::interval)`,
+          [user.id, hashToken(token), RESET_TOKEN_TTL_MIN],
+        );
+        const { subject, html, text } = passwordResetEmail(`${APP_BASE_URL}/reset-password?token=${token}`);
+        await sendEmail(q, { to: email, subject, html, text, template: 'password_reset', userId: user.id });
+        await audit(q, { orgId: null, actorUser: user.id, action: 'auth.password_reset_requested', ip: req.ip });
+      });
+    }
+
+    return { ok: true, message: 'If that email is registered, we sent a reset link.' };
+  });
+
+  app.post('/auth/reset', {
+    config: { rateLimit: { max: 10, timeWindow: '30 minutes' } },
+  }, async (req) => {
+    const body = z.object({
+      token: z.string().min(1),
+      password: z.string().min(12, 'Use at least 12 characters').max(200),
+    }).parse(req.body);
+
+    const row = await withPlatform((q) =>
+      q.one<{ id: string; user_id: string }>(
+        `SELECT id, user_id FROM password_reset_tokens
+          WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()`,
+        [hashToken(body.token)],
+      ),
+    );
+    if (!row) throw new HttpError(400, 'This reset link is invalid or has expired.', 'invalid_token');
+
+    const hashed = await hashPassword(body.password);
+    await withPlatform(async (q) => {
+      await q.exec(`UPDATE password_reset_tokens SET used_at = now() WHERE id = $1`, [row.id]);
+      await q.exec(`UPDATE users SET password_hash = $2, failed_logins = 0, locked_until = NULL WHERE id = $1`,
+        [row.user_id, hashed]);
+      // A reset is exactly the scenario a stolen/forgotten-but-still-live
+      // session must not survive — kill every session for this user, not
+      // just "every other one" (change-password's own rule): there is no
+      // "current session" to spare here, the person isn't logged in yet.
+      await q.exec(`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, [row.user_id]);
+      await audit(q, { orgId: null, actorUser: row.user_id, action: 'auth.password_reset_completed', ip: req.ip });
+    });
+    return { ok: true };
+  });
+
+  // ---- email verification -------------------------------------------------
+  app.post('/auth/verify-email/confirm', {
+    config: { rateLimit: { max: 20, timeWindow: '30 minutes' } },
+  }, async (req) => {
+    const { token } = z.object({ token: z.string().min(1) }).parse(req.body);
+
+    const row = await withPlatform((q) =>
+      q.one<{ id: string; user_id: string }>(
+        `SELECT id, user_id FROM email_verification_tokens
+          WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()`,
+        [hashToken(token)],
+      ),
+    );
+    if (!row) throw new HttpError(400, 'This verification link is invalid or has expired.', 'invalid_token');
+
+    await withPlatform(async (q) => {
+      await q.exec(`UPDATE email_verification_tokens SET used_at = now() WHERE id = $1`, [row.id]);
+      await q.exec(`UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()) WHERE id = $1`, [row.user_id]);
+      await audit(q, { orgId: null, actorUser: row.user_id, action: 'auth.email_verified', ip: req.ip });
+    });
+    return { ok: true };
+  });
+
+  app.post('/auth/verify-email/resend', {
+    config: { rateLimit: { max: 5, timeWindow: '30 minutes' } },
+  }, async (req) => {
+    const sess = req.requireAuth();
+    const user = await withPlatform((q) =>
+      q.one<{ email: string; email_verified_at: Date | null }>(
+        `SELECT email, email_verified_at FROM users WHERE id = $1`, [sess.user_id],
+      ),
+    );
+    if (!user || user.email_verified_at) return { ok: true };
+    await withPlatform((q) => sendVerificationEmail(q, sess.user_id, user.email));
+    return { ok: true };
+  });
+
+  // ---- team invites --------------------------------------------------------
+  app.post('/auth/invites', async (req) => {
+    req.requireRole('admin');
+    const sess = req.requireAuth();
+    const orgId = req.ctx.orgId!;
+    const body = z.object({
+      email: z.string().trim().toLowerCase().email(),
+      role: z.enum(['admin', 'manager', 'staff', 'viewer']).default('viewer'),
+    }).parse(req.body);
+
+    const token = newSessionToken();
+    await withPlatform(async (q) => {
+      const org = await q.one<{ name: string }>(`SELECT name FROM organizations WHERE id = $1`, [orgId]);
+      await q.exec(
+        `INSERT INTO org_invites (org_id, email, role, token_hash, invited_by, expires_at)
+         VALUES ($1,$2,$3,$4,$5, now() + ($6 || ' days')::interval)
+         ON CONFLICT (org_id, email) WHERE accepted_at IS NULL
+         DO UPDATE SET role = EXCLUDED.role, token_hash = EXCLUDED.token_hash,
+                       invited_by = EXCLUDED.invited_by, expires_at = EXCLUDED.expires_at,
+                       created_at = now()`,
+        [orgId, body.email, body.role, hashToken(token), sess.user_id, INVITE_TOKEN_TTL_DAYS],
+      );
+      const { subject, html, text } = orgInviteEmail(
+        org!.name, sess.full_name, `${APP_BASE_URL}/invite/accept?token=${token}`,
+      );
+      await sendEmail(q, { to: body.email, subject, html, text, template: 'org_invite', orgId });
+      await audit(q, { orgId, actorUser: sess.user_id, action: 'auth.invite_sent', ip: req.ip, diff: { email: body.email, role: body.role } });
+    });
+    return { ok: true };
+  });
+
+  app.post('/auth/invites/accept', {
+    config: { rateLimit: { max: 10, timeWindow: '30 minutes' } },
+  }, async (req, reply) => {
+    const body = z.object({
+      token: z.string().min(1),
+      full_name: z.string().trim().min(1).max(200).optional(),
+      password: z.string().min(12).max(200).optional(),
+    }).parse(req.body);
+
+    const invite = await withPlatform((q) =>
+      q.one<{ id: string; org_id: string; email: string; role: string }>(
+        `SELECT id, org_id, email, role FROM org_invites
+          WHERE token_hash = $1 AND accepted_at IS NULL AND expires_at > now()`,
+        [hashToken(body.token)],
+      ),
+    );
+    if (!invite) throw new HttpError(400, 'This invite is invalid or has expired.', 'invalid_token');
+
+    const token = newSessionToken();
+    await withPlatform(async (q) => {
+      let user = await q.one<{ id: string }>(`SELECT id FROM users WHERE email = $1`, [invite.email]);
+      if (!user) {
+        if (!body.password || !body.full_name) {
+          throw new HttpError(400, 'Set a name and password to accept this invite.', 'account_required');
+        }
+        const passwordHash = await hashPassword(body.password);
+        user = await q.one<{ id: string }>(
+          `INSERT INTO users (email, password_hash, full_name, email_verified_at)
+           VALUES ($1,$2,$3, now()) RETURNING id`,
+          [invite.email, passwordHash, body.full_name],
+        );
+      }
+
+      await q.exec(
+        `INSERT INTO memberships (org_id, user_id, role, invited_by, invited_at, accepted_at)
+         SELECT $1, $2, $3, invited_by, created_at, now() FROM org_invites WHERE id = $4
+         ON CONFLICT (org_id, user_id) DO UPDATE SET role = EXCLUDED.role, accepted_at = now()`,
+        [invite.org_id, user!.id, invite.role, invite.id],
+      );
+      await q.exec(`UPDATE org_invites SET accepted_at = now() WHERE id = $1`, [invite.id]);
+      await q.exec(
+        `INSERT INTO sessions (user_id, org_id, token_hash, ip, user_agent, mfa_satisfied, expires_at)
+         VALUES ($1,$2,$3,$4,$5,true, now() + ($6 || ' days')::interval)`,
+        [user!.id, invite.org_id, hashToken(token), req.ip, req.headers['user-agent']?.slice(0, 400) ?? null, SESSION_TTL_DAYS],
+      );
+      await audit(q, { orgId: invite.org_id, actorUser: user!.id, action: 'auth.invite_accepted', ip: req.ip });
+    });
+
+    reply.clearCookie(SESSION_COOKIE, { path: '/' });
+    reply.setCookie(SESSION_COOKIE, token, cookieOpts);
+    return { ok: true, orgId: invite.org_id };
+  });
+}
+
+async function sendVerificationEmail(q: Parameters<typeof sendEmail>[0], userId: string, email: string): Promise<void> {
+  const token = newSessionToken();
+  await q.exec(
+    `INSERT INTO email_verification_tokens (user_id, token_hash, expires_at)
+     VALUES ($1, $2, now() + ($3 || ' hours')::interval)`,
+    [userId, hashToken(token), VERIFY_TOKEN_TTL_HOURS],
+  );
+  const { subject, html, text } = emailVerificationEmail(`${APP_BASE_URL}/verify-email?token=${token}`);
+  await sendEmail(q, { to: email, subject, html, text, template: 'email_verification', userId });
 }
