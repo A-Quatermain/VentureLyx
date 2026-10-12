@@ -10,10 +10,11 @@ import { z } from 'zod';
 import {
   logAiUsage, streamAI, streamEventsToSSE, resolveAIContext, staticEvents, CAP_MESSAGE,
 } from '../lib/ai.js';
-import { HttpError } from '../plugins/context.js';
+import { HttpError, requireProvisioned } from '../plugins/context.js';
 import { moduleWriteGate } from '../lib/moduleAccess.js';
 
 export default async function aiRoutes(app: FastifyInstance) {
+  app.addHook('preHandler', requireProvisioned);
 
   // ---- Command Center: AI Growth Strategist --------------------------------
   // Reads open growth_opportunities and unresolved signals, streams one

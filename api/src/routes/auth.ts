@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { withPlatform } from '../lib/db.js';
 import {
   SESSION_COOKIE, SESSION_TTL_DAYS, audit, hashToken, newSessionToken,
-  newTotpSecret, makeTotp, verifyPassword, verifyTotp, hashPassword,
+  newTotpSecret, makeTotp, verifyPassword, verifyTotp, hashPassword, sessionCookieOptions,
 } from '../lib/auth.js';
 import { slugify } from '../lib/slug.js';
 import { HttpError } from '../plugins/context.js';
@@ -45,14 +45,7 @@ export default async function authRoutes(app: FastifyInstance) {
   // though a client-side fetch straight to api.venturelyx.com would still
   // carry it fine. Scoping to the shared parent domain makes the same
   // cookie valid for both, which server-side session reads depend on.
-  const cookieOpts = {
-    httpOnly: true,
-    sameSite: 'lax' as const,
-    secure: process.env.NODE_ENV === 'production',
-    domain: process.env.COOKIE_DOMAIN ?? '.venturelyx.com',
-    path: '/',
-    maxAge: SESSION_TTL_DAYS * 86_400,
-  };
+  const cookieOpts = sessionCookieOptions();
 
   // ---- sign in ----------------------------------------------------------
   app.post('/auth/login', {

@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit, encryptSecret } from '../lib/auth.js';
-import { HttpError } from '../plugins/context.js';
+import { HttpError, requireProvisioned } from '../plugins/context.js';
 import { moduleWriteGate } from '../lib/moduleAccess.js';
 
 const GSC_SCOPE = 'https://www.googleapis.com/auth/webmasters.readonly';
@@ -48,6 +48,7 @@ interface GscSiteEntry {
 }
 
 export default async function integrationsRoutes(app: FastifyInstance) {
+  app.addHook('preHandler', requireProvisioned);
 
   // ---- connection status (never the credential itself) ---------------------
   app.get('/integrations/gsc/status', async (req) => {

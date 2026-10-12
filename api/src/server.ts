@@ -20,6 +20,7 @@ import integrationsRoutes from './routes/integrations.js';
 import growRoutes from './routes/grow.js';
 import adminRoutes from './routes/admin.js';
 import waitlistRoutes from './routes/waitlist.js';
+import growthScanRoutes from './routes/growthScans.js';
 import setupRoutes from './routes/setup.js';
 import billingRoutes from './routes/billing.js';
 import { healthy, shutdown } from './lib/db.js';
@@ -146,6 +147,7 @@ await app.register(growRoutes, { prefix: '/v1' });
 await app.register(billingRoutes, { prefix: '/v1' });
 await app.register(adminRoutes, { prefix: '/v1' });
 await app.register(waitlistRoutes, { prefix: '/v1' });
+await app.register(growthScanRoutes, { prefix: '/v1' });
 await app.register(setupRoutes, { prefix: '/v1' });
 
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {

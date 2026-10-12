@@ -596,8 +596,6 @@ export interface BillingSubscription {
 
 export interface BillingStatus {
   subscription: BillingSubscription | null;
-  siblingBusinessCount: number;
-  recommendedVolumeTierKey: string | null;
 }
 
 export interface GscStatus {

@@ -90,17 +90,12 @@ const BILLING_KEY = '/billing/status';
 
 // Human label per lookup_key family — purely cosmetic, never used to
 // compute price or entitlement (that's lib/billingEntitlements.ts's job,
-// server-side). A subscription's price_lookup_keys can combine several of
-// these (someone who bought ScaleSEO and Grow separately, say).
+// server-side).
 const PLAN_LABEL: Record<string, string> = {
-  plan_single: 'Single Business Plan',
-  volume_tier1: 'Additional Business (2–4 businesses)',
-  volume_tier2: 'Additional Business (5–9 businesses)',
-  volume_tier3: 'Additional Business (10+ businesses)',
-  module_scaleseo: 'ScaleSEO',
-  module_operate: 'Operate',
-  module_reviews: 'Reviews',
-  module_grow: 'Grow',
+  platform: 'Platform',
+  growth_partner: 'Growth Partner',
+  launch_growth: 'Launch & Growth',
+  founding: 'Founding Business',
 };
 
 function planLabel(lookupKeys: string[]): string {
@@ -152,9 +147,15 @@ function BillingCard({ canEdit }: { canEdit: boolean }) {
         <div className="mt-3">
           <p className="text-sm text-muted-foreground">No active subscription yet.</p>
           {canEdit && (
-            <Button className="mt-3" onClick={() => goTo('/billing/checkout', { lookupKeys: ['plan_single_monthly'] })} disabled={busy}>
-              {busy ? 'Starting checkout…' : 'Subscribe — Single Business Plan'}
-            </Button>
+            <>
+              <Button className="mt-3" onClick={() => goTo('/billing/checkout', { lookupKeys: ['platform_monthly'] })} disabled={busy}>
+                {busy ? 'Starting checkout…' : 'Subscribe — Platform ($129/mo)'}
+              </Button>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Looking for Growth Partner, Launch &amp; Growth, or the Founding Business rate? Those are set up with
+                your Venturelyx contact, not self-service here.
+              </p>
+            </>
           )}
         </div>
       ) : (

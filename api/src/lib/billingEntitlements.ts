@@ -13,13 +13,16 @@
  * is untouched by billing entirely and keeps moduleAccess.ts's existing
  * "missing key = enabled" default.
  *
- * LOOKUP_KEY_MODULES assumption, stated plainly since it isn't fully
- * spelled out in the catalog's own pricing brief: the single-business plan
- * and every volume tier unlock the FULL module bundle (all of
- * BILLABLE_MODULES, ai_team included) — à la carte module add-ons unlock
- * only their own module. ai_team has no standalone à la carte price today,
- * so it's reachable only through the bundle. If that's wrong, this map is
- * the one place to fix it.
+ * LOOKUP_KEY_MODULES, v2 catalog (4 tiers, confirmed): Platform is the
+ * entry tier (Operate only). Growth Partner adds the two named growth
+ * surfaces (ScaleSEO, Reviews). Launch & Growth and Founding Business are
+ * both the full white-glove bundle, every module including Grow and AI
+ * Team — Founding is priced differently (scripts/stripeCatalog.ts /
+ * routes/growthScans.ts's Subscription Schedule), never featured
+ * differently. Only recurring lookup_keys appear here: a one-time setup-fee
+ * price (launch_growth_setup, founding_setup) is billed as an invoice item
+ * alongside checkout, never as a subscription item, so it never shows up in
+ * sub.items.data and has nothing to map.
  */
 import type { Querier } from './db.js';
 
@@ -29,22 +32,10 @@ export type BillableModule = (typeof BILLABLE_MODULES)[number];
 const ALL_MODULES: BillableModule[] = [...BILLABLE_MODULES];
 
 export const LOOKUP_KEY_MODULES: Record<string, BillableModule[]> = {
-  plan_single_monthly: ALL_MODULES,
-  plan_single_annual: ALL_MODULES,
-  volume_tier1_monthly: ALL_MODULES,
-  volume_tier1_annual: ALL_MODULES,
-  volume_tier2_monthly: ALL_MODULES,
-  volume_tier2_annual: ALL_MODULES,
-  volume_tier3_monthly: ALL_MODULES,
-  volume_tier3_annual: ALL_MODULES,
-  module_scaleseo_monthly: ['scaleseo'],
-  module_scaleseo_annual: ['scaleseo'],
-  module_operate_monthly: ['operate'],
-  module_operate_annual: ['operate'],
-  module_reviews_monthly: ['reviews'],
-  module_reviews_annual: ['reviews'],
-  module_grow_monthly: ['grow'],
-  module_grow_annual: ['grow'],
+  platform_monthly: ['operate'],
+  growth_partner_monthly: ['operate', 'scaleseo', 'reviews'],
+  launch_growth_monthly: ALL_MODULES,
+  founding_monthly: ALL_MODULES,
 };
 
 export function modulesForLookupKeys(lookupKeys: string[]): Set<BillableModule> {

@@ -19,37 +19,16 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import Stripe from 'stripe';
-import { stripe, resolvePrices } from '../lib/stripe.js';
+import { stripe, resolvePrice, resolvePrices, getOrCreateStripeCustomer } from '../lib/stripe.js';
 import { syncEntitlements } from '../lib/billingEntitlements.js';
 import { HttpError } from '../plugins/context.js';
-import { withPlatform, withTenant } from '../lib/db.js';
-import type { Querier } from '../lib/db.js';
+import { withPlatform, withTenant, type Querier } from '../lib/db.js';
+import { newSessionToken, hashToken } from '../lib/auth.js';
 import { sendEmail } from '../lib/email.js';
-import { billingReceiptEmail, billingPaymentFailedEmail } from '../lib/emailTemplates.js';
+import { billingReceiptEmail, billingPaymentFailedEmail, onboardingWelcomeEmail } from '../lib/emailTemplates.js';
 
 const APP_BASE_URL = process.env.APP_BASE_URL ?? 'https://app.venturelyx.com';
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-async function getOrCreateStripeCustomer(
-  q: Querier, orgId: string, orgName: string, email: string,
-): Promise<string> {
-  const existing = await q.one<{ stripe_customer_id: string }>(
-    `SELECT stripe_customer_id FROM billing_customers WHERE org_id = $1`, [orgId],
-  );
-  if (existing) return existing.stripe_customer_id;
-
-  const customer = await stripe.customers.create({
-    name: orgName,
-    email,
-    metadata: { org_id: orgId },
-  });
-  await q.exec(
-    `INSERT INTO billing_customers (org_id, stripe_customer_id) VALUES ($1, $2)
-     ON CONFLICT (org_id) DO NOTHING`,
-    [orgId, customer.id],
-  );
-  return customer.id;
-}
 
 /** Re-fetches the subscription fresh from Stripe (expanded, so every item's
  *  price.lookup_key is present) rather than trusting the webhook payload's
@@ -105,6 +84,93 @@ async function syncSubscriptionFromStripe(stripeSubscriptionId: string): Promise
       ],
     );
     await syncEntitlements(q, orgId, sub.status, lookupKeys);
+
+    // Conversion: the one place a prospect org ever becomes a real
+    // customer. Guarded on org.status itself (not on event type) so this
+    // is idempotent across every subscription.updated retry/replay — it
+    // only ever fires once, the moment status is still 'prospect'.
+    if (sub.status === 'active' || sub.status === 'trialing') {
+      await convertProspectIfNeeded(q, orgId, sub);
+    }
+  });
+}
+
+/**
+ * Flips organizations.status prospect -> onboarding on first confirmed
+ * payment — the payment gate (plugins/context.ts's requireProvisioned)
+ * keys off exactly this column, for both paths that can reach here:
+ *
+ *   - Admin-generated checkout (routes/growthScans.ts): sub.metadata.deal_id
+ *     is set. Advances the deal, marks its checkout session completed, and
+ *     invites the primary contact as owner via the EXISTING org_invites /
+ *     invite-accept flow (routes/auth.ts) — this is the only account/
+ *     membership ever created for one of these orgs, and it reuses the
+ *     same organization id throughout. Zero duplicate organizations.
+ *   - Self-service signup (routes/growthScans.ts's self-service endpoint):
+ *     no deal_id — the real user+membership already exist from signup,
+ *     so there's nothing left to provision beyond the status flip itself.
+ */
+async function convertProspectIfNeeded(q: Querier, orgId: string, sub: Stripe.Subscription): Promise<void> {
+  const org = await q.one<{ status: string; name: string }>(`SELECT status, name FROM organizations WHERE id = $1`, [orgId]);
+  if (!org || org.status !== 'prospect') return;
+
+  await q.exec(`UPDATE organizations SET status = 'onboarding', updated_at = now() WHERE id = $1`, [orgId]);
+
+  const dealId = sub.metadata.deal_id;
+  if (!dealId) return;
+
+  await q.exec(`UPDATE deals SET stage = 'paid', updated_at = now() WHERE id = $1`, [dealId]);
+  await q.exec(
+    `UPDATE deal_checkout_sessions SET status = 'completed', completed_at = now(), stripe_subscription_id = $2
+      WHERE deal_id = $1 AND status = 'open'`,
+    [dealId, sub.id],
+  );
+
+  const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
+  const customer = await stripe.customers.retrieve(customerId);
+  const email = customer && !customer.deleted ? customer.email : null;
+
+  if (email) {
+    const inviteToken = newSessionToken();
+    await q.exec(
+      `INSERT INTO org_invites (org_id, email, role, token_hash, expires_at)
+       VALUES ($1,$2,'owner',$3, now() + interval '14 days')
+       ON CONFLICT (org_id, email) WHERE accepted_at IS NULL
+       DO UPDATE SET token_hash = EXCLUDED.token_hash, expires_at = EXCLUDED.expires_at, created_at = now()`,
+      [orgId, email, hashToken(inviteToken)],
+    );
+    const { subject, html, text } = onboardingWelcomeEmail(org.name, `${APP_BASE_URL}/invite/accept?token=${inviteToken}`);
+    await sendEmail(q, { to: email, subject, html, text, template: 'onboarding_welcome', orgId });
+  }
+
+  if (sub.metadata.plan_key === 'founding') {
+    await scheduleFoundingReversion(sub).catch((err) => {
+      // The subscription itself is already correct either way — a
+      // schedule failure here must not fail the webhook (Stripe would
+      // retry an already-fully-applied payment event forever). Worst
+      // case: a founding subscription keeps billing at the founding rate
+      // past 12 months until someone notices and fixes it by hand.
+      console.error({ err, subscriptionId: sub.id }, 'failed to create Founding Business reversion schedule');
+    });
+  }
+}
+
+/** Converts the flat Founding Business subscription into a two-phase
+ *  Subscription Schedule: 12 billing cycles at the founding rate, then an
+ *  open-ended phase on the SAME launch_growth_monthly price object Launch
+ *  & Growth itself uses — a structural revert, not a duplicate price. */
+async function scheduleFoundingReversion(sub: Stripe.Subscription): Promise<void> {
+  const reversionPrice = await resolvePrice('launch_growth_monthly');
+  const schedule = await stripe.subscriptionSchedules.create({ from_subscription: sub.id });
+  // Replacing the whole phases array requires the first phase's start_date
+  // explicitly — Stripe does not infer it from the schedule it was just
+  // derived from (verified against a real 400: "missing at least one
+  // phase with a `start_date` to anchor end dates to").
+  await stripe.subscriptionSchedules.update(schedule.id, {
+    phases: [
+      { items: schedule.phases[0]!.items as never, start_date: schedule.phases[0]!.start_date, duration: { interval: 'month', interval_count: 12 } },
+      { items: [{ price: reversionPrice.id, quantity: 1 }] },
+    ],
   });
 }
 
@@ -158,24 +224,7 @@ export default async function billingRoutes(app: FastifyInstance) {
            FROM billing_subscriptions WHERE org_id = $1`,
         [orgId],
       );
-      const org = await q.one<{ created_by: string | null }>(
-        `SELECT created_by FROM organizations WHERE id = $1`, [orgId],
-      );
-      // How many businesses this org's creator owns in total — the basis
-      // for which volume_tier lookup_key a second-or-later business should
-      // check out with. Settings' "Add a business" flow (already built,
-      // separately from this task) is the caller that actually uses this;
-      // surfaced here too since it's the same underlying fact.
-      const siblingCount = org?.created_by
-        ? await q.one<{ n: number }>(
-            `SELECT count(*)::int AS n FROM organizations WHERE created_by = $1 AND deleted_at IS NULL`,
-            [org.created_by],
-          ).then((r) => r?.n ?? 1)
-        : 1;
-
-      const volumeTier = siblingCount >= 10 ? 'volume_tier3' : siblingCount >= 5 ? 'volume_tier2' : siblingCount >= 2 ? 'volume_tier1' : null;
-
-      return { subscription, siblingBusinessCount: siblingCount, recommendedVolumeTierKey: volumeTier };
+      return { subscription };
     });
   });
 
@@ -193,12 +242,30 @@ export default async function billingRoutes(app: FastifyInstance) {
 
       const customerId = await getOrCreateStripeCustomer(q, orgId, org.name, sess.email);
 
+      // If this org has a Growth Scan Funnel deal (the self-service $129
+      // signup — routes/growthScans.ts — creates one at intake_started),
+      // carry its id so convertProspectIfNeeded can advance it on
+      // checkout.session.completed exactly like an admin-generated
+      // checkout does. Absent for a pre-existing paying customer adding a
+      // module or a second business — nothing to advance there.
+      const deal = await q.one<{ id: string }>(
+        `SELECT d.id FROM deals d JOIN pipelines p ON p.id = d.pipeline_id
+          WHERE d.org_id = $1 AND p.name = 'Growth Scan Funnel'
+          ORDER BY d.created_at DESC LIMIT 1`,
+        [orgId],
+      );
+
       const session = await stripe.checkout.sessions.create({
         mode: 'subscription',
         customer: customerId,
         line_items: prices.map((p) => ({ price: p.id, quantity: 1 })),
         allow_promotion_codes: true,
-        subscription_data: { metadata: { org_id: orgId } },
+        subscription_data: {
+          metadata: {
+            org_id: orgId,
+            ...(deal ? { deal_id: deal.id, plan_key: lookupKeys[0]!.replace(/_monthly$/, '') } : {}),
+          },
+        },
         success_url: `${APP_BASE_URL}/settings?billing=success`,
         cancel_url: `${APP_BASE_URL}/settings?billing=cancelled`,
       });

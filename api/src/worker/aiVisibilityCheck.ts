@@ -283,6 +283,7 @@ async function findDueOrgs(): Promise<string[]> {
     q.rows<{ id: string }>(
       `SELECT DISTINCT s.org_id AS id
          FROM seo_sites s
+         JOIN organizations o ON o.id = s.org_id AND o.status != 'prospect'
          JOIN catalog_items ci ON ci.org_id = s.org_id AND ci.is_active AND ci.kind = 'service'
          JOIN locations l ON l.org_id = s.org_id AND l.is_active
         WHERE s.is_primary

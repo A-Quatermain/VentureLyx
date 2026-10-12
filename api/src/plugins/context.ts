@@ -11,11 +11,29 @@ import {
   SESSION_COOKIE, atLeast, loadSession, type Role, type SessionRow,
 } from '../lib/auth.js';
 
+// Access tiers. A prospect org (organizations.status = 'prospect') is
+// 'pre_payment' — Stripe has never confirmed a payment for this org.
+// In practice no membership is ever created on a prospect org before
+// conversion (routes/growthScans.ts's intake/checkout flow is entirely
+// token-based, no login involved, deliberately — see that file's header),
+// so this tier mostly exists as a defense-in-depth backstop rather than
+// something a real request hits today. 'onboarding' and 'full' are
+// treated identically — db/migrations's setup.ts onboarding checklist is
+// itself the "authenticated onboarding area" the brief asked to keep
+// reachable, so there's no narrower tier to carve out yet.
+export type AccessTier = 'pre_payment' | 'onboarding' | 'full';
+
+function tierForStatus(status: string | null): AccessTier {
+  if (status === 'prospect') return 'pre_payment';
+  return 'full'; // onboarding/active/paused/churned — see module comment
+}
+
 declare module 'fastify' {
   interface FastifyRequest {
     session: SessionRow | null;
     ctx: TenantContext;
     role: Role | null;
+    accessTier: AccessTier;
     /** Run a query inside this request's tenant context. */
     db<T>(fn: (q: Querier) => Promise<T>): Promise<T>;
     /** 401 unless signed in and MFA satisfied. Returns the session so callers
@@ -32,15 +50,38 @@ class HttpError extends Error {
   }
 }
 
+/**
+ * The pre-payment lockout: attach via `app.addHook('preHandler',
+ * requireProvisioned)` at the top of a business-tool route file (same
+ * attachment point moduleWriteGate already uses in operate.ts/grow.ts/
+ * reviews.ts) — data.ts, operate.ts, grow.ts, reviews.ts, ai.ts,
+ * locations.ts, integrations.ts. Deliberately NOT attached to auth.ts,
+ * billing.ts, settings.ts, or setup.ts (the onboarding checklist IS the
+ * "authenticated onboarding area" the brief says to keep reachable) — a
+ * pre-payment org still needs to sign in, see its billing/settings page,
+ * and pay. Unlike moduleWriteGate, this blocks reads too: there is no
+ * existing customer data to protect reads for on an org that has never
+ * paid, so "read-only while locked" doesn't apply here the way it does to
+ * a toggled-off module on an established customer.
+ */
+export async function requireProvisioned(req: FastifyRequest, _reply: FastifyReply): Promise<void> {
+  if (req.ctx.isStaff || !req.ctx.orgId) return;
+  if (req.accessTier === 'pre_payment') {
+    throw new HttpError(403, 'Finish setting up and paying for your plan to access this.', 'payment_required');
+  }
+}
+
 export default fp(async function contextPlugin(app: FastifyInstance) {
   app.decorateRequest('session', null);
   app.decorateRequest('ctx', null as never);
   app.decorateRequest('role', null);
+  app.decorateRequest('accessTier', 'full');
 
   app.addHook('onRequest', async (req: FastifyRequest) => {
     req.ctx = { orgId: null, userId: null, isStaff: false };
     req.session = null;
     req.role = null;
+    req.accessTier = 'full';
 
     const token = req.cookies?.[SESSION_COOKIE];
     if (!token) return;
@@ -60,13 +101,18 @@ export default fp(async function contextPlugin(app: FastifyInstance) {
     };
 
     if (s.org_id) {
+      // Same round trip carries organizations.status — the access-tier gate
+      // below needs it on every request and this avoids a second query.
       const m = await withPlatform((q) =>
-        q.one<{ role: Role }>(
-          `SELECT role FROM memberships WHERE user_id = $1 AND org_id = $2`,
+        q.one<{ role: Role; status: string }>(
+          `SELECT m.role, o.status
+             FROM memberships m JOIN organizations o ON o.id = m.org_id
+            WHERE m.user_id = $1 AND m.org_id = $2`,
           [s.user_id, s.org_id],
         ),
       );
       req.role = m?.role ?? null;
+      req.accessTier = tierForStatus(m?.status ?? null);
       // Membership revoked while the session lived on.
       if (!m && !s.is_platform_staff) {
         req.session = null;

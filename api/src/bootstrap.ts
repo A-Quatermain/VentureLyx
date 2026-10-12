@@ -44,8 +44,11 @@ await withPlatform(async (q) => {
     console.log(`Created user ${email}`);
   }
 
+  // Excludes prospects — a Growth Scan lead's shell org has no business
+  // being staff-owned; is_platform_staff already grants full access to it
+  // regardless (app.is_staff() bypasses RLS outright).
   const orgs = await q.rows<{ id: string; name: string }>(
-    'SELECT id, name FROM organizations WHERE deleted_at IS NULL ORDER BY name');
+    "SELECT id, name FROM organizations WHERE deleted_at IS NULL AND status != 'prospect' ORDER BY name");
   for (const o of orgs) {
     await q.exec(
       `INSERT INTO memberships (org_id, user_id, role, accepted_at)

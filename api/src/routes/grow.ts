@@ -41,7 +41,7 @@ import {
 import {
   buildExpectedRecords, verifyDomain, type SendingDomainProvider,
 } from '../lib/growSendingDomain.js';
-import { HttpError } from '../plugins/context.js';
+import { HttpError, requireProvisioned } from '../plugins/context.js';
 
 interface RenderedStep {
   subject: string;
@@ -577,11 +577,15 @@ async function readMultipartUpload(
 }
 
 export default async function growRoutes(app: FastifyInstance) {
-  // Every route below is Grow-scoped; this file's registration is the
-  // module boundary. Reads pass through untouched (moduleWriteGate no-ops
-  // on GET/HEAD) — only POST/PATCH/DELETE can be turned off. Deliberately
-  // covers the real-send worker's own entry points too (test-send, enroll)
-  // — a disabled Grow module must not be able to queue or send mail.
+  // A pre-payment org is locked out entirely, reads included — see
+  // plugins/context.ts's requireProvisioned. Every route below is also
+  // Grow-scoped; this file's registration is the module boundary for that
+  // separate, narrower concern. Reads pass through moduleWriteGate
+  // untouched (it no-ops on GET/HEAD) — only POST/PATCH/DELETE can be
+  // turned off. Deliberately covers the real-send worker's own entry
+  // points too (test-send, enroll) — a disabled Grow module must not be
+  // able to queue or send mail.
+  app.addHook('preHandler', requireProvisioned);
   app.addHook('preHandler', moduleWriteGate('grow'));
 
   // ---- Campaigns ------------------------------------------------------------

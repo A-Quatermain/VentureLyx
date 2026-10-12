@@ -28,6 +28,21 @@ export const SESSION_TTL_DAYS = 14;
 export const newSessionToken = () => randomBytes(32).toString('base64url');
 export const hashToken = (t: string) => createHash('sha256').update(t).digest('hex');
 
+// Shared by every route that sets the session cookie (routes/auth.ts,
+// routes/growthScans.ts's self-service signup) — defined once so a cookie
+// setting (domain scoping in particular — see routes/auth.ts's own comment
+// on why it must be the shared parent domain) can't drift between them.
+export function sessionCookieOptions() {
+  return {
+    httpOnly: true,
+    sameSite: 'lax' as const,
+    secure: process.env.NODE_ENV === 'production',
+    domain: process.env.COOKIE_DOMAIN ?? '.venturelyx.com',
+    path: '/',
+    maxAge: SESSION_TTL_DAYS * 86_400,
+  };
+}
+
 export function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a), bb = Buffer.from(b);
   if (ab.length !== bb.length) return false;

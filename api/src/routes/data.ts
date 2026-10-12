@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../lib/auth.js';
-import { HttpError } from '../plugins/context.js';
+import { HttpError, requireProvisioned } from '../plugins/context.js';
 import { moduleWriteGate } from '../lib/moduleAccess.js';
 import { slugify } from '../lib/slug.js';
 
@@ -22,6 +22,11 @@ import { slugify } from '../lib/slug.js';
 const SCALESEO_WRITE = { preHandler: moduleWriteGate('scaleseo') };
 
 export default async function dataRoutes(app: FastifyInstance) {
+  // Command Center lives here and was never module-gated (lib/moduleAccess.ts's
+  // own header says so explicitly) — this is why a pre-payment org needs its
+  // own gate rather than relying on module toggles. See
+  // plugins/context.ts's requireProvisioned.
+  app.addHook('preHandler', requireProvisioned);
 
   // ---- Command Center summary -------------------------------------------
   app.get('/command/summary', async (req) => {

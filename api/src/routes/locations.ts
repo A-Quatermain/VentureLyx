@@ -18,7 +18,7 @@ import { z } from 'zod';
 import { audit } from '../lib/auth.js';
 import { syncMarketTargets } from '../lib/marketTargets.js';
 import { slugify } from '../lib/slug.js';
-import { HttpError } from '../plugins/context.js';
+import { HttpError, requireProvisioned } from '../plugins/context.js';
 
 const RADIUS_SLUG = 'service-radius';
 
@@ -46,6 +46,7 @@ const serviceAreaInput = z.discriminatedUnion('mode', [
 ]);
 
 export default async function locationsRoutes(app: FastifyInstance) {
+  app.addHook('preHandler', requireProvisioned);
 
   // ---- current coverage, however it was defined ----------------------------
   app.get('/service-area', async (req) => {

@@ -105,6 +105,45 @@ export function billingPaymentFailedEmail(orgName: string, manageUrl: string): R
   };
 }
 
+export function growthScanReportEmail(reportUrl: string, healthScore: number | null): RenderedEmail {
+  const scoreLine = healthScore !== null ? `Your site's health score: <strong>${healthScore}/100</strong>.` : `Your scan is finishing up — the full report will be ready shortly.`;
+  return {
+    subject: 'Your free Venturelyx Growth Scan is ready',
+    html: layout(`
+      <p>Here's your Growth Scan report.</p>
+      <p>${scoreLine}</p>
+      ${button('View your full report', reportUrl)}
+      <p style="color:#6b7280;font-size:13px;">No obligation — this is yours to keep either way.</p>
+    `),
+    text: `Here's your Growth Scan report.\n\n${scoreLine.replace(/<[^>]+>/g, '')}\n\n${reportUrl}`,
+  };
+}
+
+export function paymentLinkEmail(orgName: string, planLabel: string, checkoutUrl: string): RenderedEmail {
+  return {
+    subject: `Complete your Venturelyx ${planLabel} setup`,
+    html: layout(`
+      <p>You're one step from getting started with Venturelyx ${planLabel.toLowerCase()} for <strong>${orgName}</strong>.</p>
+      ${button('Continue to secure payment', checkoutUrl)}
+      <p style="color:#6b7280;font-size:13px;">This link is unique to you — please don't share it. If you weren't expecting this, you can ignore it.</p>
+    `),
+    text: `You're one step from getting started with Venturelyx ${planLabel.toLowerCase()} for ${orgName}.\n\n${checkoutUrl}`,
+  };
+}
+
+export function onboardingWelcomeEmail(orgName: string, setPasswordUrl: string): RenderedEmail {
+  return {
+    subject: `Welcome to Venturelyx — let's get ${orgName} set up`,
+    html: layout(`
+      <p>Payment confirmed — welcome to Venturelyx!</p>
+      <p>Set your password to access your onboarding checklist for <strong>${orgName}</strong>.</p>
+      ${button('Set your password', setPasswordUrl)}
+      <p style="color:#6b7280;font-size:13px;">This link expires in 7 days.</p>
+    `),
+    text: `Payment confirmed — welcome to Venturelyx!\n\nSet your password to access your onboarding checklist for ${orgName}:\n\n${setPasswordUrl}\n\nThis link expires in 7 days.`,
+  };
+}
+
 export function waitlistConfirmationEmail(businessName: string | null): RenderedEmail {
   return {
     subject: "You're on the Venturelyx waitlist",

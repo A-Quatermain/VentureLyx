@@ -7,6 +7,7 @@
  * Stripe); this file only reads what actually does.
  */
 import Stripe from 'stripe';
+import type { Querier } from './db.js';
 
 const secretKey = process.env.STRIPE_SECRET_KEY;
 if (!secretKey) {
@@ -46,4 +47,28 @@ export async function resolvePrice(lookupKey: string): Promise<Stripe.Price> {
 
 export async function resolvePrices(lookupKeys: string[]): Promise<Stripe.Price[]> {
   return Promise.all(lookupKeys.map(resolvePrice));
+}
+
+/** Shared by routes/billing.ts (self-service checkout) and
+ *  routes/growthScans.ts (admin-generated checkout) — both need "this org's
+ *  Stripe customer, creating it on first use" and must not duplicate it. */
+export async function getOrCreateStripeCustomer(
+  q: Querier, orgId: string, orgName: string, email: string,
+): Promise<string> {
+  const existing = await q.one<{ stripe_customer_id: string }>(
+    `SELECT stripe_customer_id FROM billing_customers WHERE org_id = $1`, [orgId],
+  );
+  if (existing) return existing.stripe_customer_id;
+
+  const customer = await stripe.customers.create({
+    name: orgName,
+    email,
+    metadata: { org_id: orgId },
+  });
+  await q.exec(
+    `INSERT INTO billing_customers (org_id, stripe_customer_id) VALUES ($1, $2)
+     ON CONFLICT (org_id) DO NOTHING`,
+    [orgId, customer.id],
+  );
+  return customer.id;
 }

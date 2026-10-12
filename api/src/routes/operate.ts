@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { audit } from '../lib/auth.js';
 import { syncMarketTargets } from '../lib/marketTargets.js';
 import { slugify } from '../lib/slug.js';
-import { HttpError } from '../plugins/context.js';
+import { HttpError, requireProvisioned } from '../plugins/context.js';
 import { moduleWriteGate } from '../lib/moduleAccess.js';
 import { ingestFile } from '../lib/growContactImportXlsx.js';
 import { logTimeline } from '../lib/timeline.js';
@@ -72,9 +72,13 @@ const catalogItemInput = z.object({
 });
 
 export default async function operateRoutes(app: FastifyInstance) {
-  // Every route below is Operate-scoped; this file's registration is the
-  // module boundary. Reads pass through untouched (moduleWriteGate no-ops
-  // on GET/HEAD) — only POST/PATCH/DELETE can be turned off.
+  // A pre-payment org (never-paid prospect) is locked out entirely, reads
+  // included — see plugins/context.ts's requireProvisioned. Every route
+  // below is also Operate-scoped; this file's registration is the module
+  // boundary for that separate, narrower concern. Reads pass through
+  // moduleWriteGate untouched (it no-ops on GET/HEAD) — only POST/PATCH/
+  // DELETE can be turned off by an entitlement toggle.
+  app.addHook('preHandler', requireProvisioned);
   app.addHook('preHandler', moduleWriteGate('operate'));
 
   // ---- Customers (parties) -------------------------------------------------

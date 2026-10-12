@@ -20,17 +20,10 @@
  * accounts and platform data is exactly the kind of access that needs a
  * trail regardless of whether anything changed.
  */
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withPlatform, type Querier } from '../lib/db.js';
-
-function requireStaffOrNotFound(req: FastifyRequest, reply: FastifyReply): boolean {
-  if (!req.session?.mfa_satisfied || !req.session.is_platform_staff) {
-    reply.callNotFound();
-    return false;
-  }
-  return true;
-}
+import { requireStaffOrNotFound } from '../lib/staffGuard.js';
 
 async function auditAdmin(
   q: Querier, req: FastifyRequest, action: string, diff?: unknown,
@@ -66,7 +59,11 @@ export default async function adminRoutes(app: FastifyInstance) {
       await auditAdmin(q, req, 'admin.summary.view');
       const [users, orgs, waitlistNew] = await Promise.all([
         q.one<{ n: string | number }>(`SELECT COUNT(*) AS n FROM users WHERE deleted_at IS NULL`),
-        q.one<{ n: string | number }>(`SELECT COUNT(*) AS n FROM organizations WHERE deleted_at IS NULL`),
+        // Excludes prospects — a Growth Scan lead is not a customer, and
+        // counting it here would inflate this number the moment a scan
+        // comes in. routes/growthScans.ts's GET /admin/growth-scans is the
+        // dedicated leads count.
+        q.one<{ n: string | number }>(`SELECT COUNT(*) AS n FROM organizations WHERE deleted_at IS NULL AND status != 'prospect'`),
         q.one<{ n: string | number }>(`SELECT COUNT(*) AS n FROM waitlist WHERE status = 'new'`),
       ]);
       return {
@@ -95,8 +92,15 @@ export default async function adminRoutes(app: FastifyInstance) {
   });
 
   // ---- Organizations ------------------------------------------------------
+  const orgListQuery = z.object({ includeProspects: z.coerce.boolean().default(false) });
+
   app.get('/admin/organizations', async (req, reply) => {
     if (!requireStaffOrNotFound(req, reply)) return;
+    // Excludes prospects by default — Growth Scan leads live in their own
+    // console (GET /admin/growth-scans), not mixed into the customer list.
+    // includeProspects=true is an explicit escape hatch for staff who want
+    // the unfiltered view, never the default.
+    const { includeProspects } = orgListQuery.parse(req.query);
 
     return withPlatform(async (q) => {
       await auditAdmin(q, req, 'admin.organizations.list');
@@ -114,8 +118,9 @@ export default async function adminRoutes(app: FastifyInstance) {
                 ) owner ON true
       LEFT JOIN LATERAL (SELECT COUNT(*)::int AS n FROM memberships m WHERE m.org_id = o.id) mem ON true
       LEFT JOIN LATERAL (SELECT COUNT(*)::int AS n FROM seo_sites s WHERE s.org_id = o.id) sites ON true
-          WHERE o.deleted_at IS NULL
+          WHERE o.deleted_at IS NULL AND ($1 OR o.status != 'prospect')
           ORDER BY o.created_at DESC`,
+        [includeProspects],
       );
     });
   });

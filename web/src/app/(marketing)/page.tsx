@@ -8,9 +8,8 @@ import { getServerSession } from '@/lib/session';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { VideoHero } from '@/components/VideoHero';
 import { ImageCarousel } from '@/components/ImageCarousel';
-import { WaitlistCTA } from '@/components/WaitlistCTA';
 import { MODULES, type ModuleInfo } from '@/lib/modules';
-import { TIERS, PRICING_CTA_LABEL } from '@/lib/pricing';
+import { TIERS } from '@/lib/pricing';
 
 // This page is a Server Component, so it imports Phosphor's /ssr icon set —
 // lib/modules.ts stores an icon *name* rather than a component for exactly
@@ -153,7 +152,7 @@ const FAQ = [
   },
   {
     q: 'What does it cost?',
-    a: 'We’re finalizing pricing as we roll out. Join the waitlist below and we’ll reach out the moment it’s ready.',
+    a: 'Platform starts at $129/mo, self-service. Growth Partner and Launch & Growth are white-glove engagements — start with a free Growth Scan and we’ll recommend the right fit. See Pricing below for the full breakdown.',
   },
 ];
 
@@ -405,42 +404,36 @@ export default async function LandingPage() {
       </section>
 
       {/* ---- Pricing -----------------------------------------------------
-          lib/pricing.ts's TIERS is empty on purpose — no real prices exist
-          in docs or anywhere else in this repo yet (checked; see that
-          file's header). Renders a waitlist-only section until TIERS has
-          real data; CTAs already say "Join the waitlist" per the brief,
-          since Stripe isn't wired up regardless of when prices land. */}
+          Platform is self-service (ctaHref -> /register). The other three
+          are sales-assisted — nobody reaches Stripe for a $750 setup fee
+          without a staff member generating that checkout from an approved
+          deal (routes/growthScans.ts), so their CTA routes into the free
+          Growth Scan funnel instead of a waitlist or a direct charge. */}
       <section id="pricing" className="mx-auto max-w-6xl scroll-mt-20 px-6 pb-24">
         <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">Pricing</h2>
-        {TIERS.length === 0 ? (
-          <div className="mt-8 flex flex-col items-center gap-4 rounded-2xl border border-border bg-surface p-10 text-center shadow-sm">
-            <p className="text-muted-foreground">We&rsquo;re finalizing pricing as we roll out.</p>
-            <WaitlistCTA interest="pricing (unspecified tier)" sourcePage="landing_pricing" label={PRICING_CTA_LABEL} />
-          </div>
-        ) : (
-          <div className="mt-8 grid gap-4 sm:grid-cols-3">
-            {TIERS.map((t) => (
-              <div key={t.key} className={`rounded-xl border p-6 shadow-sm ${t.featured ? 'border-primary' : 'border-border'} bg-surface`}>
-                <div className="font-display font-bold tracking-tight">{t.name}</div>
-                <div className="mt-2 font-mono text-3xl font-bold tabular-nums">
-                  {t.price}<span className="text-sm font-normal text-muted-foreground">/{t.cadence}</span>
-                </div>
-                <p className="mt-2 text-sm text-muted-foreground">{t.description}</p>
-                <ul className="mt-4 flex flex-col gap-2 text-sm text-muted-foreground">
-                  {t.features.map((f) => <li key={f}>{f}</li>)}
-                </ul>
-                <div className="mt-6">
-                  <WaitlistCTA
-                    interest={t.name}
-                    sourcePage="landing_pricing"
-                    label={PRICING_CTA_LABEL}
-                    className="inline-flex min-h-[42px] w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
-                  />
-                </div>
+        <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {TIERS.map((t) => (
+            <div key={t.key} className={`rounded-xl border p-6 shadow-sm ${t.featured ? 'border-primary' : 'border-border'} bg-surface`}>
+              <div className="font-display font-bold tracking-tight">{t.name}</div>
+              <div className="mt-2 font-mono text-3xl font-bold tabular-nums">
+                {t.price}<span className="text-sm font-normal text-muted-foreground">/{t.cadence}</span>
               </div>
-            ))}
-          </div>
-        )}
+              {t.setupFee && <p className="text-xs text-muted-foreground">+ {t.setupFee}</p>}
+              <p className="mt-2 text-sm text-muted-foreground">{t.description}</p>
+              <ul className="mt-4 flex flex-col gap-2 text-sm text-muted-foreground">
+                {t.features.map((f) => <li key={f}>{f}</li>)}
+              </ul>
+              <div className="mt-6">
+                <Link
+                  href={t.ctaHref}
+                  className="inline-flex min-h-[42px] w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
+                >
+                  {t.ctaLabel}
+                </Link>
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
 
       <footer className="border-t border-border py-8 text-center text-xs text-muted-foreground">
