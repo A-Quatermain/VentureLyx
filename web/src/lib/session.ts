@@ -32,3 +32,20 @@ async function serverFetch<T>(path: string): Promise<T> {
 export const getServerSession = cache((): Promise<MeResponse> => {
   return serverFetch<MeResponse>('/auth/me');
 });
+
+// Public — no cookie forwarded, nothing sensitive in the response. Used
+// by the marketing landing page to decide whether to show real prices or
+// a "finalizing" placeholder. Defaults to false (placeholder, not real
+// prices) if the API can't be reached at all, the same safe-default
+// direction as the gate itself.
+export const getPaymentGateEnabled = cache(async (): Promise<boolean> => {
+  if (!INTERNAL_API_BASE) return false;
+  try {
+    const res = await fetch(`${INTERNAL_API_BASE}/platform-status`, { cache: 'no-store' });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { paymentGateEnabled: boolean };
+    return !!data.paymentGateEnabled;
+  } catch {
+    return false;
+  }
+});

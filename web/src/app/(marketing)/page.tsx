@@ -4,7 +4,8 @@ import {
   ArrowRight, Kanban, MagnifyingGlass, Compass, Package, TrendUp, Robot, Star,
   Globe, MagicWand, ChartBar, ShieldCheck, Prohibit, HandTap, ImageSquare,
 } from '@phosphor-icons/react/ssr';
-import { getServerSession } from '@/lib/session';
+import { getServerSession, getPaymentGateEnabled } from '@/lib/session';
+import { WaitlistCTA } from '@/components/WaitlistCTA';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { VideoHero } from '@/components/VideoHero';
 import { ImageCarousel } from '@/components/ImageCarousel';
@@ -162,6 +163,11 @@ export default async function LandingPage() {
     if (!me.mfaSatisfied) redirect('/mfa');
     redirect(me.organizations?.length ? '/home' : '/onboarding');
   }
+  // Real prices only show once payment is actually being enforced
+  // (platform_settings.payment_gate_enabled) — showing concrete tiers
+  // while that's off would advertise a purchase the platform isn't
+  // actually ready to take yet.
+  const showPricing = await getPaymentGateEnabled();
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -397,43 +403,59 @@ export default async function LandingPage() {
               <summary className="cursor-pointer list-none font-display font-semibold tracking-tight marker:content-none">
                 {f.q}
               </summary>
-              <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{f.a}</p>
+              <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+                {f.q === 'What does it cost?' && !showPricing
+                  ? 'We’re finalizing pricing as we roll out. Join the waitlist below and we’ll reach out the moment it’s ready.'
+                  : f.a}
+              </p>
             </details>
           ))}
         </div>
       </section>
 
       {/* ---- Pricing -----------------------------------------------------
-          Platform is self-service (ctaHref -> /register). The other three
-          are sales-assisted — nobody reaches Stripe for a $750 setup fee
-          without a staff member generating that checkout from an approved
-          deal (routes/growthScans.ts), so their CTA routes into the free
-          Growth Scan funnel instead of a waitlist or a direct charge. */}
+          Gated on showPricing (platform_settings.payment_gate_enabled, via
+          GET /platform-status) — real tiers only advertise once payment is
+          actually being enforced. While it's off, this renders the same
+          waitlist-only placeholder the pre-monetization version of this
+          page used, not the 4-tier grid. Platform is self-service
+          (ctaHref -> /register) when shown; the other three are sales-
+          assisted — nobody reaches Stripe for a $750 setup fee without a
+          staff member generating that checkout from an approved deal
+          (routes/growthScans.ts), so their CTA routes into the free
+          Growth Scan funnel instead of a direct charge. */}
       <section id="pricing" className="mx-auto max-w-6xl scroll-mt-20 px-6 pb-24">
         <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">Pricing</h2>
-        <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {TIERS.map((t) => (
-            <div key={t.key} className={`rounded-xl border p-6 shadow-sm ${t.featured ? 'border-primary' : 'border-border'} bg-surface`}>
-              <div className="font-display font-bold tracking-tight">{t.name}</div>
-              <div className="mt-2 font-mono text-3xl font-bold tabular-nums">
-                {t.price}<span className="text-sm font-normal text-muted-foreground">/{t.cadence}</span>
+        {!showPricing ? (
+          <div className="mt-8 flex flex-col items-center gap-4 rounded-2xl border border-border bg-surface p-10 text-center shadow-sm">
+            <p className="text-muted-foreground">We&rsquo;re finalizing pricing as we roll out.</p>
+            <WaitlistCTA interest="pricing (unspecified tier)" sourcePage="landing_pricing" label="Join the waitlist" />
+          </div>
+        ) : (
+          <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {TIERS.map((t) => (
+              <div key={t.key} className={`rounded-xl border p-6 shadow-sm ${t.featured ? 'border-primary' : 'border-border'} bg-surface`}>
+                <div className="font-display font-bold tracking-tight">{t.name}</div>
+                <div className="mt-2 font-mono text-3xl font-bold tabular-nums">
+                  {t.price}<span className="text-sm font-normal text-muted-foreground">/{t.cadence}</span>
+                </div>
+                {t.setupFee && <p className="text-xs text-muted-foreground">+ {t.setupFee}</p>}
+                <p className="mt-2 text-sm text-muted-foreground">{t.description}</p>
+                <ul className="mt-4 flex flex-col gap-2 text-sm text-muted-foreground">
+                  {t.features.map((f) => <li key={f}>{f}</li>)}
+                </ul>
+                <div className="mt-6">
+                  <Link
+                    href={t.ctaHref}
+                    className="inline-flex min-h-[42px] w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
+                  >
+                    {t.ctaLabel}
+                  </Link>
+                </div>
               </div>
-              {t.setupFee && <p className="text-xs text-muted-foreground">+ {t.setupFee}</p>}
-              <p className="mt-2 text-sm text-muted-foreground">{t.description}</p>
-              <ul className="mt-4 flex flex-col gap-2 text-sm text-muted-foreground">
-                {t.features.map((f) => <li key={f}>{f}</li>)}
-              </ul>
-              <div className="mt-6">
-                <Link
-                  href={t.ctaHref}
-                  className="inline-flex min-h-[42px] w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover hover:shadow-md"
-                >
-                  {t.ctaLabel}
-                </Link>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <footer className="border-t border-border py-8 text-center text-xs text-muted-foreground">

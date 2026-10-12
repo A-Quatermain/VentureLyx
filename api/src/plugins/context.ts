@@ -66,7 +66,11 @@ export function invalidatePaymentGateCache(): void {
   gateCache = null;
 }
 
-async function isPaymentGateEnabled(): Promise<boolean> {
+// Exported so server.ts's public GET /platform-status can expose this one
+// boolean to the marketing site — e.g. whether to show real prices or a
+// "finalizing" placeholder on the landing page's pricing section — without
+// duplicating the cache/lookup logic.
+export async function isPaymentGateEnabled(): Promise<boolean> {
   if (gateCache && gateCache.expiresAt > Date.now()) return gateCache.enabled;
   const row = await withPlatform((q) =>
     q.one<{ value: boolean }>(`SELECT value FROM platform_settings WHERE key = 'payment_gate_enabled'`),

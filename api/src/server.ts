@@ -8,7 +8,7 @@ import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 
-import contextPlugin from './plugins/context.js';
+import contextPlugin, { isPaymentGateEnabled } from './plugins/context.js';
 import authRoutes from './routes/auth.js';
 import dataRoutes from './routes/data.js';
 import operateRoutes from './routes/operate.js';
@@ -147,6 +147,14 @@ await app.register(growRoutes, { prefix: '/v1' });
 await app.register(billingRoutes, { prefix: '/v1' });
 await app.register(adminRoutes, { prefix: '/v1' });
 await app.register(waitlistRoutes, { prefix: '/v1' });
+// Public, no auth — exposes one non-sensitive boolean so the marketing
+// site (web/'s (marketing)/page.tsx) can decide whether to show real
+// prices or a "finalizing" placeholder, consistent with whether payment
+// is actually being enforced yet. Nothing else here is public-readable.
+// Registered under /v1 like every other route INTERNAL_API_BASE expects.
+await app.register(async (v1) => {
+  v1.get('/platform-status', async () => ({ paymentGateEnabled: await isPaymentGateEnabled() }));
+}, { prefix: '/v1' });
 await app.register(growthScanRoutes, { prefix: '/v1' });
 await app.register(setupRoutes, { prefix: '/v1' });
 
