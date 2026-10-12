@@ -7,8 +7,10 @@ import {
   UploadSimple, FileCsv, CheckCircle, WarningCircle, CaretLeft, Plus, Trash, ArrowRight,
 } from '@phosphor-icons/react';
 import { apiFetch, ApiError } from '@/lib/api';
+import { useApi } from '@/lib/useApi';
 import type {
   GrowImportInspectResponse, GrowImportMapping, GrowImportPreviewResponse, GrowImportCommitResponse,
+  GrowCampaign,
 } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -18,6 +20,7 @@ type Step = 'pick' | 'map' | 'preview' | 'done';
 const PERSON_FIELDS = [
   { key: 'email', label: 'Email', required: true },
   { key: 'first_name', label: 'First name', required: false },
+  { key: 'last_name', label: 'Last name', required: false },
   { key: 'contact_name', label: 'Contact name', required: false },
   { key: 'role', label: 'Role', required: false },
   { key: 'phone', label: 'Phone', required: false },
@@ -26,7 +29,7 @@ const PERSON_FIELDS = [
 const ORG_FIELDS = [
   { key: 'entity_name', label: 'Organization name' },
   { key: 'external_id', label: 'External ID' },
-  { key: 'region', label: 'Region' },
+  { key: 'region', label: 'Region (or County)' },
   { key: 'city', label: 'City' },
   { key: 'state', label: 'State' },
   { key: 'tier', label: 'Tier' },
@@ -40,6 +43,8 @@ const ORG_FIELDS = [
   { key: 'pep', label: 'PEP scholarship' },
   { key: 'non_profit', label: 'Non-profit' },
   { key: 'religious', label: 'Religious affiliation' },
+  { key: 'grade_levels', label: 'Grade levels (stored as metadata)' },
+  { key: 'denomination', label: 'Denomination (stored as metadata)' },
   { key: 'recipient_domain', label: 'Recipient domain (derived from email if unmapped)' },
   { key: 'suppress_reason', label: 'Suppression reason (present = never imported)' },
   { key: 'sendable', label: 'Sendable flag ("False" = never imported)' },
@@ -57,9 +62,10 @@ const selectCls =
 const inputCls =
   'min-h-[38px] rounded-lg border border-border bg-background px-2 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20';
 
-function buildFormData(file: File, mapping?: GrowImportMapping) {
+function buildFormData(file: File, campaignId: string, mapping?: GrowImportMapping) {
   const fd = new FormData();
   fd.append('file', file, file.name);
+  fd.append('campaignId', campaignId);
   if (mapping) fd.append('mapping', JSON.stringify(mapping));
   return fd;
 }
@@ -104,10 +110,43 @@ function ColumnSelect({
   );
 }
 
+function CampaignPicker({
+  campaignId,
+  onChange,
+}: {
+  campaignId: string;
+  onChange: (v: string) => void;
+}) {
+  const { data: campaigns, isLoading } = useApi<GrowCampaign[]>('/grow/campaigns');
+  return (
+    <Card className="p-4">
+      <label className="flex flex-col gap-1 text-sm text-muted-foreground">
+        Target campaign <span className="text-primary">*</span>
+        <select
+          value={campaignId}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={isLoading}
+          className={selectCls}
+        >
+          <option value="">{isLoading ? 'Loading campaigns…' : '— choose a campaign —'}</option>
+          {campaigns?.map((c) => (
+            <option key={c.id} value={c.id}>{c.name} ({c.status})</option>
+          ))}
+        </select>
+      </label>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Every import enrolls into one campaign, chosen up front. Contacts are still created/deduped at the business
+        level either way — only enrollment is scoped to this choice.
+      </p>
+    </Card>
+  );
+}
+
 export default function GrowContactsImportPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState<Step>('pick');
   const [file, setFile] = useState<File | null>(null);
+  const [campaignId, setCampaignId] = useState('');
   const [dragOver, setDragOver] = useState(false);
 
   const [busy, setBusy] = useState(false);
@@ -117,26 +156,49 @@ export default function GrowContactsImportPage() {
   const [rowCount, setRowCount] = useState(0);
   const [note, setNote] = useState<string | null>(null);
   const [usedSavedProfile, setUsedSavedProfile] = useState(false);
+  const [autoDetected, setAutoDetected] = useState(false);
   const [mapping, setMapping] = useState<GrowImportMapping | null>(null);
 
   const [summary, setSummary] = useState<GrowImportPreviewResponse | null>(null);
   const [result, setResult] = useState<GrowImportCommitResponse | null>(null);
 
+  async function runPreview(f: File, m: GrowImportMapping) {
+    const res = await apiFetch<GrowImportPreviewResponse>('/grow/contacts/import/preview', {
+      method: 'POST',
+      body: buildFormData(f, campaignId, m),
+    });
+    setSummary(res);
+    setStep('preview');
+  }
+
   async function onFileChosen(f: File) {
+    if (!campaignId) {
+      setError('Choose a target campaign first.');
+      return;
+    }
     setFile(f);
     setBusy(true);
     setError(null);
     try {
       const res = await apiFetch<GrowImportInspectResponse>('/grow/contacts/import/inspect', {
         method: 'POST',
-        body: buildFormData(f),
+        body: buildFormData(f, campaignId),
       });
       setHeaders(res.headers);
       setRowCount(res.rowCount);
       setNote(res.note);
       setUsedSavedProfile(res.usedSavedProfile);
+      setAutoDetected(res.autoDetected);
       setMapping(res.suggestedMapping);
-      setStep('map');
+
+      if (res.autoDetected) {
+        // Recognized header set — skip straight to preview. The mapping
+        // screen is still one click away ("Edit mapping manually" on the
+        // preview step) if the guess needs a correction.
+        await runPreview(f, res.suggestedMapping);
+      } else {
+        setStep('map');
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not read this file.');
     } finally {
@@ -197,12 +259,7 @@ export default function GrowContactsImportPage() {
     setBusy(true);
     setError(null);
     try {
-      const res = await apiFetch<GrowImportPreviewResponse>('/grow/contacts/import/preview', {
-        method: 'POST',
-        body: buildFormData(file, mapping),
-      });
-      setSummary(res);
-      setStep('preview');
+      await runPreview(file, mapping);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not preview this import.');
     } finally {
@@ -217,7 +274,7 @@ export default function GrowContactsImportPage() {
     try {
       const res = await apiFetch<GrowImportCommitResponse>('/grow/contacts/import/commit', {
         method: 'POST',
-        body: buildFormData(file, mapping),
+        body: buildFormData(file, campaignId, mapping),
       });
       setResult(res);
       setStep('done');
@@ -238,6 +295,7 @@ export default function GrowContactsImportPage() {
     setError(null);
     setHeaders([]);
     setMapping(null);
+    setAutoDetected(false);
     setSummary(null);
     setResult(null);
   }
@@ -268,40 +326,46 @@ export default function GrowContactsImportPage() {
       )}
 
       {step === 'pick' && (
-        <Card className="p-0">
-          <div
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={onDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`flex cursor-pointer flex-col items-center gap-3 rounded-xl border-2 border-dashed px-6 py-16 text-center transition-colors ${
-              dragOver ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/40'
-            }`}
-          >
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
-              {busy ? (
-                <UploadSimple size={26} weight="duotone" className="animate-pulse text-primary" />
-              ) : (
-                <FileCsv size={26} weight="duotone" className="text-primary" />
-              )}
+        <>
+          <CampaignPicker campaignId={campaignId} onChange={setCampaignId} />
+          <Card className="p-0">
+            <div
+              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={onDrop}
+              onClick={() => campaignId && fileInputRef.current?.click()}
+              className={`flex flex-col items-center gap-3 rounded-xl border-2 border-dashed px-6 py-16 text-center transition-colors ${
+                !campaignId ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
+              } ${dragOver ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/40'}`}
+            >
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
+                {busy ? (
+                  <UploadSimple size={26} weight="duotone" className="animate-pulse text-primary" />
+                ) : (
+                  <FileCsv size={26} weight="duotone" className="text-primary" />
+                )}
+              </div>
+              <div>
+                <p className="text-sm font-medium">
+                  {busy ? 'Reading your file…' : campaignId ? 'Drop a CSV, Excel, or HTML-table file here' : 'Choose a campaign first'}
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">or click to browse — .csv, .xlsx, .xls</p>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                className="hidden"
+                disabled={!campaignId}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onFileChosen(f);
+                  e.target.value = '';
+                }}
+              />
             </div>
-            <div>
-              <p className="text-sm font-medium">{busy ? 'Reading your file…' : 'Drop a CSV or Excel file here'}</p>
-              <p className="mt-1 text-sm text-muted-foreground">or click to browse — .csv, .xlsx, .xls</p>
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv,.xlsx,.xls"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) onFileChosen(f);
-                e.target.value = '';
-              }}
-            />
-          </div>
-        </Card>
+          </Card>
+        </>
       )}
 
       {step === 'map' && mapping && (
@@ -425,6 +489,14 @@ export default function GrowContactsImportPage() {
 
       {step === 'preview' && summary && (
         <>
+          {autoDetected && (
+            <Card className="border-success/40 bg-success/5 p-4">
+              <p className="text-sm text-success">
+                Recognized this file&rsquo;s columns automatically and skipped the mapping step.{' '}
+                <button onClick={() => setStep('map')} className="font-medium underline">Edit mapping manually</button>
+              </p>
+            </Card>
+          )}
           {summary.note && (
             <Card className="border-warning/40 bg-warning/5 p-4">
               <p className="text-sm text-warning">{summary.note}</p>
@@ -447,6 +519,17 @@ export default function GrowContactsImportPage() {
             <Card className="p-4 text-center">
               <p className="font-mono text-2xl font-semibold tabular-nums" data-numeric>{summary.uniqueDomains}</p>
               <p className="mt-0.5 text-xs text-muted-foreground">Unique domains</p>
+            </Card>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Card className="p-4 text-center">
+              <p className="font-mono text-2xl font-semibold tabular-nums" data-numeric>{summary.dedupedExisting}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Already existed (deduped)</p>
+            </Card>
+            <Card className="p-4 text-center">
+              <p className="font-mono text-2xl font-semibold tabular-nums text-warning" data-numeric>{summary.skippedAlreadyInAnotherCampaign}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Already active in another campaign</p>
             </Card>
           </div>
 
@@ -508,12 +591,22 @@ export default function GrowContactsImportPage() {
             <CheckCircle size={28} weight="fill" className="text-success" />
           </div>
           <h2 className="font-display text-xl font-bold tracking-tight">Import complete</h2>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              { label: 'Created', value: result.created },
+              { label: 'Deduped (existing)', value: result.dedupedExisting },
+              { label: 'Skipped (active elsewhere)', value: result.skippedAlreadyInAnotherCampaign },
+              { label: 'Enrolled', value: result.enrolled },
+            ].map((s) => (
+              <div key={s.label} className="rounded-lg border border-border px-4 py-3">
+                <p className="font-mono text-xl font-semibold tabular-nums" data-numeric>{s.value}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">{s.label}</p>
+              </div>
+            ))}
+          </div>
           <p className="max-w-sm text-sm text-muted-foreground">
-            <span className="font-mono tabular-nums text-foreground" data-numeric>{result.inserted}</span> new contact
-            {result.inserted === 1 ? '' : 's'} added
-            {result.alreadyExisted > 0 && `, ${result.alreadyExisted} already existed and were skipped`}
-            {result.rejectedCount > 0 && `, ${result.rejectedCount} rejected`}.
-            This mapping is now saved — the next import for this org starts pre-filled with it.
+            {result.rejectedCount > 0 && `${result.rejectedCount} row${result.rejectedCount === 1 ? '' : 's'} rejected. `}
+            This mapping is now saved — the next import for this business starts pre-filled with it.
           </p>
           <div className="mt-2 flex items-center gap-3">
             <Button variant="ghost" onClick={reset}>Import another file</Button>

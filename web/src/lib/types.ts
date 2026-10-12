@@ -1104,6 +1104,7 @@ export interface GrowImportInspectResponse {
   suggestedMapping: GrowImportMapping;
   hasSavedProfile: boolean;
   usedSavedProfile: boolean;
+  autoDetected: boolean;
   note: string | null;
 }
 
@@ -1130,12 +1131,16 @@ export interface GrowImportSummary {
 
 export interface GrowImportPreviewResponse extends GrowImportSummary {
   note: string | null;
+  dedupedExisting: number;
+  skippedAlreadyInAnotherCampaign: number;
 }
 
 export interface GrowImportCommitResponse extends GrowImportSummary {
   note?: string | null;
-  inserted: number;
-  alreadyExisted: number;
+  created: number;
+  dedupedExisting: number;
+  skippedAlreadyInAnotherCampaign: number;
+  enrolled: number;
 }
 
 // ---- Admin ---------------------------------------------------------------

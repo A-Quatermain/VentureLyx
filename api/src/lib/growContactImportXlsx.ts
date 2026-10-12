@@ -1,5 +1,5 @@
 /**
- * Venturelyx :: Grow contacts import — file ingestion (CSV + XLSX).
+ * Venturelyx :: Grow contacts import — file ingestion (CSV + XLSX + HTML).
  *
  * Turns an uploaded file's raw bytes into {headers, records} — records
  * keyed by the file's OWN column names, ready for
@@ -15,9 +15,58 @@
  *      usable — a common case: a file with an .xlsx extension that is
  *      actually plain CSV/TSV text someone renamed): falls back to
  *      treating the raw bytes as CSV text.
+ *
+ * Checked BEFORE either of those, regardless of filename extension: some
+ * real-world exports (Florida DOE's private-school directory among them)
+ * are an HTML <table> saved with a .xls extension, not a real spreadsheet
+ * at all. SheetJS's format sniffer sees the leading `<` byte and routes it
+ * to its SpreadsheetML (Excel XML) parser, not HTML — wrong format, so it
+ * throws (or worse, half-parses garbage) rather than reading the table.
+ * Content-sniffed, not extension-based, since the extension is exactly
+ * what's lying here.
  */
 import * as XLSX from 'xlsx';
 import { parseCsvRows, rowsToRecords, type RecordEntry } from './growContactImport.js';
+
+function looksLikeHtml(buffer: Buffer): boolean {
+  const head = buffer.subarray(0, 1024).toString('utf8').trim().toLowerCase();
+  return head.startsWith('<!doctype html') || head.startsWith('<html') || /^<\?xml[\s\S]{0,200}<html/i.test(head) || head.startsWith('<table');
+}
+
+const ENTITIES: Record<string, string> = {
+  '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&apos;': "'",
+};
+
+function decodeEntities(s: string): string {
+  return s.replace(/&(nbsp|amp|lt|gt|quot|#39|apos);/gi, (m) => ENTITIES[m.toLowerCase()] ?? m);
+}
+
+function cellText(cellHtml: string): string {
+  return decodeEntities(
+    cellHtml
+      .replace(/<(br|p|div)\b[^>]*>/gi, ' ')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' '),
+  ).trim();
+}
+
+/** Parses the first <table> in an HTML document — "the first table", per
+ *  the brief, not "the biggest" (pickBestSheet's rule for real
+ *  spreadsheets): an HTML export realistically has at most one real data
+ *  table, with any others being layout chrome around it. */
+function ingestHtmlTable(html: string): IngestResult {
+  const tableMatch = html.match(/<table[\s\S]*?<\/table>/i);
+  if (!tableMatch) {
+    return { headers: [], records: [], note: 'This looked like an HTML file, but no <table> was found in it.' };
+  }
+  const rowMatches = tableMatch[0].match(/<tr[\s\S]*?<\/tr>/gi) ?? [];
+  const aoa: string[][] = rowMatches.map((rowHtml) => {
+    const cellMatches = rowHtml.match(/<t[dh][\s\S]*?<\/t[dh]>/gi) ?? [];
+    return cellMatches.map(cellText);
+  });
+  const { headers, records } = rowsToRecords(aoa);
+  return { headers, records, note: 'Parsed as an HTML table (the file was HTML despite its extension).' };
+}
 
 export interface IngestResult {
   headers: string[];
@@ -69,6 +118,9 @@ function ingestCsvText(text: string, note: string | null): IngestResult {
 }
 
 export function ingestFile(buffer: Buffer, filename: string): IngestResult {
+  if (looksLikeHtml(buffer)) {
+    return ingestHtmlTable(buffer.toString('utf8'));
+  }
   if (isCsvName(filename)) {
     return ingestCsvText(buffer.toString('utf8'), null);
   }

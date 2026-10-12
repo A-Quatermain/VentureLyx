@@ -27,6 +27,8 @@
 //   is_free_provider, enrollment, tier, is_chain, domain_rank,
 //   fes_eo, ftc, fes_ua, pep, non_profit, religious,
 //   suppress_reason, sendable   (control fields — never stored)
+//   grade_levels, denomination  (optional, routed into attrs jsonb — see
+//     GrowContactRow.attrs)
 
 export interface GrowContactRow {
   org_id: string;
@@ -53,6 +55,16 @@ export interface GrowContactRow {
   pep: boolean | null;
   non_profit: boolean | null;
   religious: boolean | null;
+  /** Fields with no dedicated typed column — currently grade_levels and
+   *  denomination (growContactImportMapping.ts's OrgField list), routed
+   *  here instead of growing the typed-column list for data that's
+   *  descriptive metadata, not something queries filter/group on. Never
+   *  populated by scripts/import-contacts.js's fixed CSV shape (always
+   *  {} there) — only the upload endpoint's mapped-file path can produce
+   *  non-empty attrs. NOT in INSERT_COLUMNS: the upload endpoint's own
+   *  INSERT appends this column itself (needs JSON.stringify for jsonb),
+   *  so the CLI script sharing INSERT_COLUMNS is unaffected either way. */
+  attrs: Record<string, string>;
 }
 
 export interface Rejection {
@@ -191,6 +203,19 @@ export const INSERT_COLUMNS = [
   'fes_eo', 'ftc', 'fes_ua', 'pep', 'non_profit', 'religious',
 ] as const;
 
+// The only two OrgFields (growContactImportMapping.ts) with no dedicated
+// typed column — see GrowContactRow.attrs's own comment for why.
+const ATTRS_KEYS = ['grade_levels', 'denomination'] as const;
+
+function buildAttrs(record: Record<string, string>): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  for (const key of ATTRS_KEYS) {
+    const value = trimOrNull(record[key]);
+    if (value) attrs[key] = value;
+  }
+  return attrs;
+}
+
 export function toContact(record: Record<string, string>, org: string): GrowContactRow {
   const email = requireNonEmpty(record.email, 'email');
   if (!EMAIL_RE.test(email)) {
@@ -238,6 +263,7 @@ export function toContact(record: Record<string, string>, org: string): GrowCont
     pep: parseStrictBool(record.pep, 'pep', { nullable: true }),
     non_profit: parseStrictBool(record.non_profit, 'non_profit', { nullable: true }),
     religious: parseStrictBool(record.religious, 'religious', { nullable: true }),
+    attrs: buildAttrs(record),
   };
 }
 

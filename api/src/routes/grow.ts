@@ -23,10 +23,10 @@ import {
 } from '../lib/ai.js';
 import { INSERT_COLUMNS, processRecords, summarize } from '../lib/growContactImport.js';
 import {
-  applyMapping, guessMapping, mappingMatchesHeaders, type MappingConfig,
+  applyMapping, guessMapping, mappingMatchesHeaders, matchesKnownTemplate, type MappingConfig,
 } from '../lib/growContactImportMapping.js';
 import { ingestFile } from '../lib/growContactImportXlsx.js';
-import { enrollAllContacts } from '../lib/growEnroll.js';
+import { enrollContacts } from '../lib/growEnroll.js';
 import type { Querier } from '../lib/db.js';
 import {
   checkTemplateTokens, firstUnrenderedPlaceholder, getSenderProfile, GROW_BASE_URL, GROW_BASE_URL_USABLE,
@@ -1015,7 +1015,7 @@ export default async function growRoutes(app: FastifyInstance) {
 
     return req.db(async (q) => {
       await assertCampaignExists(q, id);
-      const result = await enrollAllContacts(q, id);
+      const result = await enrollContacts(q, id);
       await audit(q, {
         orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_campaigns.enroll',
         entityType: 'grow_campaigns', entityId: id, ip: req.ip, diff: result,
@@ -2279,16 +2279,28 @@ export default async function growRoutes(app: FastifyInstance) {
     });
   });
 
-  // ---- Contacts import (CSV/XLSX upload) ---------------------------------------
+  // ---- Contacts import (CSV/XLSX/HTML upload) ---------------------------------------
   //
   // Three-step flow the mapping screen drives: inspect (headers + a
-  // suggested mapping) -> preview (dry run against the finalized mapping,
-  // no write) -> commit (inserts, and saves the mapping as this org's
-  // reusable profile). Every accepted row still goes through
+  // suggested mapping, or autoDetected=true to skip straight past the
+  // mapping screen for a recognized header set — growContactImportMapping.ts's
+  // matchesKnownTemplate()) -> preview (dry run against the finalized
+  // mapping and a REQUIRED target campaign, no write) -> commit (inserts,
+  // enrolls just this batch into that campaign, saves the mapping as this
+  // org's reusable profile). Every accepted row still goes through
   // growContactImport.ts's toContact()/processRecords() completely
   // unchanged — the files in this section only turn an arbitrary upload
   // into the canonical record shape that function already expects, the
   // same as scripts/import-contacts.js's own known-shape CSV always was.
+  //
+  // Campaign-scoping rule, per the brief: contacts are created/deduped at
+  // org level same as always (ON CONFLICT (org_id,email) DO NOTHING), but
+  // an enrollment is only ever created for the one chosen campaign, and
+  // never for a contact already actively enrolled in a DIFFERENT running
+  // campaign (lib/growEnroll.ts's skippedActiveElsewhere) — a contact is
+  // never in two active campaigns at once.
+
+  const campaignIdField = z.object({ campaignId: z.string().uuid() });
 
   app.post('/grow/contacts/import/inspect', async (req) => {
     req.requireRole('staff');
@@ -2314,6 +2326,10 @@ export default async function growRoutes(app: FastifyInstance) {
         // never claims "using your saved mapping" for a suggestion it isn't.
         hasSavedProfile: !!saved,
         usedSavedProfile: savedUsable,
+        // True for a recognized header set (FLDOE today) — the UI can skip
+        // the mapping screen and go straight to preview with suggestedMapping,
+        // still with an escape hatch back to manual mapping if staff want one.
+        autoDetected: matchesKnownTemplate(headers),
         note,
       };
     });
@@ -2322,43 +2338,89 @@ export default async function growRoutes(app: FastifyInstance) {
   app.post('/grow/contacts/import/preview', async (req) => {
     req.requireRole('staff');
     const { buffer, filename, fields } = await readMultipartUpload(req);
+    const { campaignId } = campaignIdField.parse(fields);
     const mapping = parseMappingField(fields.mapping);
     const { records, note } = ingestFile(buffer, filename);
     const expanded = applyMapping(records, mapping);
     const { accepted, rejections } = processRecords(expanded, req.ctx.orgId!);
-    return { ...summarize({ totalRows: expanded.length, accepted, rejections }), note };
+    const summary = summarize({ totalRows: expanded.length, accepted, rejections });
+
+    return req.db(async (q) => {
+      await assertCampaignExists(q, campaignId);
+      const emails = accepted.map((c) => c.email);
+      // Dry-run estimates only — a brand-new contact (not yet in
+      // grow_contacts) can't already be enrolled anywhere, so these only
+      // ever count against contacts that already exist for this org.
+      const existingRow = emails.length === 0 ? { n: 0 } : await q.one<{ n: string | number }>(
+        `SELECT COUNT(*) AS n FROM grow_contacts WHERE email = ANY($1::text[])`,
+        [emails],
+      );
+      const skippedRow = emails.length === 0 ? { n: 0 } : await q.one<{ n: string | number }>(
+        `SELECT COUNT(*) AS n FROM grow_contacts c
+          WHERE c.email = ANY($1::text[])
+            AND NOT EXISTS (SELECT 1 FROM grow_enrollments e WHERE e.campaign_id = $2 AND e.contact_id = c.id)
+            AND EXISTS (
+                  SELECT 1 FROM grow_enrollments e2 JOIN grow_campaigns cp2 ON cp2.id = e2.campaign_id
+                   WHERE e2.contact_id = c.id AND e2.campaign_id <> $2
+                     AND e2.state = 'active' AND cp2.status = 'running')`,
+        [emails, campaignId],
+      );
+      return {
+        ...summary,
+        note,
+        dedupedExisting: Number(existingRow?.n ?? 0),
+        skippedAlreadyInAnotherCampaign: Number(skippedRow?.n ?? 0),
+      };
+    });
   });
 
   app.post('/grow/contacts/import/commit', async (req) => {
     req.requireRole('staff');
     const sess = req.requireAuth();
     const { buffer, filename, fields } = await readMultipartUpload(req);
+    const { campaignId } = campaignIdField.parse(fields);
     const mapping = parseMappingField(fields.mapping);
     const { records } = ingestFile(buffer, filename);
     const expanded = applyMapping(records, mapping);
 
     return req.db(async (q) => {
+      await assertCampaignExists(q, campaignId);
       const { accepted, rejections } = processRecords(expanded, req.ctx.orgId!);
       const summary = summarize({ totalRows: expanded.length, accepted, rejections });
 
-      let inserted = 0;
+      const INSERT_COLUMNS_WITH_ATTRS = [...INSERT_COLUMNS, 'attrs'] as const;
+      let created = 0;
       const CHUNK = 200;
       for (let i = 0; i < accepted.length; i += CHUNK) {
         const chunk = accepted.slice(i, i + CHUNK);
         const values: unknown[] = [];
         const rowPlaceholders = chunk.map((contact, ri) => {
-          const base = ri * INSERT_COLUMNS.length;
+          const base = ri * INSERT_COLUMNS_WITH_ATTRS.length;
           const c = contact as unknown as Record<string, unknown>;
-          INSERT_COLUMNS.forEach((col) => values.push(c[col]));
-          return `(${INSERT_COLUMNS.map((_, ci) => `$${base + ci + 1}`).join(',')})`;
+          INSERT_COLUMNS_WITH_ATTRS.forEach((col) => values.push(col === 'attrs' ? JSON.stringify(c.attrs ?? {}) : c[col]));
+          return `(${INSERT_COLUMNS_WITH_ATTRS.map((_, ci) => `$${base + ci + 1}`).join(',')})`;
         }).join(',\n');
-        inserted += await q.exec(
-          `INSERT INTO grow_contacts (${INSERT_COLUMNS.join(',')})
+        created += await q.exec(
+          `INSERT INTO grow_contacts (${INSERT_COLUMNS_WITH_ATTRS.join(',')})
            VALUES ${rowPlaceholders}
            ON CONFLICT (org_id, email) DO NOTHING`,
           values,
         );
       }
+
+      // Every accepted email, new or deduped against an existing row —
+      // this is "this batch" for enrollment purposes, not "every org
+      // contact" (that's the separate bulk /grow/campaigns/:id/enroll
+      // action, lib/growEnroll.ts's own contactIds=null path).
+      const emails = accepted.map((c) => c.email);
+      const batchContacts = emails.length === 0 ? [] : await q.rows<{ id: string }>(
+        `SELECT id FROM grow_contacts WHERE email = ANY($1::text[])`,
+        [emails],
+      );
+      const importBatch = `${filename} · ${new Date().toISOString()}`;
+      const enrollResult = emails.length === 0
+        ? { enrolled: 0, alreadyEnrolled: 0, suppressed: 0, skippedActiveElsewhere: 0, totalContacts: 0 }
+        : await enrollContacts(q, campaignId, { contactIds: batchContacts.map((c) => c.id), importBatch });
 
       // "A reusable profile per org" — upsert, not a growing library of
       // named profiles nobody asked for (see 010_grow_import_profiles.sql).
@@ -2374,12 +2436,19 @@ export default async function growRoutes(app: FastifyInstance) {
         orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_contacts.import',
         entityType: 'grow_contacts', ip: req.ip,
         diff: {
-          filename, format: mapping.format, inserted,
+          filename, format: mapping.format, campaignId, created,
           accepted: accepted.length, rejected: rejections.length,
+          enrolled: enrollResult.enrolled, skippedAlreadyInAnotherCampaign: enrollResult.skippedActiveElsewhere,
         },
       });
 
-      return { ...summary, inserted, alreadyExisted: accepted.length - inserted };
+      return {
+        ...summary,
+        created,
+        dedupedExisting: accepted.length - created,
+        skippedAlreadyInAnotherCampaign: enrollResult.skippedActiveElsewhere,
+        enrolled: enrollResult.enrolled,
+      };
     });
   });
 

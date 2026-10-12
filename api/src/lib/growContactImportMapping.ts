@@ -12,29 +12,32 @@
  */
 import type { RecordEntry } from './growContactImport.js';
 
-export type PersonField = 'email' | 'first_name' | 'contact_name' | 'role' | 'phone' | 'contact_rank';
+export type PersonField = 'email' | 'first_name' | 'last_name' | 'contact_name' | 'role' | 'phone' | 'contact_rank';
 export type OrgField =
   | 'external_id' | 'entity_name' | 'region' | 'city' | 'state' | 'tier' | 'enrollment'
   | 'is_chain' | 'domain_rank' | 'is_free_provider'
   | 'fes_eo' | 'ftc' | 'fes_ua' | 'pep' | 'non_profit' | 'religious'
+  | 'grade_levels' | 'denomination'
   | 'recipient_domain' | 'suppress_reason' | 'sendable';
 
-export const PERSON_FIELDS: PersonField[] = ['email', 'first_name', 'contact_name', 'role', 'phone', 'contact_rank'];
+export const PERSON_FIELDS: PersonField[] = ['email', 'first_name', 'last_name', 'contact_name', 'role', 'phone', 'contact_rank'];
 export const ORG_FIELDS: OrgField[] = [
   'external_id', 'entity_name', 'region', 'city', 'state', 'tier', 'enrollment',
   'is_chain', 'domain_rank', 'is_free_provider',
   'fes_eo', 'ftc', 'fes_ua', 'pep', 'non_profit', 'religious',
+  'grade_levels', 'denomination',
   'recipient_domain', 'suppress_reason', 'sendable',
 ];
 
 export const FIELD_LABELS: Record<PersonField | OrgField, string> = {
-  email: 'Email', first_name: 'First name', contact_name: 'Contact name', role: 'Role',
+  email: 'Email', first_name: 'First name', last_name: 'Last name', contact_name: 'Contact name', role: 'Role',
   phone: 'Phone', contact_rank: 'Contact rank',
   external_id: 'External ID', entity_name: 'Organization name', region: 'Region', city: 'City',
   state: 'State', tier: 'Tier', enrollment: 'Enrollment',
   is_chain: 'Is chain (multi-location)', domain_rank: 'Domain rank', is_free_provider: 'Is free provider',
   fes_eo: 'FES-EO scholarship', ftc: 'FTC scholarship', fes_ua: 'FES-UA scholarship', pep: 'PEP scholarship',
   non_profit: 'Non-profit', religious: 'Religious affiliation',
+  grade_levels: 'Grade levels (stored as metadata)', denomination: 'Denomination (stored as metadata)',
   recipient_domain: 'Recipient domain (derived from email if unmapped)',
   suppress_reason: 'Suppression reason (present = never imported)',
   sendable: "Sendable flag (\"False\" = never imported)",
@@ -95,10 +98,17 @@ function buildSlotRecord(
 
   record.email = emailValue;
   record.first_name = cell(row, slot.fields.first_name);
-  record.contact_name = cell(row, slot.fields.contact_name);
   record.role = cell(row, slot.fields.role);
   record.phone = cell(row, slot.fields.phone);
   record.contact_rank = slot.rank != null ? String(slot.rank) : cell(row, slot.fields.contact_rank);
+
+  // contact_name (full name) synthesized from first+last when the file
+  // carries them as separate columns and has no full-name column of its
+  // own mapped — a mapped contact_name column always wins outright.
+  const mappedContactName = cell(row, slot.fields.contact_name).trim();
+  const lastNameValue = cell(row, slot.fields.last_name).trim();
+  record.contact_name = mappedContactName
+    || [record.first_name.trim(), lastNameValue].filter(Boolean).join(' ');
 
   // recipient_domain defaults to the email's own domain when nothing was
   // mapped (or the mapped column is blank for this row) — most uploaded
@@ -149,6 +159,7 @@ function normalize(s: string): string {
 const ALIASES: Record<PersonField | OrgField, string[]> = {
   email: ['email', 'email address', 'e mail', 'contact email', 'work email'],
   first_name: ['first name', 'firstname', 'fname', 'given name'],
+  last_name: ['last name', 'lastname', 'lname', 'surname', 'family name'],
   contact_name: ['contact name', 'full name', 'name'],
   role: ['role', 'title', 'job title', 'position'],
   phone: ['phone', 'phone number', 'telephone', 'tel', 'mobile'],
@@ -172,6 +183,8 @@ const ALIASES: Record<PersonField | OrgField, string[]> = {
   pep: ['pep'],
   non_profit: ['non profit', 'nonprofit', '501c3'],
   religious: ['religious'],
+  grade_levels: ['grade levels', 'grades', 'grade level', 'grades served'],
+  denomination: ['denomination', 'religious denomination', 'affiliation'],
   recipient_domain: ['recipient domain', 'domain', 'email domain'],
   suppress_reason: ['suppress reason', 'suppression reason', 'do not contact reason', 'dnc reason'],
   sendable: ['sendable', 'ok to send', 'opt in', 'optin'],
@@ -234,4 +247,33 @@ export function guessMapping(headers: string[]): MappingConfig {
     if (h) { shared[field] = h; used.add(h); }
   }
   return { format: 'long', shared, slots: [{ label: 'Contact', rank: null, fields }] };
+}
+
+// ---- Known templates ---------------------------------------------------
+// A specific, named header set that skips the manual mapping screen
+// entirely when every one of its fields is found (by the same alias
+// matching guessMapping already uses) — not "skip mapping whenever
+// confident", which would be a much broader, less predictable rule. FLDOE
+// (Florida private-school directory) exports are the first case: a fixed
+// field set, uploaded repeatedly, so re-confirming the mapping by hand
+// every time is pure friction once it's known to be right.
+const KNOWN_TEMPLATES: Record<string, (PersonField | OrgField)[]> = {
+  fldoe: [
+    'email', 'first_name', 'last_name', 'entity_name', 'city', 'state',
+    'region' /* county */, 'phone', 'grade_levels', 'denomination', 'contact_rank', 'tier',
+  ],
+};
+
+/** True when every field a known template needs can be found in these
+ *  headers — guessMapping() is expected to resolve all of them correctly
+ *  at that point, so the caller can skip straight to preview. */
+export function matchesKnownTemplate(headers: string[]): boolean {
+  return Object.values(KNOWN_TEMPLATES).some((fields) => {
+    const used = new Set<string>();
+    return fields.every((field) => {
+      const h = findHeaderFor(headers, field, used);
+      if (h) used.add(h);
+      return !!h;
+    });
+  });
 }
