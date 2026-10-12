@@ -24,6 +24,9 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withPlatform, type Querier } from '../lib/db.js';
 import { requireStaffOrNotFound } from '../lib/staffGuard.js';
+import { encryptSecret } from '../lib/auth.js';
+import { invalidatePaymentGateCache, HttpError } from '../plugins/context.js';
+import { invalidateSmtpCache } from '../lib/email.js';
 
 async function auditAdmin(
   q: Querier, req: FastifyRequest, action: string, diff?: unknown,
@@ -280,5 +283,111 @@ export default async function adminRoutes(app: FastifyInstance) {
 
       return updated;
     });
+  });
+
+  // ---- Platform settings ---------------------------------------------------
+  // Operational toggles only — dollar amounts still come from Stripe via
+  // lookup_key, never duplicated here (platform_settings table's own
+  // header). payment_gate_enabled: db/migrations/025's kill switch.
+
+  app.get('/admin/settings/payment-gate', async (req, reply) => {
+    if (!requireStaffOrNotFound(req, reply)) return;
+    return withPlatform(async (q) => {
+      const row = await q.one<{ value: boolean }>(
+        `SELECT value FROM platform_settings WHERE key = 'payment_gate_enabled'`,
+      );
+      return { enabled: row?.value ?? false };
+    });
+  });
+
+  app.patch('/admin/settings/payment-gate', async (req, reply) => {
+    if (!requireStaffOrNotFound(req, reply)) return;
+    const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+
+    await withPlatform(async (q) => {
+      await q.exec(
+        `INSERT INTO platform_settings (key, value, updated_by, updated_at)
+         VALUES ('payment_gate_enabled', $1::jsonb, $2, now())
+         ON CONFLICT (key) DO UPDATE SET value = $1::jsonb, updated_by = $2, updated_at = now()`,
+        [JSON.stringify(enabled), req.session!.user_id],
+      );
+      await auditAdmin(q, req, 'admin.settings.payment_gate.update', { enabled });
+    });
+    invalidatePaymentGateCache();
+    return { ok: true, enabled };
+  });
+
+  // SMTP. The password is write-only through this API — GET never returns
+  // it, only passwordConfigured, same rule as the BYO AI provider keys
+  // (routes/settings.ts's own comment explains why).
+  app.get('/admin/settings/smtp', async (req, reply) => {
+    if (!requireStaffOrNotFound(req, reply)) return;
+    return withPlatform(async (q) => {
+      const row = await q.one<{
+        host: string | null; port: number; username: string | null;
+        from_address: string | null; from_name: string | null;
+        has_password: boolean;
+      }>(
+        `SELECT host, port, username, from_address, from_name,
+                (credential_enc IS NOT NULL) AS has_password
+           FROM platform_smtp_config WHERE id = 1`,
+      );
+      return {
+        host: row?.host ?? null,
+        port: row?.port ?? 465,
+        username: row?.username ?? null,
+        fromAddress: row?.from_address ?? null,
+        fromName: row?.from_name ?? null,
+        passwordConfigured: row?.has_password ?? false,
+      };
+    });
+  });
+
+  const smtpInput = z.object({
+    host: z.string().trim().min(1).max(255),
+    port: z.number().int().min(1).max(65535).default(465),
+    username: z.string().trim().max(255).nullable().optional(),
+    password: z.string().trim().min(1).max(500).optional(), // omit to leave the existing password untouched
+    fromAddress: z.string().trim().email(),
+    fromName: z.string().trim().min(1).max(200),
+  });
+
+  app.put('/admin/settings/smtp', async (req, reply) => {
+    if (!requireStaffOrNotFound(req, reply)) return;
+    const body = smtpInput.parse(req.body);
+
+    await withPlatform(async (q) => {
+      if (body.password) {
+        const { enc, iv, tag } = encryptSecret(body.password);
+        await q.exec(
+          `INSERT INTO platform_smtp_config
+             (id, host, port, username, from_address, from_name, credential_enc, credential_iv, credential_tag, updated_by, updated_at)
+           VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9, now())
+           ON CONFLICT (id) DO UPDATE SET
+             host = $1, port = $2, username = $3, from_address = $4, from_name = $5,
+             credential_enc = $6, credential_iv = $7, credential_tag = $8,
+             updated_by = $9, updated_at = now()`,
+          [body.host, body.port, body.username ?? null, body.fromAddress, body.fromName, enc, iv, tag, req.session!.user_id],
+        );
+      } else {
+        // No password in this request — leave whatever's already encrypted
+        // alone, only touch the non-secret fields. Fails loudly (not a
+        // silent no-op) if nothing has ever been saved, since there's no
+        // existing password to keep.
+        const updated = await q.exec(
+          `UPDATE platform_smtp_config SET
+             host = $1, port = $2, username = $3, from_address = $4, from_name = $5,
+             updated_by = $6, updated_at = now()
+           WHERE id = 1`,
+          [body.host, body.port, body.username ?? null, body.fromAddress, body.fromName, req.session!.user_id],
+        );
+        if (updated === 0) {
+          throw new HttpError(400, 'Set a password the first time you configure SMTP.', 'password_required');
+        }
+      }
+      await auditAdmin(q, req, 'admin.settings.smtp.update', { host: body.host, port: body.port, passwordChanged: !!body.password });
+    });
+    invalidateSmtpCache();
+    return { ok: true };
   });
 }

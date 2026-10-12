@@ -16,23 +16,77 @@
  * nobody is forced to catch.
  */
 import nodemailer from 'nodemailer';
-import type { Querier } from './db.js';
+import type { Transporter } from 'nodemailer';
+import { withPlatform, type Querier } from './db.js';
+import { decryptSecret } from './auth.js';
 
-const SMTP_HOST = process.env.SMTP_HOST;
-const SMTP_PORT = Number(process.env.SMTP_PORT ?? 465);
-const SMTP_USER = process.env.SMTP_USER;
-const SMTP_PASSWORD = process.env.SMTP_PASSWORD;
-const FROM_ADDRESS = process.env.EMAIL_FROM_ADDRESS || 'no-reply@venturelyx.com';
-const FROM_NAME = process.env.EMAIL_FROM_NAME || 'Venturelyx';
+// Env vars remain a working bootstrap fallback (so an existing
+// docker-compose deploy keeps sending mail with no admin action needed),
+// but db/migrations/026_smtp_admin_config.sql's platform_smtp_config table
+// takes precedence the moment staff save anything through
+// /admin/settings/smtp — see resolveTransport() below.
+const ENV_FROM_ADDRESS = process.env.EMAIL_FROM_ADDRESS || 'no-reply@venturelyx.com';
+const ENV_FROM_NAME = process.env.EMAIL_FROM_NAME || 'Venturelyx';
 
-const transporter = SMTP_HOST
-  ? nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: SMTP_PORT,
-      secure: SMTP_PORT === 465,
-      auth: SMTP_USER ? { user: SMTP_USER, pass: SMTP_PASSWORD } : undefined,
-    })
-  : null;
+interface ResolvedSmtp {
+  transporter: Transporter | null;
+  fromAddress: string;
+  fromName: string;
+}
+
+// Cached briefly, not re-read on every send — this changes only when
+// staff edit it through the admin UI, not per-request. invalidateSmtpCache()
+// (called by the PUT /admin/settings/smtp route) clears it immediately so
+// a saved change takes effect on the very next send, not after the TTL.
+let cache: { resolved: ResolvedSmtp; expiresAt: number } | null = null;
+const CACHE_TTL_MS = 30_000;
+
+export function invalidateSmtpCache(): void {
+  cache = null;
+}
+
+async function resolveTransport(): Promise<ResolvedSmtp> {
+  if (cache && cache.expiresAt > Date.now()) return cache.resolved;
+
+  const row = await withPlatform((q) =>
+    q.one<{
+      host: string | null; port: number; username: string | null;
+      from_address: string | null; from_name: string | null;
+      credential_enc: Buffer | null; credential_iv: Buffer | null; credential_tag: Buffer | null;
+    }>(`SELECT host, port, username, from_address, from_name, credential_enc, credential_iv, credential_tag
+          FROM platform_smtp_config WHERE id = 1`),
+  );
+
+  let resolved: ResolvedSmtp;
+  if (row?.host) {
+    const password = row.credential_enc && row.credential_iv && row.credential_tag
+      ? decryptSecret(row.credential_enc, row.credential_iv, row.credential_tag)
+      : undefined;
+    resolved = {
+      transporter: nodemailer.createTransport({
+        host: row.host, port: row.port, secure: row.port === 465,
+        auth: row.username ? { user: row.username, pass: password } : undefined,
+      }),
+      fromAddress: row.from_address || ENV_FROM_ADDRESS,
+      fromName: row.from_name || ENV_FROM_NAME,
+    };
+  } else if (process.env.SMTP_HOST) {
+    const port = Number(process.env.SMTP_PORT ?? 465);
+    resolved = {
+      transporter: nodemailer.createTransport({
+        host: process.env.SMTP_HOST, port, secure: port === 465,
+        auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD } : undefined,
+      }),
+      fromAddress: ENV_FROM_ADDRESS,
+      fromName: ENV_FROM_NAME,
+    };
+  } else {
+    resolved = { transporter: null, fromAddress: ENV_FROM_ADDRESS, fromName: ENV_FROM_NAME };
+  }
+
+  cache = { resolved, expiresAt: Date.now() + CACHE_TTL_MS };
+  return resolved;
+}
 
 export type EmailTemplate =
   | 'password_reset' | 'email_verification' | 'org_invite'
@@ -58,15 +112,16 @@ export interface SendEmailResult {
  *  callers already have one open (a webhook handler's withTenant, say) and
  *  this never opens a second, competing transaction of its own. */
 export async function sendEmail(q: Querier, input: SendEmailInput): Promise<SendEmailResult> {
+  const { transporter, fromAddress, fromName } = await resolveTransport();
   if (!transporter) {
-    const error = 'SMTP_HOST is not configured';
+    const error = 'SMTP is not configured — set it in Admin → Settings or via SMTP_HOST';
     await logEmail(q, input, 'failed', null, error);
     return { ok: false, error };
   }
 
   try {
     const info = await transporter.sendMail({
-      from: `"${FROM_NAME}" <${FROM_ADDRESS}>`,
+      from: `"${fromName}" <${fromAddress}>`,
       to: input.to,
       subject: input.subject,
       html: input.html,

@@ -60,6 +60,12 @@ class HttpError extends Error {
 let gateCache: { enabled: boolean; expiresAt: number } | null = null;
 const GATE_CACHE_TTL_MS = 30_000;
 
+/** Called by PATCH /admin/settings/payment-gate so a toggle takes effect
+ *  on the very next request, not after the cache TTL. */
+export function invalidatePaymentGateCache(): void {
+  gateCache = null;
+}
+
 async function isPaymentGateEnabled(): Promise<boolean> {
   if (gateCache && gateCache.expiresAt > Date.now()) return gateCache.enabled;
   const row = await withPlatform((q) =>
