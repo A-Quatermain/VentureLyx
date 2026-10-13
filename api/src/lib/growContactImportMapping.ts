@@ -76,6 +76,53 @@ function cell(row: Record<string, string>, column: string | null | undefined): s
   return row[column] ?? '';
 }
 
+// ---- Lenient coercion for optional fields (UI upload path only) -----------
+// growContactImport.ts's toContact()/parseStrictBool()/parseIntStrict()
+// stay genuinely strict — that's shared unchanged with scripts/import-
+// contacts.js's known-normalized-shape CSV, where a malformed value really
+// should flag for review. This file (applyMapping/buildSlotRecord) is the
+// UI upload's own layer on top, never touched by the CLI, so it's the
+// right place to coerce an arbitrary real-world file's messier values
+// BEFORE they ever reach the strict parser — matching the brief: for the
+// UI route, only a missing/invalid email should ever reject a row.
+
+const INT_RE = /^-?\d+$/;
+
+/** contact_rank is NOT NULL DEFAULT 1 in the DB and toContact() requires it
+ *  outright (no blank allowed) — an unparseable or missing value coerces to
+ *  '1' (the column's own default) rather than rejecting the whole contact
+ *  over what's usually just rank metadata, not identifying information. */
+function lenientRank(raw: string): string {
+  const v = raw.trim();
+  return INT_RE.test(v) ? v : '1';
+}
+
+/** enrollment/domain_rank are already nullable — blank already passes
+ *  through as null today; this only widens that to cover a genuinely
+ *  unparseable value ("N/A", "TBD") the same way, instead of rejecting. */
+function lenientNullableInt(raw: string): string {
+  const v = raw.trim();
+  return v === '' || INT_RE.test(v) ? v : '';
+}
+
+const YES_WORDS = new Set(['true', 'yes', 'y', '1']);
+const NO_WORDS = new Set(['false', 'no', 'n', '0', '']);
+
+/** yes/y/1 -> 'True', no/n/0/blank -> 'False', anything else unrecognized
+ *  ("Maybe", "N/A") -> null for a genuinely nullable boolean column, or
+ *  'False' (the column's own DEFAULT_WHEN_UNMAPPED value) for one that
+ *  isn't nullable — never a thrown rejection either way. */
+function lenientBool(raw: string, nullable: boolean): string {
+  const v = raw.trim().toLowerCase();
+  if (YES_WORDS.has(v)) return 'True';
+  if (NO_WORDS.has(v)) return 'False';
+  return nullable ? '' : 'False';
+}
+
+const NULLABLE_INT_ORG_FIELDS = new Set<OrgField>(['enrollment', 'domain_rank']);
+const NON_NULLABLE_BOOL_ORG_FIELDS = new Set<OrgField>(['is_free_provider', 'is_chain']);
+const NULLABLE_BOOL_ORG_FIELDS = new Set<OrgField>(['fes_eo', 'ftc', 'fes_ua', 'pep', 'non_profit', 'religious']);
+
 /** Builds the canonical record for one slot on one source row, or null if
  *  this slot has nothing in it for this row (wide format: a school with no
  *  second contact simply doesn't produce a second contact row). */
@@ -92,15 +139,18 @@ function buildSlotRecord(
 
   for (const field of ORG_FIELDS) {
     const column = mapping.shared[field];
-    const value = cell(row, column);
-    record[field] = !column && field in DEFAULT_WHEN_UNMAPPED ? DEFAULT_WHEN_UNMAPPED[field]! : value;
+    let value = !column && field in DEFAULT_WHEN_UNMAPPED ? DEFAULT_WHEN_UNMAPPED[field]! : cell(row, column);
+    if (NULLABLE_INT_ORG_FIELDS.has(field)) value = lenientNullableInt(value);
+    else if (NON_NULLABLE_BOOL_ORG_FIELDS.has(field)) value = lenientBool(value, false);
+    else if (NULLABLE_BOOL_ORG_FIELDS.has(field)) value = lenientBool(value, true);
+    record[field] = value;
   }
 
   record.email = emailValue;
   record.first_name = cell(row, slot.fields.first_name);
   record.role = cell(row, slot.fields.role);
   record.phone = cell(row, slot.fields.phone);
-  record.contact_rank = slot.rank != null ? String(slot.rank) : cell(row, slot.fields.contact_rank);
+  record.contact_rank = lenientRank(slot.rank != null ? String(slot.rank) : cell(row, slot.fields.contact_rank));
 
   // contact_name (full name) synthesized from first+last when the file
   // carries them as separate columns and has no full-name column of its
@@ -306,17 +356,17 @@ export function guessMapping(headers: string[]): MappingConfig {
   return { format: 'long', shared, slots: [{ label: 'Contact', rank: null, fields }] };
 }
 
-/** True when this mapping already satisfies every required field for its
- *  format, so the upload flow can skip straight to preview instead of
- *  showing the manual mapping screen — "only fall back to manual mapping
- *  when a required field truly can't be matched," per the brief. Wide
- *  format always shows the screen regardless: its column-grouping is a
- *  heuristic guess on top of guessMapping's own best-effort guess, and a
- *  silent wrong pairing there is a real-data-integrity risk a human
- *  should confirm, not a convenience worth automating away. */
+/** True when this mapping already satisfies every required field — every
+ *  slot has email resolved (for wide format, guessMapping() only ever
+ *  creates a slot FROM an email-like header to begin with, so this is
+ *  true by construction whenever wide format triggered at all) and every
+ *  required org field is resolved — so the upload flow can skip straight
+ *  to preview instead of showing the manual mapping screen. "Only fall
+ *  back to manual mapping when a required field truly can't be matched,"
+ *  per the brief — applies uniformly to both formats now. */
 export function canAutoAccept(mapping: MappingConfig): boolean {
-  if (mapping.format === 'wide') return false;
-  return REQUIRED_PERSON_FIELDS.every((f) => !!mapping.slots[0]?.fields[f])
+  return mapping.slots.length > 0
+    && mapping.slots.every((s) => REQUIRED_PERSON_FIELDS.every((f) => !!s.fields[f]))
     && REQUIRED_ORG_FIELDS.every((f) => !!mapping.shared[f]);
 }
 

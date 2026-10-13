@@ -2329,12 +2329,11 @@ export default async function growRoutes(app: FastifyInstance) {
         usedSavedProfile: savedUsable,
         // True whenever every required field is already resolved (exact
         // alias match, then a whole-word fuzzy fallback — "Director
-        // Email" etc. — guessMapping()'s own second pass) — the UI can
-        // skip the mapping screen and go straight to preview, still with
-        // an escape hatch back to manual mapping if the guess needs a
-        // fix. Only a required field genuinely not found falls back to
-        // showing the screen. Wide-format files always show it regardless
-        // (canAutoAccept's own doc comment explains why).
+        // Email" etc. — guessMapping()'s own second pass), long or wide
+        // format alike — the UI can skip the mapping screen and go
+        // straight to preview, still with an escape hatch back to manual
+        // mapping if the guess needs a fix. Only a required field
+        // genuinely not found falls back to showing the screen.
         autoDetected: canAutoAccept(suggestedMapping),
         note,
       };
