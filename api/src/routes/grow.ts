@@ -23,7 +23,7 @@ import {
 } from '../lib/ai.js';
 import { INSERT_COLUMNS, processRecords, summarize } from '../lib/growContactImport.js';
 import {
-  applyMapping, guessMapping, mappingMatchesHeaders, matchesKnownTemplate, type MappingConfig,
+  applyMapping, canAutoAccept, guessMapping, mappingMatchesHeaders, type MappingConfig,
 } from '../lib/growContactImportMapping.js';
 import { ingestFile } from '../lib/growContactImportXlsx.js';
 import { enrollContacts } from '../lib/growEnroll.js';
@@ -2315,21 +2315,27 @@ export default async function growRoutes(app: FastifyInstance) {
         `SELECT format, mapping FROM grow_import_profiles WHERE org_id = app.current_org()`,
       );
       const savedUsable = !!saved && mappingMatchesHeaders(saved.mapping, headers);
+      const suggestedMapping = savedUsable ? saved!.mapping : guessMapping(headers);
       return {
         headers,
         rowCount: records.length,
         sampleRows: records.slice(0, 5).map((r) => r.record),
-        suggestedMapping: savedUsable ? saved!.mapping : guessMapping(headers),
+        suggestedMapping,
         // hasSavedProfile: a profile exists for this org at all. usedSavedProfile:
         // that profile is what's actually behind suggestedMapping — false when a
         // saved profile exists but doesn't match this file's columns, so the UI
         // never claims "using your saved mapping" for a suggestion it isn't.
         hasSavedProfile: !!saved,
         usedSavedProfile: savedUsable,
-        // True for a recognized header set (FLDOE today) — the UI can skip
-        // the mapping screen and go straight to preview with suggestedMapping,
-        // still with an escape hatch back to manual mapping if staff want one.
-        autoDetected: matchesKnownTemplate(headers),
+        // True whenever every required field is already resolved (exact
+        // alias match, then a whole-word fuzzy fallback — "Director
+        // Email" etc. — guessMapping()'s own second pass) — the UI can
+        // skip the mapping screen and go straight to preview, still with
+        // an escape hatch back to manual mapping if the guess needs a
+        // fix. Only a required field genuinely not found falls back to
+        // showing the screen. Wide-format files always show it regardless
+        // (canAutoAccept's own doc comment explains why).
+        autoDetected: canAutoAccept(suggestedMapping),
         note,
       };
     });

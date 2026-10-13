@@ -199,6 +199,46 @@ function findHeaderFor(headers: string[], field: PersonField | OrgField, used: S
   return null;
 }
 
+// ---- Fuzzy fallback (long format only) ---------------------------------
+// Pass 1 above (findHeaderFor) is an exact match on the whole normalized
+// header — "Email", "email address" match, "Director Email" doesn't. This
+// second pass runs only for fields findHeaderFor couldn't resolve, and
+// only matches an alias as a WHOLE-WORD substring of the header (so
+// "Director Email" matches email's alias "email", but "emailed" or
+// "statement" never match "email"/"state" as a stray substring).
+//
+// Scoped to keep false positives rare: a multi-word alias ("school name",
+// "entity name") is safe to substring-match broadly — real headers rarely
+// contain an unrelated 2+ word phrase by coincidence. A bare single-word
+// alias is only allowed through FUZZY_SINGLE_WORD_FIELDS, a short, hand-
+// picked list of words distinctive enough not to collide with other
+// fields ("email", "phone") — contact_name's bare "name" is deliberately
+// NOT in this list, since "first name"/"last name"/"entity name" all
+// contain the word "name" and would false-positive onto it constantly.
+const FUZZY_SINGLE_WORD_FIELDS: Set<PersonField | OrgField> = new Set(['email', 'phone']);
+
+function containsWholeWordPhrase(headerWords: string[], phraseWords: string[]): boolean {
+  if (phraseWords.length === 0) return false;
+  for (let i = 0; i + phraseWords.length <= headerWords.length; i++) {
+    if (phraseWords.every((w, j) => headerWords[i + j] === w)) return true;
+  }
+  return false;
+}
+
+function fuzzyFindHeaderFor(headers: string[], field: PersonField | OrgField, used: Set<string>): string | null {
+  const aliases = ALIASES[field]
+    .map((a) => normalize(a).split(' ').filter(Boolean))
+    .filter((words) => words.length >= 2 || FUZZY_SINGLE_WORD_FIELDS.has(field))
+    .sort((a, b) => b.length - a.length); // longer/more specific phrases checked first
+
+  for (const h of headers) {
+    if (used.has(h)) continue;
+    const headerWords = normalize(h).split(' ').filter(Boolean);
+    if (aliases.some((phraseWords) => containsWholeWordPhrase(headerWords, phraseWords))) return h;
+  }
+  return null;
+}
+
 /** Best-effort suggestion the mapping screen starts from — the user can
  *  freely edit every dropdown afterward, so a wrong guess just costs a
  *  click, never a bad import. */
@@ -246,34 +286,37 @@ export function guessMapping(headers: string[]): MappingConfig {
     const h = findHeaderFor(headers, field, used);
     if (h) { shared[field] = h; used.add(h); }
   }
+
+  // Fuzzy fallback, long format only — wide format's own prefix-grouping
+  // heuristic (above) is already a guess layered on top of a guess, and
+  // compounding that with substring matching risks silently pairing the
+  // wrong person's phone to the wrong email. Long format has no such
+  // ambiguity: one slot, one set of columns.
+  for (const pf of PERSON_FIELDS) {
+    if (fields[pf]) continue;
+    const h = fuzzyFindHeaderFor(headers, pf, used);
+    if (h) { fields[pf] = h; used.add(h); }
+  }
+  for (const field of ORG_FIELDS) {
+    if (shared[field]) continue;
+    const h = fuzzyFindHeaderFor(headers, field, used);
+    if (h) { shared[field] = h; used.add(h); }
+  }
+
   return { format: 'long', shared, slots: [{ label: 'Contact', rank: null, fields }] };
 }
 
-// ---- Known templates ---------------------------------------------------
-// A specific, named header set that skips the manual mapping screen
-// entirely when every one of its fields is found (by the same alias
-// matching guessMapping already uses) — not "skip mapping whenever
-// confident", which would be a much broader, less predictable rule. FLDOE
-// (Florida private-school directory) exports are the first case: a fixed
-// field set, uploaded repeatedly, so re-confirming the mapping by hand
-// every time is pure friction once it's known to be right.
-const KNOWN_TEMPLATES: Record<string, (PersonField | OrgField)[]> = {
-  fldoe: [
-    'email', 'first_name', 'last_name', 'entity_name', 'city', 'state',
-    'region' /* county */, 'phone', 'grade_levels', 'denomination', 'contact_rank', 'tier',
-  ],
-};
-
-/** True when every field a known template needs can be found in these
- *  headers — guessMapping() is expected to resolve all of them correctly
- *  at that point, so the caller can skip straight to preview. */
-export function matchesKnownTemplate(headers: string[]): boolean {
-  return Object.values(KNOWN_TEMPLATES).some((fields) => {
-    const used = new Set<string>();
-    return fields.every((field) => {
-      const h = findHeaderFor(headers, field, used);
-      if (h) used.add(h);
-      return !!h;
-    });
-  });
+/** True when this mapping already satisfies every required field for its
+ *  format, so the upload flow can skip straight to preview instead of
+ *  showing the manual mapping screen — "only fall back to manual mapping
+ *  when a required field truly can't be matched," per the brief. Wide
+ *  format always shows the screen regardless: its column-grouping is a
+ *  heuristic guess on top of guessMapping's own best-effort guess, and a
+ *  silent wrong pairing there is a real-data-integrity risk a human
+ *  should confirm, not a convenience worth automating away. */
+export function canAutoAccept(mapping: MappingConfig): boolean {
+  if (mapping.format === 'wide') return false;
+  return REQUIRED_PERSON_FIELDS.every((f) => !!mapping.slots[0]?.fields[f])
+    && REQUIRED_ORG_FIELDS.every((f) => !!mapping.shared[f]);
 }
+
