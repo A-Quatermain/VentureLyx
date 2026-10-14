@@ -26,6 +26,12 @@
  * One deliberate addition beyond the ported original: start_date/end_date
  * (db/migrations/013_grow_campaign_dates.sql) are hard bounds here, exactly
  * as that migration's own comment says the real worker should treat them.
+ *
+ * Another: mailboxCapacity() below also excludes a mailbox whose sending
+ * domain has been disabled (db/migrations/028_grow_domain_enable.sql) —
+ * mailbox.status alone used to be the only gate, which meant pausing a
+ * domain (as opposed to every mailbox under it individually) did nothing
+ * to actually stop sends.
  */
 import type { Querier } from './db.js';
 import { getSenderProfile, render, renderSenderFields } from './growTemplate.js';
@@ -71,8 +77,9 @@ async function mailboxCapacity(q: Querier, campaign: GrowCampaign): Promise<Mail
                     = (now() AT TIME ZONE $1)::date
             ) AS sent_today
        FROM grow_mailboxes m
+       JOIN grow_sending_domains d ON d.id = m.domain_id
        LEFT JOIN grow_messages msg ON msg.mailbox_id = m.id
-      WHERE m.status IN ('warming','active')
+      WHERE m.status IN ('warming','active') AND d.enabled
       GROUP BY m.id`,
     [campaign.timezone],
   );

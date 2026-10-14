@@ -1184,15 +1184,16 @@ export default async function growRoutes(app: FastifyInstance) {
   // (grow_messages.status is never touched here, same boundary as the rest
   // of this file).
 
+  const DOMAIN_FIELDS = `id, domain, provider, spf_ok, dkim_ok, dmarc_ok, verified_at, enabled`;
+
   app.get('/grow/sending-domains', async (req) => {
     req.requireRole('viewer');
     return req.db(async (q) => {
       const rows = await q.rows<{
         id: string; domain: string; provider: SendingDomainProvider;
-        spf_ok: boolean; dkim_ok: boolean; dmarc_ok: boolean; verified_at: string | null;
+        spf_ok: boolean; dkim_ok: boolean; dmarc_ok: boolean; verified_at: string | null; enabled: boolean;
       }>(
-        `SELECT id, domain, provider, spf_ok, dkim_ok, dmarc_ok, verified_at
-           FROM grow_sending_domains ORDER BY created_at`,
+        `SELECT ${DOMAIN_FIELDS} FROM grow_sending_domains ORDER BY created_at`,
       );
       return rows.map((r) => ({ ...r, expected_records: buildExpectedRecords(r.domain, r.provider) }));
     });
@@ -1206,11 +1207,11 @@ export default async function growRoutes(app: FastifyInstance) {
     return req.db(async (q) => {
       const row = await q.one<{
         id: string; domain: string; provider: SendingDomainProvider;
-        spf_ok: boolean; dkim_ok: boolean; dmarc_ok: boolean; verified_at: string | null;
+        spf_ok: boolean; dkim_ok: boolean; dmarc_ok: boolean; verified_at: string | null; enabled: boolean;
       }>(
         `INSERT INTO grow_sending_domains (org_id, domain, provider)
          VALUES (app.current_org(), $1, $2)
-         RETURNING id, domain, provider, spf_ok, dkim_ok, dmarc_ok, verified_at`,
+         RETURNING ${DOMAIN_FIELDS}`,
         [body.domain, body.provider],
       );
       if (!row) throw new HttpError(409, `${body.domain} has already been added`, 'duplicate_domain');
@@ -1245,11 +1246,212 @@ export default async function growRoutes(app: FastifyInstance) {
         `UPDATE grow_sending_domains
             SET spf_ok = $2, dkim_ok = $3, dmarc_ok = $4, verified_at = now()
           WHERE id = $1
-        RETURNING id, domain, provider, spf_ok, dkim_ok, dmarc_ok, verified_at`,
+        RETURNING ${DOMAIN_FIELDS}`,
         [id, result.spf.ok, result.dkim.ok, result.dmarc.ok],
       );
       return { ...updated, checks: [result.spf, result.dkim, result.dmarc], subdomain_warning: result.subdomainWarning };
     });
+  });
+
+  // ---- Domain enable/disable/delete ----------------------------------------
+  //
+  // Reversible pause, independent of any one mailbox's own status — a
+  // domain can hold several mailboxes, and growScheduler.ts's
+  // mailboxCapacity() now excludes every mailbox under a disabled domain
+  // (db/migrations/028_grow_domain_enable.sql), so this actually stops
+  // sends rather than just hiding the row. 'manager', not 'staff' — a
+  // domain-level pause/removal is a step up from the day-to-day mailbox
+  // CRUD above, per the brief.
+  async function setDomainEnabled(req: FastifyRequest, id: string, enabled: boolean) {
+    req.requireRole('manager');
+    const sess = req.requireAuth();
+    return req.db(async (q) => {
+      const row = await q.one(
+        `UPDATE grow_sending_domains SET enabled = $2, updated_at = now() WHERE id = $1 RETURNING ${DOMAIN_FIELDS}`,
+        [id, enabled],
+      );
+      if (!row) throw new HttpError(404, 'Sending domain not found', 'not_found');
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id,
+        action: enabled ? 'grow.domain.enabled' : 'grow.domain.disabled',
+        entityType: 'grow_sending_domains', entityId: id, ip: req.ip,
+      });
+      return row;
+    });
+  }
+
+  app.patch('/grow/sending-domains/:id/disable', async (req) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    return setDomainEnabled(req, id, false);
+  });
+
+  app.patch('/grow/sending-domains/:id/enable', async (req) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    return setDomainEnabled(req, id, true);
+  });
+
+  // Hard delete, but only when nothing would be orphaned or lost: no
+  // grow_messages row through any mailbox this domain owns (sent or not —
+  // a queued/failed/bounced row still documents a real send attempt worth
+  // keeping), and no currently-active enrollment in a currently-running
+  // campaign anywhere in this org. That second check is deliberately
+  // coarser than "this exact domain" — grow_mailboxes has no FK recording
+  // which domain a given campaign send will draw from (growScheduler.ts's
+  // mailboxCapacity() picks across the whole org's eligible mailbox pool
+  // at send time, not per-campaign), so there is no precise way to prove
+  // THIS domain isn't part of a running campaign's active sending pool.
+  // Only applies when the domain actually has a mailbox at all — an empty
+  // domain can't be "in use" by anything regardless.
+  app.delete('/grow/sending-domains/:id', async (req) => {
+    req.requireRole('manager');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const domain = await q.one<{ domain: string }>(`SELECT domain FROM grow_sending_domains WHERE id = $1`, [id]);
+      if (!domain) throw new HttpError(404, 'Sending domain not found', 'not_found');
+
+      const mailboxes = await q.rows<{ id: string; integration_id: string }>(
+        `SELECT id, integration_id FROM grow_mailboxes WHERE domain_id = $1`, [id],
+      );
+
+      if (mailboxes.length > 0) {
+        const mailboxIds = mailboxes.map((m) => m.id);
+        const hasMessages = await q.one(
+          `SELECT 1 FROM grow_messages WHERE mailbox_id = ANY($1::uuid[]) LIMIT 1`, [mailboxIds],
+        );
+        const hasActiveEnrollmentsElsewhere = await q.one(
+          `SELECT 1 FROM grow_enrollments e
+             JOIN grow_campaigns c ON c.id = e.campaign_id
+            WHERE e.state = 'active' AND c.status = 'running' LIMIT 1`,
+        );
+        if (hasMessages || hasActiveEnrollmentsElsewhere) {
+          throw new HttpError(
+            409,
+            'This domain has sent mail — disable it instead of deleting.',
+            'domain_has_history',
+          );
+        }
+      }
+
+      // Order matters: grow_mailboxes.integration_id is ON DELETE RESTRICT
+      // (009_grow.sql), so deleting an integrations row still referenced
+      // by a live mailbox fails outright (caught live: "update or delete
+      // on table integrations violates foreign key constraint"). The
+      // domain delete must go FIRST — it cascades to grow_mailboxes,
+      // which clears that reference — and only then are the now-orphaned
+      // integrations (credential vault) rows deleted explicitly, same as
+      // the single-mailbox DELETE above does for its own one row.
+      await q.exec(`DELETE FROM grow_sending_domains WHERE id = $1`, [id]);
+      for (const m of mailboxes) {
+        await q.exec(`DELETE FROM integrations WHERE id = $1`, [m.integration_id]);
+      }
+
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow.domain.deleted',
+        entityType: 'grow_sending_domains', entityId: id, ip: req.ip, diff: { domain: domain.domain },
+      });
+      return { deleted: true };
+    });
+  });
+
+  // ---- Domain test send -----------------------------------------------------
+  //
+  // Renders a real sequence step (sample merge data, real unsubscribe
+  // footer) exactly like a campaign's own test-send above, then sends it
+  // through one of this domain's real mailboxes — "does this domain
+  // actually deliver a real send," not just "is SMTP reachable"
+  // (/grow/mailboxes/:id/test-send's own, narrower connectivity check).
+  // CRITICAL, per the brief: audited only (grow.domain.test_send) — no
+  // grow_messages row, no enrollment, no suppression entry, so this can
+  // never count toward the delete guard above, campaign stats, or warmup
+  // caps. Same "no dedicated table" choice the campaign test-send already
+  // made, for the same reason: audit_log already is the separate,
+  // never-queried-by-anything-else table that guarantees this.
+  function domainTestKeyGenerator(req: FastifyRequest): string {
+    return `grow-domain-test:${(req.params as { id?: string }).id ?? ''}`;
+  }
+
+  const domainTestInput = z.object({ to: z.string().trim().toLowerCase().email().optional() });
+
+  app.post('/grow/sending-domains/:id/test', {
+    config: { rateLimit: { max: 5, timeWindow: '1 minute', hook: 'preHandler', keyGenerator: domainTestKeyGenerator } },
+  }, async (req) => {
+    req.requireRole('manager');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const { to: toOverride } = domainTestInput.parse(req.body);
+    const to = toOverride ?? sess.email;
+
+    const prep = await req.db(async (q) => {
+      const domain = await q.one(`SELECT id FROM grow_sending_domains WHERE id = $1`, [id]);
+      if (!domain) throw new HttpError(404, 'Sending domain not found', 'not_found');
+
+      // Prefer a mailbox that's actually in rotation (active/warming) over
+      // a paused/disabled one, so the test reflects what a real send would
+      // use — but still allow a paused one if it's all the domain has,
+      // rather than refusing outright.
+      const mailboxRow = await q.one<{
+        id: string; address: string; from_name: string; reply_to: string | null;
+        smtp_host: string; smtp_port: number; username: string; integration_id: string;
+      }>(
+        `SELECT id, address, from_name, reply_to, smtp_host, smtp_port, username, integration_id
+           FROM grow_mailboxes WHERE domain_id = $1
+          ORDER BY (status IN ('active','warming')) DESC, created_at
+          LIMIT 1`,
+        [id],
+      );
+      if (!mailboxRow) throw new HttpError(409, 'This domain has no mailbox configured yet.', 'no_mailbox');
+
+      const cred = await q.one<{ credential_enc: Buffer; credential_iv: Buffer; credential_tag: Buffer }>(
+        `SELECT credential_enc, credential_iv, credential_tag FROM integrations WHERE id = $1`,
+        [mailboxRow.integration_id],
+      );
+      if (!cred?.credential_enc) {
+        throw new HttpError(409, 'No stored credential for this mailbox — re-add it', 'no_credential');
+      }
+
+      const sampleContact: RenderableContact = {
+        email: to, first_name: 'Alex', contact_name: 'Alex Rivera', role: 'Director',
+        entity_name: 'Example Organization', region: 'Sample County', city: 'Sample City',
+        enrollment: null, recipient_domain: to.slice(to.indexOf('@') + 1) || 'example.com',
+        is_free_provider: false, contact_rank: 1, attrs: {},
+      };
+      const rendered = await renderStepForContact(
+        q,
+        {
+          subject_tmpl: 'Quick question for {{entity_name}}',
+          body_tmpl:
+            'Hi {{first_name}},\n\nThis is a test send confirming this sending domain is configured correctly — ' +
+            'it renders sample merge data and the real unsubscribe footer exactly like a live campaign send would.\n\n' +
+            '{{unsubscribe_footer}}',
+        },
+        sampleContact,
+      );
+
+      return {
+        rendered: { subject: `[TEST] ${rendered.subject}`, body: rendered.body, refused: rendered.refused, refusal_reason: rendered.refusal_reason },
+        mailbox: mailboxRow,
+        password: decryptSecret(cred.credential_enc, cred.credential_iv, cred.credential_tag),
+      };
+    });
+
+    if (prep.rendered.refused) {
+      return { ...prep.rendered, smtp: null, mailbox: { id: prep.mailbox.id, address: prep.mailbox.address } };
+    }
+
+    const smtp = await sendRenderedTestEmail(prep.mailbox, prep.password, to, prep.rendered.subject, prep.rendered.body);
+
+    await req.db(async (q) => {
+      await q.exec(`UPDATE grow_mailboxes SET last_health_at = now() WHERE id = $1`, [prep.mailbox.id]);
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow.domain.test_send',
+        entityType: 'grow_sending_domains', entityId: id, ip: req.ip,
+        diff: { to, mailbox_id: prep.mailbox.id, smtp_ok: smtp.ok },
+      });
+    });
+
+    return { ...prep.rendered, smtp, mailbox: { id: prep.mailbox.id, address: prep.mailbox.address } };
   });
 
   app.get('/grow/mailboxes', async (req) => {

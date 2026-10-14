@@ -11,7 +11,7 @@ import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import type {
   GrowSendingDomain, GrowSendingDomainProvider, GrowVerifyDomainResponse, GrowMailbox,
-  GrowTestSendResponse,
+  GrowTestSendResponse, GrowDomainTestSendResponse,
 } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -63,10 +63,179 @@ function RecordStatusIcon({ ok }: { ok: boolean | null }) {
     : <XCircle size={16} weight="fill" className="text-destructive" />;
 }
 
-function SendingDomainCard({ domain, canEdit }: { domain: GrowSendingDomain; canEdit: boolean }) {
+function DomainTestSendPanel({ domain, canManage }: { domain: GrowSendingDomain; canManage: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [to, setTo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<GrowDomainTestSendResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!canManage) return null;
+
+  async function onSend() {
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await apiFetch<GrowDomainTestSendResponse>(`/grow/sending-domains/${domain.id}/test`, {
+        method: 'POST',
+        body: JSON.stringify(to.trim() ? { to: to.trim() } : {}),
+      });
+      setResult(res);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not run this test.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2">
+      {!open ? (
+        <Button variant="ghost" onClick={() => setOpen(true)}>
+          <PaperPlaneTilt size={14} weight="bold" className="mr-1.5 inline" /> Send test email
+        </Button>
+      ) : (
+        <Card className="p-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="flex flex-1 flex-col gap-1 text-xs text-muted-foreground">
+              Send test to (defaults to your own email)
+              <input
+                type="email"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                placeholder="you@example.com"
+                className={inputCls}
+              />
+            </label>
+            <Button onClick={onSend} disabled={busy}>{busy ? 'Sending…' : 'Send'}</Button>
+            <Button variant="ghost" onClick={() => { setOpen(false); setResult(null); setError(null); }}>
+              <X size={14} />
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Renders a real sequence step with sample merge data and the real unsubscribe footer, then sends it
+            through this domain's mailbox — exactly like a live send. Not logged as send history.
+          </p>
+
+          {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+
+          {result && (
+            <div className="mt-3 flex flex-col gap-2 text-xs">
+              <p className="text-muted-foreground">Sent from <span className="font-medium text-foreground">{result.mailbox.address}</span></p>
+              {result.refused ? (
+                <div className="rounded-lg bg-destructive/5 p-2 text-destructive">
+                  Refused to send: {result.refusal_reason}
+                </div>
+              ) : (
+                <>
+                  <div className={`rounded-lg p-2 ${result.smtp?.ok ? 'bg-success/5' : 'bg-destructive/5'}`}>
+                    <p className={`font-medium ${result.smtp?.ok ? 'text-success' : 'text-destructive'}`}>
+                      SMTP send: {result.smtp?.ok ? 'sent' : 'failed'}
+                    </p>
+                    {result.smtp?.messageId && <p className="mt-0.5 text-muted-foreground">Message-ID: {result.smtp.messageId}</p>}
+                    {result.smtp?.error && <p className="mt-0.5 text-destructive">{result.smtp.error}</p>}
+                  </div>
+                  <details className="rounded-lg border border-border p-2">
+                    <summary className="cursor-pointer text-muted-foreground">Rendered preview</summary>
+                    <p className="mt-2 font-medium">{result.subject}</p>
+                    <pre className="mt-1 whitespace-pre-wrap font-sans text-muted-foreground">{result.body}</pre>
+                  </details>
+                </>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function DeleteDomainDialog({
+  domain, open, onClose, onDeleted,
+}: {
+  domain: GrowSendingDomain;
+  open: boolean;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [offerDisable, setOfferDisable] = useState(false);
+
+  if (!open) return null;
+
+  async function onConfirmDelete() {
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/grow/sending-domains/${domain.id}`, { method: 'DELETE' });
+      onDeleted();
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'domain_has_history') {
+        setOfferDisable(true);
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Could not remove this domain.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onConfirmDisable() {
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/grow/sending-domains/${domain.id}/disable`, { method: 'PATCH' });
+      onDeleted(); // same effect from the dialog's point of view: close + refresh
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not disable this domain.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-foreground/40" onClick={onClose} />
+      <div className="relative w-full max-w-sm rounded-xl border border-border bg-surface p-6 shadow-xl">
+        {!offerDisable ? (
+          <>
+            <p className="font-display text-lg font-bold">Remove {domain.domain}?</p>
+            <p className="mt-2 text-sm text-muted-foreground">This can&rsquo;t be undone.</p>
+            {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+              <Button onClick={onConfirmDelete} disabled={busy} className="bg-destructive text-destructive-foreground hover:opacity-90">
+                {busy ? 'Removing…' : 'Remove'}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="font-display text-lg font-bold">{domain.domain} has sent mail</p>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Removing it would break that send log. Disable it instead — sending stops immediately, and it can be
+              re-enabled later.
+            </p>
+            {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+              <Button onClick={onConfirmDisable} disabled={busy}>{busy ? 'Disabling…' : 'Disable instead'}</Button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SendingDomainCard({ domain, canEdit, canManage }: { domain: GrowSendingDomain; canEdit: boolean; canManage: boolean }) {
   const [verifying, setVerifying] = useState(false);
   const [result, setResult] = useState<GrowVerifyDomainResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [toggling, setToggling] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   async function onVerify() {
     setVerifying(true);
@@ -84,13 +253,31 @@ function SendingDomainCard({ domain, canEdit }: { domain: GrowSendingDomain; can
     }
   }
 
+  async function onToggleEnabled() {
+    setToggling(true);
+    setError(null);
+    try {
+      await apiFetch(`/grow/sending-domains/${domain.id}/${domain.enabled ? 'disable' : 'enable'}`, { method: 'PATCH' });
+      await mutate(DOMAINS_KEY);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not update this domain.');
+    } finally {
+      setToggling(false);
+    }
+  }
+
   const checkFor = (type: 'SPF' | 'DKIM' | 'DMARC') => result?.checks.find((c) => c.type === type) ?? null;
 
   return (
-    <li className="p-4">
+    <li className={`p-4 ${!domain.enabled ? 'bg-muted/30' : ''}`}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-sm font-medium">{domain.domain}</p>
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-medium">{domain.domain}</p>
+            {!domain.enabled && (
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${toneSoft.muted}`}>Paused</span>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground">
             {PROVIDERS.find((p) => p.value === domain.provider)?.label ?? domain.provider}
             {domain.verified_at && ` · last checked ${new Date(domain.verified_at).toLocaleString()}`}
@@ -107,10 +294,29 @@ function SendingDomainCard({ domain, canEdit }: { domain: GrowSendingDomain; can
               {verifying ? 'Checking…' : 'Verify'}
             </Button>
           )}
+          {canManage && (
+            <Button variant="ghost" onClick={onToggleEnabled} disabled={toggling}>
+              {domain.enabled
+                ? <><Pause size={14} weight="bold" className="mr-1 inline" /> Disable</>
+                : <><Play size={14} weight="bold" className="mr-1 inline" /> Enable</>}
+            </Button>
+          )}
+          {canManage && (
+            <Button variant="ghost" onClick={() => setConfirmingDelete(true)} className="text-destructive hover:bg-destructive/10">
+              <Trash size={14} weight="bold" className="mr-1 inline" /> Remove
+            </Button>
+          )}
         </div>
       </div>
 
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+      <DomainTestSendPanel domain={domain} canManage={canManage} />
+      <DeleteDomainDialog
+        domain={domain}
+        open={confirmingDelete}
+        onClose={() => setConfirmingDelete(false)}
+        onDeleted={() => { setConfirmingDelete(false); mutate(DOMAINS_KEY); }}
+      />
 
       {result?.subdomain_warning && (
         <Card className="mt-3 flex items-start gap-2 border-warning/40 bg-warning/5 p-3">
@@ -702,6 +908,7 @@ function EditMailboxDrawer({
 export default function GrowSendingPage() {
   const role = useRole();
   const canEdit = atLeast(role, 'staff');
+  const canManage = atLeast(role, 'manager');
   const { data: domains, isLoading: domainsLoading, error: domainsError } = useApi<GrowSendingDomain[]>(DOMAINS_KEY);
   const { data: mailboxes, isLoading: mailboxesLoading, error: mailboxesError } = useApi<GrowMailbox[]>(MAILBOXES_KEY);
   const [addingMailbox, setAddingMailbox] = useState(false);
@@ -734,7 +941,7 @@ export default function GrowSendingPage() {
           <p className="p-4 text-sm text-muted-foreground">No sending domains yet — add one above.</p>
         ) : (
           <ul className="divide-y divide-border">
-            {domains.map((d) => <SendingDomainCard key={d.id} domain={d} canEdit={canEdit} />)}
+            {domains.map((d) => <SendingDomainCard key={d.id} domain={d} canEdit={canEdit} canManage={canManage} />)}
           </ul>
         )}
       </Card>

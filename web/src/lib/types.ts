@@ -770,6 +770,7 @@ export interface GrowSendingDomain {
   dkim_ok: boolean;
   dmarc_ok: boolean;
   verified_at: string | null;
+  enabled: boolean;
   expected_records: GrowExpectedDnsRecord[];
 }
 
@@ -852,6 +853,16 @@ export interface GrowCampaignTestSendRenderResponse {
 
 export interface GrowCampaignTestSendResponse extends GrowCampaignTestSendRenderResponse {
   smtp: GrowSmtpTestResult | null;
+}
+
+// Sending-domain "Send test email" — same rendered-step shape as the
+// campaign test-send above, plus which mailbox under the domain actually
+// sent it (a domain can have more than one). Audited only; see
+// routes/grow.ts's own comment on why this never touches grow_messages,
+// enrollments, or suppression.
+export interface GrowDomainTestSendResponse extends GrowCampaignTestSendRenderResponse {
+  smtp: GrowSmtpTestResult | null;
+  mailbox: { id: string; address: string };
 }
 
 export type GrowEnrollmentState =
