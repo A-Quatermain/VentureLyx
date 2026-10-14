@@ -969,6 +969,8 @@ export interface GrowContactPreview {
 
 export type GrowMessageStatus = 'queued' | 'sending' | 'sent' | 'failed' | 'bounced' | 'cancelled';
 
+export type GrowBounceType = 'hard' | 'soft' | 'block' | 'unknown';
+
 export interface GrowMessage {
   id: string;
   campaign_id: string;
@@ -982,6 +984,23 @@ export interface GrowMessage {
   sent_at: string | null;
   attempts: number;
   error: string | null;
+  bounce_code: string | null;
+  bounce_type: GrowBounceType | null;
+  bounce_reason_raw: string | null;
+  bounced_at: string | null;
+  // Recomputed server-side at read time from bounce_code/bounce_reason_raw
+  // (lib/growBounceClassify.ts) — present only on a bounced row.
+  category?: string;
+  explanation?: string;
+  action?: string;
+}
+
+export interface GrowBounceSummary {
+  total: number;
+  hard: number;
+  soft: number;
+  block: number;
+  unknown: number;
 }
 
 export interface GrowMailboxCapacity {

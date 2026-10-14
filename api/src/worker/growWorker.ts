@@ -36,6 +36,7 @@ import { claimDue, planTick } from '../lib/growScheduler.js';
 import { pollMailbox, matchGrowMessage, type MailboxCreds } from '../lib/growPoller.js';
 import { promoteOnReply } from '../lib/growPromote.js';
 import { classifyReply } from '../lib/growClassify.js';
+import { classifyBounce } from '../lib/growBounceClassify.js';
 import { wrapClickableLinks } from '../lib/growClickTracking.js';
 import type { Querier } from '../lib/db.js';
 
@@ -273,7 +274,49 @@ async function sendOne(q: Querier, message: ClaimedMessage): Promise<void> {
     const attempts = message.attempts; // already incremented by claimDue()
     const errMessage = err instanceof Error ? err.message : String(err);
 
-    if (permanent || attempts >= MAX_ATTEMPTS) {
+    if (permanent) {
+      // A permanent (5xx) SMTP rejection IS a bounce — the recipient's own
+      // server just told us, synchronously, that this will never deliver.
+      // Previously this landed in the undifferentiated 'failed' bucket
+      // with nothing but errMessage; now it goes through the same
+      // classifier the async DSN path uses (lib/growBounceClassify.ts),
+      // so "why did this bounce" reads the same regardless of which path
+      // caught it. Raw SMTP response text (nodemailer's err.response, the
+      // literal server reply line — e.g. "550 5.1.1 User unknown") is
+      // preferred over the generic error message when present, since it
+      // carries the actual enhanced status code to extract.
+      const rawText = (err as { response?: string }).response ?? errMessage;
+      const classified = classifyBounce(rawText);
+      await q.exec(
+        `UPDATE grow_messages SET
+           status = 'bounced', error = $2,
+           bounce_code = $3, bounce_type = $4, bounce_reason_raw = $5, bounced_at = now()
+         WHERE id = $1`,
+        [message.id, errMessage, classified.code, classified.type, rawText],
+      );
+      // Only a genuine hard bounce (not a policy/reputation block, which
+      // says nothing about whether the address itself is real) suppresses
+      // permanently — same rule the async DSN path now follows below.
+      if (classified.type === 'hard') {
+        const msgRow = await q.one<{ contact_id: string; campaign_id: string }>(
+          `SELECT contact_id, campaign_id FROM grow_messages WHERE id = $1`, [message.id],
+        );
+        if (msgRow) {
+          await q.exec(
+            `INSERT INTO grow_suppressions (org_id, email, reason, campaign_id)
+             VALUES (app.current_org(), $1, 'hard_bounce', $2)
+             ON CONFLICT (org_id, email) DO NOTHING`,
+            [contact.email, msgRow.campaign_id],
+          );
+          await q.exec(
+            `UPDATE grow_enrollments SET state = 'bounced'
+              WHERE campaign_id = $1 AND contact_id = $2 AND state = 'active'`,
+            [msgRow.campaign_id, msgRow.contact_id],
+          );
+        }
+      }
+      log.warn({ messageId: message.id, err: errMessage, bounceType: classified.type }, 'bounced (synchronous)');
+    } else if (attempts >= MAX_ATTEMPTS) {
       await q.exec(`UPDATE grow_messages SET status = 'failed', error = $2 WHERE id = $1`, [message.id, errMessage]);
       log.warn({ messageId: message.id, err: errMessage, attempts, permanent }, 'failed');
     } else {
@@ -370,12 +413,29 @@ async function handleClassifiedMessage(
   );
 
   if (msg.kind === 'bounce_hard' || msg.kind === 'bounce_soft') {
-    await q.exec(`UPDATE grow_messages SET status = 'bounced' WHERE id = $1`, [match.message_id]);
+    // msg.kind's own hard/soft split comes from a crude Content-Type-header
+    // sniff in growPoller.ts's classifyKind() — good enough to route "is
+    // this worth classifying as a bounce at all," not precise enough to
+    // decide whether to permanently suppress. The real answer comes from
+    // running the actual DSN body text through the shared classifier
+    // (lib/growBounceClassify.ts) — the same one the synchronous SMTP
+    // rejection path above uses — which can tell a genuine bad-address
+    // hard bounce apart from a policy/reputation block that happened to
+    // arrive as a 5.x DSN (a block says nothing about whether the address
+    // is real, so it must never suppress it).
+    const classified = classifyBounce(msg.bodyText);
+    await q.exec(
+      `UPDATE grow_messages SET
+         status = 'bounced',
+         bounce_code = $2, bounce_type = $3, bounce_reason_raw = $4, bounced_at = now()
+       WHERE id = $1`,
+      [match.message_id, classified.code, classified.type, msg.bodyText],
+    );
     if (match.enrollment_id) {
       await q.exec(`UPDATE grow_enrollments SET state = 'bounced' WHERE id = $1 AND state = 'active'`,
         [match.enrollment_id]);
     }
-    if (msg.kind === 'bounce_hard') {
+    if (classified.type === 'hard') {
       await q.exec(
         `INSERT INTO grow_suppressions (org_id, email, reason, campaign_id)
          VALUES (app.current_org(), $1, 'hard_bounce', $2)

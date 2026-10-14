@@ -27,6 +27,7 @@ import {
 } from '../lib/growContactImportMapping.js';
 import { ingestFile } from '../lib/growContactImportXlsx.js';
 import { enrollContacts } from '../lib/growEnroll.js';
+import { classifyBounce } from '../lib/growBounceClassify.js';
 import type { Querier } from '../lib/db.js';
 import {
   checkTemplateTokens, firstUnrenderedPlaceholder, getSenderProfile, GROW_BASE_URL, GROW_BASE_URL_USABLE,
@@ -137,7 +138,8 @@ const STEP_FIELDS = `id, campaign_id, step_no, delay_days, applies_to_rank,
   subject_tmpl, body_tmpl, created_at, updated_at`;
 
 const MESSAGE_FIELDS = `id, campaign_id, contact_id, mailbox_id, step_no,
-  recipient_domain, subject, status, scheduled_at, sent_at, attempts, error`;
+  recipient_domain, subject, status, scheduled_at, sent_at, attempts, error,
+  bounce_code, bounce_type, bounce_reason_raw, bounced_at`;
 
 const campaignInput = z.object({
   name: z.string().trim().min(1).max(200),
@@ -2783,8 +2785,10 @@ export default async function growRoutes(app: FastifyInstance) {
     const { status, campaign_id, page } = messageListQuery.parse(req.query);
     const offset = (page - 1) * 50;
 
-    return req.db((q) =>
-      q.rows(
+    return req.db(async (q) => {
+      const rows = await q.rows<{
+        id: string; bounce_code: string | null; bounce_reason_raw: string | null;
+      }>(
         `SELECT ${MESSAGE_FIELDS}
            FROM grow_messages
           WHERE ($1::text IS NULL OR status = $1)
@@ -2792,8 +2796,44 @@ export default async function growRoutes(app: FastifyInstance) {
           ORDER BY scheduled_at DESC
           LIMIT 50 OFFSET $3`,
         [status ?? null, campaign_id ?? null, offset],
-      ),
-    );
+      );
+      // category/explanation/action are recomputed here, not stored —
+      // lib/growBounceClassify.ts's own header explains why (a later fix
+      // to this file's mapping table should improve how an old bounce
+      // reads too, not just new ones). bounce_type itself stays the
+      // stored historical value — see the same file's header.
+      return rows.map((r) => {
+        if (!r.bounce_code && !r.bounce_reason_raw) return r;
+        const { category, explanation, action } = classifyBounce(r.bounce_reason_raw ?? '', r.bounce_code);
+        return { ...r, category, explanation, action };
+      });
+    });
+  });
+
+  // Counts by bounce_type for the Bounced view's top-line summary ("9 bad
+  // addresses · 3 blocked · 1 temporary") — campaign_id optional, same
+  // scoping as the list above.
+  app.get('/grow/messages/bounce-summary', async (req) => {
+    req.requireRole('viewer');
+    const { campaign_id } = z.object({ campaign_id: z.string().uuid().optional() }).parse(req.query);
+
+    return req.db(async (q) => {
+      const rows = await q.rows<{ bounce_type: string | null; n: string | number }>(
+        `SELECT bounce_type, count(*) AS n
+           FROM grow_messages
+          WHERE status = 'bounced' AND ($1::uuid IS NULL OR campaign_id = $1)
+          GROUP BY bounce_type`,
+        [campaign_id ?? null],
+      );
+      const byType: Record<string, number> = { hard: 0, soft: 0, block: 0, unknown: 0 };
+      let total = 0;
+      for (const r of rows) {
+        const n = Number(r.n);
+        byType[r.bounce_type ?? 'unknown'] = (byType[r.bounce_type ?? 'unknown'] ?? 0) + n;
+        total += n;
+      }
+      return { total, hard: byType.hard, soft: byType.soft, block: byType.block, unknown: byType.unknown };
+    });
   });
 
   // ---- Stats --------------------------------------------------------------------
