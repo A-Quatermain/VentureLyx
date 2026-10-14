@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, Fragment } from 'react';
 import Link from 'next/link';
 import { Tray, CaretDown } from '@phosphor-icons/react';
 import { useApi } from '@/lib/useApi';
@@ -13,10 +13,6 @@ import { toneSoft, type Tone } from '@/components/ui/tone';
 const BOUNCE_TYPE_TONE: Record<GrowBounceType, Tone> = {
   hard: 'destructive', block: 'warning', soft: 'muted', unknown: 'muted',
 };
-const BOUNCE_TYPE_LABEL: Record<GrowBounceType, string> = {
-  hard: 'bad address', block: 'blocked', soft: 'temporary', unknown: 'other',
-};
-
 function BounceSummaryBar({ campaignId }: { campaignId: string }) {
   const params = new URLSearchParams();
   if (campaignId) params.set('campaign_id', campaignId);
@@ -41,47 +37,37 @@ function BounceSummaryBar({ campaignId }: { campaignId: string }) {
   );
 }
 
-function BounceRow({ message }: { message: GrowMessage }) {
-  const [expanded, setExpanded] = useState(false);
+// The reasoning panel ADDS to the row below it — it never replaces a
+// column. Spans the full table width, rendered as its own <tr> directly
+// after the message's normal row, only while that row is expanded.
+function BounceReasonPanel({ message }: { message: GrowMessage }) {
   const type = message.bounce_type;
-
   return (
-    <tr className="border-b border-border last:border-0">
-      <td className="max-w-xs px-4 py-3" colSpan={7}>
-        <button
-          onClick={() => setExpanded((e) => !e)}
-          className="flex w-full items-center gap-3 text-left"
-        >
-          <CaretDown size={14} weight="bold" className={`shrink-0 text-muted-foreground transition-transform ${expanded ? 'rotate-180' : ''}`} />
-          <span className="min-w-0 flex-1 truncate text-sm">{message.subject}</span>
-          <span className="shrink-0 text-xs text-muted-foreground">{message.recipient_domain}</span>
-          {type && (
-            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${toneSoft[BOUNCE_TYPE_TONE[type]]}`}>
-              {BOUNCE_TYPE_LABEL[type]}
-            </span>
-          )}
-          <span className="shrink-0 text-xs text-muted-foreground">
-            {message.bounced_at ? new Date(message.bounced_at).toLocaleString() : ''}
-          </span>
-        </button>
-        {message.explanation && <p className="mt-1.5 pl-6 text-xs text-muted-foreground">{message.explanation}</p>}
-        {expanded && (
-          <div className="mt-3 flex flex-col gap-2 pl-6">
-            {message.action && (
-              <div className="rounded-lg bg-muted/50 p-2 text-xs">
-                <span className="font-medium">Recommended action: </span>{message.action}
-              </div>
+    <tr className="border-b border-border bg-muted/20 last:border-0">
+      <td colSpan={7} className="px-4 py-3">
+        <div className="flex flex-col gap-2 pl-6">
+          <div className="flex items-center gap-2">
+            {type && message.category && (
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${toneSoft[BOUNCE_TYPE_TONE[type]]}`}>
+                {message.category}
+              </span>
             )}
-            {message.bounce_reason_raw && (
-              <details className="rounded-lg border border-border p-2">
-                <summary className="cursor-pointer text-xs text-muted-foreground">Raw server response</summary>
-                <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-[11px] text-muted-foreground">
-                  {message.bounce_reason_raw}
-                </pre>
-              </details>
-            )}
+            {message.explanation && <p className="text-xs text-muted-foreground">{message.explanation}</p>}
           </div>
-        )}
+          {message.action && (
+            <div className="rounded-lg bg-muted/50 p-2 text-xs">
+              <span className="font-medium">Recommended action: </span>{message.action}
+            </div>
+          )}
+          {message.bounce_reason_raw && (
+            <details className="rounded-lg border border-border p-2">
+              <summary className="cursor-pointer text-xs text-muted-foreground">Raw server response</summary>
+              <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-[11px] text-muted-foreground">
+                {message.bounce_reason_raw}
+              </pre>
+            </details>
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -101,6 +87,7 @@ const STATUS_TONE: Record<GrowMessageStatus, Tone> = {
 export default function GrowQueuePage() {
   const [status, setStatus] = useState<GrowMessageStatus | ''>('');
   const [page, setPage] = useState(1);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const params = new URLSearchParams();
   if (status) params.set('status', status);
@@ -179,12 +166,6 @@ export default function GrowQueuePage() {
               </p>
             )}
           </div>
-        ) : status === 'bounced' ? (
-          <table className="w-full min-w-[500px] text-left text-sm">
-            <tbody>
-              {messages.map((m) => <BounceRow key={m.id} message={m} />)}
-            </tbody>
-          </table>
         ) : (
           <table className="w-full min-w-[780px] text-left text-sm">
             <thead>
@@ -199,26 +180,48 @@ export default function GrowQueuePage() {
               </tr>
             </thead>
             <tbody>
-              {messages.map((m) => (
-                <tr key={m.id} className="border-b border-border last:border-0">
-                  <td className="max-w-xs truncate px-4 py-3">{m.subject}</td>
-                  <td className="px-4 py-3 text-muted-foreground">{m.recipient_domain}</td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>{m.step_no}</td>
-                  <td className="px-4 py-3">
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${toneSoft[STATUS_TONE[m.status]]}`}>
-                      {m.status}
-                    </span>
-                    {m.error && <p className="mt-0.5 max-w-[220px] truncate text-xs text-destructive">{m.error}</p>}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">{new Date(m.scheduled_at).toLocaleString()}</td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {m.sent_at ? new Date(m.sent_at).toLocaleString() : '—'}
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
-                    {m.attempts}
-                  </td>
-                </tr>
-              ))}
+              {messages.map((m) => {
+                const bounced = m.status === 'bounced';
+                const expanded = bounced && expandedId === m.id;
+                return (
+                  <Fragment key={m.id}>
+                    <tr className="border-b border-border last:border-0">
+                      <td className="max-w-xs truncate px-4 py-3">
+                        {bounced ? (
+                          <button
+                            onClick={() => setExpandedId(expanded ? null : m.id)}
+                            className="flex w-full items-center gap-1.5 text-left"
+                          >
+                            <CaretDown
+                              size={12} weight="bold"
+                              className={`shrink-0 text-muted-foreground transition-transform ${expanded ? 'rotate-180' : ''}`}
+                            />
+                            <span className="min-w-0 truncate">{m.subject}</span>
+                          </button>
+                        ) : (
+                          m.subject
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{m.recipient_domain}</td>
+                      <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>{m.step_no}</td>
+                      <td className="px-4 py-3">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${toneSoft[STATUS_TONE[m.status]]}`}>
+                          {m.status}
+                        </span>
+                        {m.error && <p className="mt-0.5 max-w-[220px] truncate text-xs text-destructive">{m.error}</p>}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{new Date(m.scheduled_at).toLocaleString()}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {m.sent_at ? new Date(m.sent_at).toLocaleString() : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
+                        {m.attempts}
+                      </td>
+                    </tr>
+                    {expanded && <BounceReasonPanel message={m} />}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}
