@@ -52,6 +52,10 @@ export interface GrowCampaign {
   daily_target: number;
   start_date: string | Date | null;
   end_date: string | Date | null;
+  /** Set by a manual resume (routes/grow.ts) — see this file's header for
+   *  why circuitBreaker() below only counts activity after this point
+   *  once it's set, rather than the campaign's whole-lifetime history. */
+  breaker_armed_at: string | Date | null;
 }
 
 interface MailboxCapacity {
@@ -124,31 +128,49 @@ async function domainCapacity(
 /** Live bounce and complaint rates for this campaign. Returns a reason
  *  string if the campaign must auto-pause.
  *
- *  Known limitation, flagged rather than silently accepted: bounced status
- *  and grow_events(type='complaint') rows are only ever written by an
- *  IMAP reply/bounce poller (the standalone engine's poller.js), which is
- *  explicitly out of scope for this build — see growWorker.ts's header.
- *  Until that exists, this function has no data feeding it beyond
- *  synchronous SMTP 5xx rejections (handled separately in sendOne(), which
- *  marks a message 'failed', not 'bounced') and will not trip. Kept and
- *  wired in now so turning the poller on later needs zero scheduler changes. */
+ *  The complaint count is joined through grow_messages to this specific
+ *  campaign_id — a prior version counted grow_events(type='complaint')
+ *  org-wide with no campaign scoping at all, so one campaign's complaints
+ *  could trip a completely different campaign's breaker. Caught while
+ *  adding the rearm behavior below, fixed in the same pass.
+ *
+ *  campaign.breaker_armed_at (set by a manual resume, routes/grow.ts's
+ *  POST /grow/campaigns/:id/resume) restricts both the MIN_SAMPLE count
+ *  and the rates themselves to activity created after that moment —
+ *  "re-check the rate over the next batch," not "immediately re-trip on
+ *  the exact same whole-history numbers that just caused the pause." A
+ *  campaign that's never been manually resumed has no watermark, so this
+ *  is simply the campaign's whole lifetime, same as before. */
 export async function circuitBreaker(q: Querier, campaign: GrowCampaign): Promise<string | null> {
-  const s = await q.one<{ sent: string | number; bounced: string | number; complaints: string | number }>(
+  // Two queries, not one JOIN — a LEFT JOIN from grow_messages to
+  // grow_events would fan out and inflate the sent/bounced counts if a
+  // single message ever has more than one matching event row (an ARF
+  // report duplicated by a forwarding rule, say). Correctness over one
+  // fewer round trip.
+  const s = await q.one<{ sent: string | number; bounced: string | number }>(
     `SELECT
        COUNT(*) FILTER (WHERE status = 'sent')    AS sent,
-       COUNT(*) FILTER (WHERE status = 'bounced') AS bounced,
-       (SELECT COUNT(*) FROM grow_events WHERE type = 'complaint') AS complaints
+       COUNT(*) FILTER (WHERE status = 'bounced') AS bounced
      FROM grow_messages
-    WHERE campaign_id = $1`,
-    [campaign.id],
+    WHERE campaign_id = $1
+      AND ($2::timestamptz IS NULL OR created_at > $2)`,
+    [campaign.id, campaign.breaker_armed_at],
   );
   if (!s) return null;
 
   const sent = Number(s.sent);
   if (sent < MIN_SAMPLE) return null;
 
+  const complaintsRow = await q.one<{ n: string | number }>(
+    `SELECT COUNT(*) AS n FROM grow_events e
+       JOIN grow_messages m ON m.id = e.message_id
+      WHERE e.type = 'complaint' AND m.campaign_id = $1
+        AND ($2::timestamptz IS NULL OR m.created_at > $2)`,
+    [campaign.id, campaign.breaker_armed_at],
+  );
+
   const bounceRate = Number(s.bounced) / sent;
-  const complaintRate = Number(s.complaints) / sent;
+  const complaintRate = Number(complaintsRow?.n ?? 0) / sent;
 
   if (bounceRate > BOUNCE_PAUSE_RATE) {
     return `bounce rate ${(bounceRate * 100).toFixed(1)}% exceeds ` +

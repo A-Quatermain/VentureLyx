@@ -36,6 +36,7 @@ import {
 } from '../lib/growTemplate.js';
 import { checkImapConnectivity, sendRenderedTestEmail, sendTestEmail } from '../lib/growMailboxTest.js';
 import { mailboxCapOnDate, rampPoints, steadyCapDate } from '../lib/growMailboxWarmup.js';
+import { BOUNCE_PAUSE_RATE, COMPLAINT_PAUSE_RATE, MIN_SAMPLE } from '../lib/growScheduler.js';
 import {
   DEFAULT_FALLBACK_CAP, isConsumerDomain, neededDailyTargetForDeadline, projectSchedule,
 } from '../lib/growSchedule.js';
@@ -98,18 +99,12 @@ async function renderStepForContact(
   return { subject, body, unsubscribe_url: unsubscribeUrl, refused, refusal_reason: refusalReason };
 }
 
-// Same circuit-breaker thresholds as scheduler.js's circuitBreaker()
-// (/opt/outreach/src) — the worker isn't built here, but the dashboard
-// needs the same numbers the (future) worker will pause campaigns at, so
-// they're returned by /grow/stats rather than duplicated as a second,
-// driftable copy in the frontend.
-const BOUNCE_PAUSE_RATE = 0.03;
-const COMPLAINT_PAUSE_RATE = 0.003;
-// scheduler.js's circuitBreaker() ignores rates entirely below this many
-// sends — a campaign's first few messages can bounce 100% by pure bad luck
-// with nothing wrong. Surfaced so the UI can say "not enough sends yet"
-// instead of a scary, statistically meaningless percentage.
-const MIN_SAMPLE = 50;
+// BOUNCE_PAUSE_RATE/COMPLAINT_PAUSE_RATE/MIN_SAMPLE imported from
+// lib/growScheduler.ts (the real, enforcing circuitBreaker()) rather than
+// re-declared here — this file used to carry its own copy with a comment
+// claiming "the worker isn't built here," which stopped being true once
+// growWorker.ts/growScheduler.ts shipped; a second copy of the same three
+// numbers is exactly the drift this dashboard's own stats need to avoid.
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const timeField = () => z.string().regex(TIME_RE, 'Use HH:MM (24-hour)');
@@ -646,6 +641,25 @@ export default async function growRoutes(app: FastifyInstance) {
     values.push(id);
 
     return req.db(async (q) => {
+      // Resuming a paused campaign is deliberately NOT available through
+      // this generic patch — POST /grow/campaigns/:id/resume is the only
+      // path, so every resume goes through its required typed reason,
+      // audit trail, and breaker rearm, regardless of whether this was
+      // paused by the circuit breaker or by a staff member's own manual
+      // pause+reason (both go through grow_campaigns.status the same way,
+      // so there's no reliable way to tell those apart here anyway — the
+      // dedicated endpoint's stricter flow is simply always correct).
+      if (body.status === 'running') {
+        const current = await q.one<{ status: string }>(`SELECT status FROM grow_campaigns WHERE id = $1`, [id]);
+        if (current?.status === 'paused') {
+          throw new HttpError(
+            400,
+            'This campaign is paused — use the Resume action instead of a direct status change.',
+            'use_resume_endpoint',
+          );
+        }
+      }
+
       // Starting a campaign with nothing to send from isn't a state worth
       // reaching just so it can fail silently later — block it here, with
       // the specific reason, rather than letting a (future) worker find
@@ -693,6 +707,116 @@ export default async function growRoutes(app: FastifyInstance) {
         orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_campaigns.update',
         entityType: 'grow_campaigns', entityId: id, ip: req.ip, diff: body,
       });
+      return campaign;
+    });
+  });
+
+  // ---- Resume from pause (manual circuit-breaker override) -----------------
+  //
+  // Deliberately split into two calls: resume-info is a cheap read any
+  // viewer can call (so the confirm dialog can show real numbers before
+  // anyone commits to anything), resume itself is the actual action,
+  // gated at 'manager' — one step above the 'staff' every other campaign
+  // mutation in this file needs, per the brief.
+  async function currentBreakerStats(q: Querier, campaignId: string) {
+    const totals = await q.one<{ sent: string | number; bounced: string | number }>(
+      `SELECT count(*) FILTER (WHERE status = 'sent') AS sent,
+              count(*) FILTER (WHERE status = 'bounced') AS bounced
+         FROM grow_messages WHERE campaign_id = $1`,
+      [campaignId],
+    );
+    const complaints = await q.one<{ n: string | number }>(
+      `SELECT count(*) AS n FROM grow_events e
+         JOIN grow_messages m ON m.id = e.message_id
+        WHERE e.type = 'complaint' AND m.campaign_id = $1`,
+      [campaignId],
+    );
+    const sent = Number(totals?.sent ?? 0);
+    const bounced = Number(totals?.bounced ?? 0);
+    const complaintCount = Number(complaints?.n ?? 0);
+    return {
+      sent, bounced, complaints: complaintCount,
+      bounce_rate: sent > 0 ? bounced / sent : 0,
+      complaint_rate: sent > 0 ? complaintCount / sent : 0,
+      bounce_threshold: BOUNCE_PAUSE_RATE,
+      complaint_threshold: COMPLAINT_PAUSE_RATE,
+      sample_size_met: sent >= MIN_SAMPLE,
+      min_sample: MIN_SAMPLE,
+    };
+  }
+
+  app.get('/grow/campaigns/:id/resume-info', async (req) => {
+    req.requireRole('viewer');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const campaign = await q.one<{ status: string; pause_reason: string | null }>(
+        `SELECT status, pause_reason FROM grow_campaigns WHERE id = $1`, [id],
+      );
+      if (!campaign) throw new HttpError(404, 'Campaign not found', 'not_found');
+      const domains = await q.rows<{ domain: string }>(
+        `SELECT domain FROM grow_sending_domains WHERE enabled ORDER BY domain`,
+      );
+      const stats = await currentBreakerStats(q, id);
+      return {
+        status: campaign.status,
+        pause_reason: campaign.pause_reason,
+        sending_domains: domains.map((d) => d.domain),
+        ...stats,
+      };
+    });
+  });
+
+  const resumeInput = z.object({ reason: z.string().trim().min(1, 'A reason is required').max(2000) });
+
+  app.post('/grow/campaigns/:id/resume', async (req) => {
+    req.requireRole('manager');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const { reason } = resumeInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const current = await q.one<{ status: string; pause_reason: string | null }>(
+        `SELECT status, pause_reason FROM grow_campaigns WHERE id = $1`, [id],
+      );
+      if (!current) throw new HttpError(404, 'Campaign not found', 'not_found');
+      if (current.status !== 'paused') {
+        throw new HttpError(400, 'This campaign is not paused.', 'not_paused');
+      }
+
+      const readiness = await checkSendingReadiness(q);
+      if (!readiness.ready) {
+        const missing = [
+          !readiness.hasVerifiedDomain ? 'no fully verified sending domain (SPF, DKIM, and DMARC)' : null,
+          !readiness.hasActiveMailbox ? 'no active mailbox' : null,
+        ].filter(Boolean).join(' and ');
+        throw new HttpError(400, `Can't resume — this org has ${missing} yet.`, 'not_ready_to_send');
+      }
+
+      // The numbers at the moment of resume, captured into the audit
+      // record itself — not just a pointer to "whatever /grow/stats says
+      // now," which would read differently after the fact as more sends
+      // land. breaker_armed_at = now(): the rearm. The breaker re-checks
+      // the rate over whatever ships from this point forward
+      // (lib/growScheduler.ts's circuitBreaker()) and can pause again if
+      // the problem is real — this overrides one trip, not the safety
+      // itself.
+      const statsAtResume = await currentBreakerStats(q, id);
+
+      const campaign = await q.one(
+        `UPDATE grow_campaigns
+            SET status = 'running', pause_reason = NULL, breaker_armed_at = now()
+          WHERE id = $1
+        RETURNING ${CAMPAIGN_FIELDS}`,
+        [id],
+      );
+
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_campaigns.resumed',
+        entityType: 'grow_campaigns', entityId: id, ip: req.ip,
+        diff: { reason, previous_pause_reason: current.pause_reason, ...statsAtResume },
+      });
+
       return campaign;
     });
   });

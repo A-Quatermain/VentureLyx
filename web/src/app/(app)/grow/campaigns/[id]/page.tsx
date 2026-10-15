@@ -12,7 +12,7 @@ import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import type {
   GrowCampaign, GrowSequenceStep, GrowSequenceGenerateResponse, GrowSenderProfile, GrowSendingReadiness,
-  OrgProfile,
+  OrgProfile, GrowResumeInfo,
 } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -55,6 +55,132 @@ interface ActiveAssist {
 
 const CAMPAIGNS_KEY = '/grow/campaigns';
 const stepsKey = (id: string) => `/grow/campaigns/${id}/steps`;
+const resumeInfoKey = (id: string) => `/grow/campaigns/${id}/resume-info`;
+
+const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
+
+function ResumeCampaignDialog({
+  campaignId, open, onClose, onResumed,
+}: {
+  campaignId: string;
+  open: boolean;
+  onClose: () => void;
+  onResumed: () => void;
+}) {
+  const { data: info, isLoading } = useApi<GrowResumeInfo>(open ? resumeInfoKey(campaignId) : null);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setReason('');
+      setError(null);
+    }
+  }, [open]);
+
+  if (!open) return null;
+
+  async function onConfirm() {
+    if (!reason.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/grow/campaigns/${campaignId}/resume`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      onResumed();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not resume this campaign.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const overThreshold = info
+    ? info.sample_size_met && (info.bounce_rate > info.bounce_threshold || info.complaint_rate > info.complaint_threshold)
+    : false;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-foreground/40" onClick={onClose} />
+      <div className="relative w-full max-w-md rounded-xl border border-border bg-surface p-6 shadow-xl">
+        <p className="font-display text-lg font-bold">Resume this campaign?</p>
+
+        {isLoading || !info ? (
+          <div className="mt-4 flex flex-col gap-2">
+            <Skeleton className="h-4 w-full rounded bg-muted" />
+            <Skeleton className="h-4 w-2/3 rounded bg-muted" />
+          </div>
+        ) : (
+          <>
+            {info.pause_reason && (
+              <p className="mt-2 text-sm text-muted-foreground">
+                Paused because: <span className="text-foreground">{info.pause_reason}</span>
+              </p>
+            )}
+            <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border border-border p-3 text-xs">
+              <div>
+                <p className="text-muted-foreground">Sent</p>
+                <p className="font-mono tabular-nums text-foreground">{info.sent}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Bounce rate</p>
+                <p className={`font-mono tabular-nums ${info.bounce_rate > info.bounce_threshold ? 'text-destructive' : 'text-foreground'}`}>
+                  {pct(info.bounce_rate)} <span className="text-muted-foreground">(limit {pct(info.bounce_threshold)})</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Complaints</p>
+                <p className="font-mono tabular-nums text-foreground">{info.complaints}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Complaint rate</p>
+                <p className={`font-mono tabular-nums ${info.complaint_rate > info.complaint_threshold ? 'text-destructive' : 'text-foreground'}`}>
+                  {pct(info.complaint_rate)} <span className="text-muted-foreground">(limit {pct(info.complaint_threshold)})</span>
+                </p>
+              </div>
+            </div>
+            {!info.sample_size_met && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Fewer than {info.min_sample} messages sent so far — not enough data yet to say whether these rates are a real problem.
+              </p>
+            )}
+            {overThreshold && (
+              <Card className="mt-3 flex items-start gap-2 border-warning/40 bg-warning/5 p-3">
+                <WarningCircle size={16} weight="fill" className="mt-0.5 shrink-0 text-warning" />
+                <p className="text-xs text-warning">
+                  Bounce rate is {pct(info.bounce_rate)}. Resuming without cleaning the list can damage{' '}
+                  {info.sending_domains.length > 0 ? info.sending_domains.join(', ') : 'this org’s domain'}&rsquo;s sending reputation.
+                  Continue anyway?
+                </p>
+              </Card>
+            )}
+            <label className="mt-4 flex flex-col gap-1 text-xs text-muted-foreground">
+              Reason for resuming
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                rows={3}
+                placeholder="e.g. Cleaned the list and removed invalid addresses."
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              />
+            </label>
+          </>
+        )}
+
+        {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+        <div className="mt-6 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={onConfirm} disabled={busy || !reason.trim() || isLoading}>
+            {busy ? 'Resuming…' : 'Resume'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function GrowCampaignPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -65,6 +191,7 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
   // gracefully server-side, it just wouldn't show these controls first.
   const canEdit = atLeast(role, 'staff');
   const canDelete = atLeast(role, 'manager');
+  const canResume = atLeast(role, 'manager');
 
   const { data: campaigns, isLoading: campaignLoading, error: campaignError } =
     useApi<GrowCampaign[]>(CAMPAIGNS_KEY);
@@ -89,6 +216,7 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [activeAssist, setActiveAssist] = useState<ActiveAssist | null>(null);
+  const [resumeDialogOpen, setResumeDialogOpen] = useState(false);
 
   useEffect(() => {
     if (steps) {
@@ -277,10 +405,15 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
                   <Pause size={14} weight="bold" className="mr-1.5 inline" />
                   {statusBusy ? 'Pausing…' : 'Pause'}
                 </Button>
-              ) : campaign.status === 'draft' || campaign.status === 'paused' ? (
+              ) : campaign.status === 'draft' ? (
                 <Button onClick={() => onSetStatus('running')} disabled={statusBusy || readiness?.ready === false}>
                   <Play size={14} weight="bold" className="mr-1.5 inline" />
                   {statusBusy ? 'Starting…' : 'Start'}
+                </Button>
+              ) : campaign.status === 'paused' && canResume ? (
+                <Button onClick={() => setResumeDialogOpen(true)} disabled={readiness?.ready === false}>
+                  <Play size={14} weight="bold" className="mr-1.5 inline" />
+                  Resume
                 </Button>
               ) : null}
             </>
@@ -499,6 +632,13 @@ export default function GrowCampaignPage({ params }: { params: Promise<{ id: str
           </ul>
         )}
       </Card>
+
+      <ResumeCampaignDialog
+        campaignId={id}
+        open={resumeDialogOpen}
+        onClose={() => setResumeDialogOpen(false)}
+        onResumed={() => { setResumeDialogOpen(false); mutate(CAMPAIGNS_KEY); }}
+      />
     </div>
   );
 }

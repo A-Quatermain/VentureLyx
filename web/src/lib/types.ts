@@ -687,6 +687,21 @@ export interface GrowCampaign {
   updated_at: string;
 }
 
+export interface GrowResumeInfo {
+  status: GrowCampaignStatus;
+  pause_reason: string | null;
+  sending_domains: string[];
+  sent: number;
+  bounced: number;
+  complaints: number;
+  bounce_rate: number;
+  complaint_rate: number;
+  bounce_threshold: number;
+  complaint_threshold: number;
+  sample_size_met: boolean;
+  min_sample: number;
+}
+
 // ---- GET /grow/campaigns/:id/stats — lifetime, not just today ------------
 export interface GrowCampaignStepStats {
   step_no: number;
