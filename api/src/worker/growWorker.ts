@@ -36,7 +36,7 @@ import { claimDue, planTick } from '../lib/growScheduler.js';
 import { pollMailbox, matchGrowMessage, type MailboxCreds } from '../lib/growPoller.js';
 import { promoteOnReply } from '../lib/growPromote.js';
 import { classifyReply } from '../lib/growClassify.js';
-import { classifyBounce } from '../lib/growBounceClassify.js';
+import { classifyBounce, extractBounceCode } from '../lib/growBounceClassify.js';
 import { wrapClickableLinks } from '../lib/growClickTracking.js';
 import type { Querier } from '../lib/db.js';
 
@@ -417,19 +417,33 @@ async function handleClassifiedMessage(
     // sniff in growPoller.ts's classifyKind() — good enough to route "is
     // this worth classifying as a bounce at all," not precise enough to
     // decide whether to permanently suppress. The real answer comes from
-    // running the actual DSN body text through the shared classifier
+    // running the actual DSN text through the shared classifier
     // (lib/growBounceClassify.ts) — the same one the synchronous SMTP
     // rejection path above uses — which can tell a genuine bad-address
     // hard bounce apart from a policy/reputation block that happened to
     // arrive as a 5.x DSN (a block says nothing about whether the address
     // is real, so it must never suppress it).
-    const classified = classifyBounce(msg.bodyText);
+    //
+    // The enhanced status code comes from Diagnostic-Code specifically,
+    // never Status (RFC 3464's Status field is routinely a generic
+    // placeholder like "5.0.0" even on a well-understood failure —
+    // growPoller.ts's own extractDsnFields() comment explains why it
+    // isn't even returned for this purpose). Only when no structured
+    // Diagnostic-Code exists at all does this fall back to extracting a
+    // code from the free-text body instead — classifyBounce()'s own
+    // fallback does that automatically when explicitCode is null.
+    // Keyword matching (spam/blocklist/dmarc/etc.) runs against both
+    // texts combined, since a keyword can appear in either.
+    const explicitCode = msg.diagnosticCode ? extractBounceCode(msg.diagnosticCode) : null;
+    const combinedText = [msg.diagnosticCode, msg.bodyText].filter(Boolean).join('\n');
+    const classified = classifyBounce(combinedText, explicitCode);
+    const rawForStorage = msg.bodyText || msg.diagnosticCode || '';
     await q.exec(
       `UPDATE grow_messages SET
          status = 'bounced',
          bounce_code = $2, bounce_type = $3, bounce_reason_raw = $4, bounced_at = now()
        WHERE id = $1`,
-      [match.message_id, classified.code, classified.type, msg.bodyText],
+      [match.message_id, classified.code, classified.type, rawForStorage],
     );
     if (match.enrollment_id) {
       await q.exec(`UPDATE grow_enrollments SET state = 'bounced' WHERE id = $1 AND state = 'active'`,

@@ -33,6 +33,13 @@ export interface ClassifiedMessage {
   fromAddress: string | null;
   subject: string | null;
   bodyText: string;
+  /** RFC 3464 Diagnostic-Code field, quoted-printable decoded, verbatim
+   *  after the "smtp;"/"x-foo;" type prefix is stripped — null when the
+   *  DSN carries no structured delivery-status part at all (some bounce
+   *  sources only send a free-text explanation). This, not bodyText and
+   *  never the Status field, is what a bounce's enhanced status code
+   *  should be extracted from — see lib/growBounceClassify.ts's caller. */
+  diagnosticCode: string | null;
   /** Tier 1 — envelope.inReplyTo, a trusted header. Try this match alone first. */
   primaryMessageIds: string[];
   /** Tier 2 — full-source scan, includes quoted/forwarded content. Fallback only. */
@@ -75,6 +82,56 @@ function extractText(source: Buffer): string {
     .replace(/^--.*$/gm, '')
     .replace(/^(Content-[A-Za-z-]+|MIME-Version):.*$/gim, '')
     .trim();
+}
+
+// Content-Transfer-Encoding: quoted-printable is common on both a DSN's
+// human-readable preamble and its embedded original-message headers —
+// "=3D" for a literal "=", "=XX" hex escapes, and a trailing "=" at
+// end-of-line as a soft line break (the line is folded, not actually
+// ending there). Decoded here, once, before anything downstream matches
+// keywords against this text or stores it verbatim for display — matching
+// "spam" against "sp=61m" (a real-world mangled example) would otherwise
+// silently miss, and a stored raw reason would show the escapes instead
+// of the actual server text a human is trying to read.
+export function decodeQuotedPrintable(text: string): string {
+  return text
+    .replace(/=\r?\n/g, '')
+    .replace(/=([0-9A-Fa-f]{2})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+// RFC 3464's message/delivery-status part is a block of
+// "Field-Name: value" lines (folded continuations indented per RFC 2822),
+// one per-message block followed by one block per recipient. A plain
+// field-name regex scan over the full raw source finds these regardless
+// of which MIME part they're nested inside or what the boundary markers
+// around them look like — this deliberately is NOT a full MIME parser,
+// same philosophy as extractText() above, just targeted at these four
+// specific fields rather than "the body."
+function foldedField(source: string, name: string): string | null {
+  const re = new RegExp(`^${name}:[ \\t]*([^\\r\\n]*(?:\\r?\\n[ \\t]+[^\\r\\n]*)*)`, 'im');
+  const value = re.exec(source)?.[1];
+  if (value == null) return null;
+  return value.replace(/\r?\n[ \t]+/g, ' ').trim() || null;
+}
+
+export interface DsnFields {
+  finalRecipient: string | null;
+  action: string | null;
+  /** Raw, NOT to be used for categorization — often a generic placeholder
+   *  like "5.0.0" even on a specific, well-understood failure. Kept only
+   *  for completeness/display; diagnosticCode is the field that actually
+   *  carries the real enhanced status code. */
+  status: string | null;
+  diagnosticCode: string | null;
+}
+
+export function extractDsnFields(sourceText: string): DsnFields {
+  return {
+    finalRecipient: foldedField(sourceText, 'Final-Recipient'),
+    action: foldedField(sourceText, 'Action'),
+    status: foldedField(sourceText, 'Status'),
+    diagnosticCode: foldedField(sourceText, 'Diagnostic-Code'),
+  };
 }
 
 function classifyKind(opts: {
@@ -178,20 +235,35 @@ export async function pollMailbox(creds: MailboxCreds): Promise<PollResult> {
           });
 
           const source = msg.source ?? Buffer.alloc(0);
+          const sourceText = source.toString('utf8');
           const primaryMessageIds = msg.envelope?.inReplyTo ? [msg.envelope.inReplyTo] : [];
           const fallbackMessageIds = [...new Set(
-            [...source.toString('utf8').matchAll(MESSAGE_ID_RE)].map((m) => m[0]),
+            [...sourceText.matchAll(MESSAGE_ID_RE)].map((m) => m[0]),
           )];
 
           const kind = explicit ?? (primaryMessageIds.length > 0 || fallbackMessageIds.length > 0 ? 'reply' : null);
           if (!kind) continue; // unrelated inbox mail — not Grow's concern
+
+          // Structured DSN fields, scanned on the raw (not yet QP-decoded)
+          // source — field names/structure in a real DSN are always 7-bit
+          // clean, so decoding happens after extraction, only on the
+          // value itself. Diagnostic-Code's own value looks like
+          // "smtp; 550 5.1.1 User unknown" (RFC 3464 §2.3.3) — the part
+          // before the first ";" names the diagnostic type, not useful
+          // for classification, so it's stripped here, once, rather than
+          // by every caller.
+          const diagnosticCodeRaw = extractDsnFields(sourceText).diagnosticCode;
+          const diagnosticCode = diagnosticCodeRaw
+            ? decodeQuotedPrintable(diagnosticCodeRaw.replace(/^[a-z0-9-]+;\s*/i, ''))
+            : null;
 
           messages.push({
             uid: msg.uid,
             kind,
             fromAddress,
             subject,
-            bodyText: extractText(source).slice(0, BODY_EXCERPT_MAX_CHARS),
+            bodyText: decodeQuotedPrintable(extractText(source)).slice(0, BODY_EXCERPT_MAX_CHARS),
+            diagnosticCode,
             primaryMessageIds,
             fallbackMessageIds,
           });
