@@ -177,6 +177,48 @@ function isPermanentSmtpError(err: unknown): boolean {
   return typeof code === 'number' && code >= 500 && code < 600;
 }
 
+/** A genuine hard bounce (not a policy/reputation block, which says
+ *  nothing about whether the address itself is real) suppresses the
+ *  address org-wide, stops the rest of this contact's sequence in this
+ *  campaign, and cancels whatever of theirs is still queued — the same
+ *  "remove from campaign" effect routes/grow.ts's bulk-remove endpoint
+ *  gives a human, just triggered by the bounce instead of a click.
+ *
+ *  Gated on grow_campaigns.auto_remove_hard_bounces (default on) — an
+ *  owner who'd rather eyeball every bounce before anything is suppressed
+ *  or cancelled can turn this off per campaign; the bounce is still
+ *  classified and recorded on the message either way (that happens
+ *  before this is ever called), only the automatic cleanup is skipped. */
+async function autoRemoveHardBounce(
+  q: Querier, campaignId: string, contactId: string, email: string,
+): Promise<void> {
+  const campaign = await q.one<{ auto_remove_hard_bounces: boolean }>(
+    `SELECT auto_remove_hard_bounces FROM grow_campaigns WHERE id = $1`, [campaignId],
+  );
+  if (campaign?.auto_remove_hard_bounces === false) {
+    log.info({ campaignId, email }, 'hard bounce — auto-remove is off for this campaign, left for manual review');
+    return;
+  }
+
+  await q.exec(
+    `INSERT INTO grow_suppressions (org_id, email, reason, campaign_id)
+     VALUES (app.current_org(), $1, 'hard_bounce', $2)
+     ON CONFLICT (org_id, email) DO NOTHING`,
+    [email, campaignId],
+  );
+  await q.exec(
+    `UPDATE grow_enrollments SET state = 'bounced'
+      WHERE campaign_id = $1 AND contact_id = $2 AND state = 'active'`,
+    [campaignId, contactId],
+  );
+  const cancelled = await q.exec(
+    `UPDATE grow_messages SET status = 'cancelled'
+      WHERE campaign_id = $1 AND contact_id = $2 AND status = 'queued'`,
+    [campaignId, contactId],
+  );
+  log.info({ campaignId, email, cancelled }, 'hard bounce — auto-removed: suppressed and cancelled queued steps');
+}
+
 async function sendOne(q: Querier, message: ClaimedMessage): Promise<void> {
   // Re-checked here, same as sender.js and the /contacts/:id/preview route:
   // a message can go stale between being queued and being claimed (the
@@ -295,24 +337,14 @@ async function sendOne(q: Querier, message: ClaimedMessage): Promise<void> {
         [message.id, errMessage, classified.code, classified.type, rawText],
       );
       // Only a genuine hard bounce (not a policy/reputation block, which
-      // says nothing about whether the address itself is real) suppresses
-      // permanently — same rule the async DSN path now follows below.
+      // says nothing about whether the address itself is real) triggers
+      // auto-remove — same rule the async DSN path now follows below.
       if (classified.type === 'hard') {
         const msgRow = await q.one<{ contact_id: string; campaign_id: string }>(
           `SELECT contact_id, campaign_id FROM grow_messages WHERE id = $1`, [message.id],
         );
         if (msgRow) {
-          await q.exec(
-            `INSERT INTO grow_suppressions (org_id, email, reason, campaign_id)
-             VALUES (app.current_org(), $1, 'hard_bounce', $2)
-             ON CONFLICT (org_id, email) DO NOTHING`,
-            [contact.email, msgRow.campaign_id],
-          );
-          await q.exec(
-            `UPDATE grow_enrollments SET state = 'bounced'
-              WHERE campaign_id = $1 AND contact_id = $2 AND state = 'active'`,
-            [msgRow.campaign_id, msgRow.contact_id],
-          );
+          await autoRemoveHardBounce(q, msgRow.campaign_id, msgRow.contact_id, contact.email);
         }
       }
       log.warn({ messageId: message.id, err: errMessage, bounceType: classified.type }, 'bounced (synchronous)');
@@ -445,17 +477,16 @@ async function handleClassifiedMessage(
        WHERE id = $1`,
       [match.message_id, classified.code, classified.type, rawForStorage],
     );
-    if (match.enrollment_id) {
+    if (classified.type === 'hard') {
+      await autoRemoveHardBounce(q, match.campaign_id, match.contact_id, match.email);
+    } else if (match.enrollment_id) {
+      // A soft/block bounce still marks this enrollment 'bounced' so the
+      // scheduler doesn't offer it the next step on a run that's clearly
+      // in trouble right now — but per the brief, it's deliberately NOT
+      // suppressed and NOT auto-removed: these are temporary or
+      // deliverability-reputation signals, not proof the address is dead.
       await q.exec(`UPDATE grow_enrollments SET state = 'bounced' WHERE id = $1 AND state = 'active'`,
         [match.enrollment_id]);
-    }
-    if (classified.type === 'hard') {
-      await q.exec(
-        `INSERT INTO grow_suppressions (org_id, email, reason, campaign_id)
-         VALUES (app.current_org(), $1, 'hard_bounce', $2)
-         ON CONFLICT (org_id, email) DO NOTHING`,
-        [match.email, match.campaign_id],
-      );
     }
     return;
   }

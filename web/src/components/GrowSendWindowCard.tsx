@@ -25,6 +25,7 @@ interface Draft {
   daily_target: number;
   start_date: string;
   end_date: string;
+  auto_remove_hard_bounces: boolean;
 }
 
 function draftFromCampaign(campaign: GrowCampaign): Draft {
@@ -36,6 +37,7 @@ function draftFromCampaign(campaign: GrowCampaign): Draft {
     daily_target: campaign.daily_target,
     start_date: campaign.start_date ?? '',
     end_date: campaign.end_date ?? '',
+    auto_remove_hard_bounces: campaign.auto_remove_hard_bounces,
   };
 }
 
@@ -175,6 +177,20 @@ export function GrowSendWindowCard({ campaign, canEdit }: { campaign: GrowCampai
             />
             Weekdays only
           </label>
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={draft.auto_remove_hard_bounces}
+              onChange={(e) => setDraft({ ...draft, auto_remove_hard_bounces: e.target.checked })}
+              className="h-4 w-4 rounded border-border"
+            />
+            Automatically remove and suppress hard bounces
+          </label>
+          <p className="text-xs text-muted-foreground/70">
+            When a send comes back as a permanent, dead-address bounce, stop this contact&apos;s remaining
+            steps and suppress the address org-wide. Turn this off to review bounces yourself first — they
+            still show up in the queue, nothing is cancelled automatically.
+          </p>
 
           {(tooShort || offHours) && (
             <div className="flex items-start gap-2 rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">
@@ -218,6 +234,8 @@ export function GrowSendWindowCard({ campaign, canEdit }: { campaign: GrowCampai
                 {view.end_date ? view.end_date : 'no end date'}
               </>
             )}
+            {' · '}
+            {view.auto_remove_hard_bounces ? 'auto-removes hard bounces' : 'hard bounces reviewed manually'}
           </p>
           {(tooShort || offHours) && (
             <div className="mt-1 flex items-start gap-2 rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">

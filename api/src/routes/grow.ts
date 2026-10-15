@@ -124,6 +124,7 @@ const timeField = () => z.string().regex(TIME_RE, 'Use HH:MM (24-hour)');
 // every response this constant appears in.
 const CAMPAIGN_FIELDS = `id, name, status, timezone, window_start, window_end,
   weekdays_only, daily_target, start_date::text, end_date::text, pause_reason, created_at, updated_at,
+  auto_remove_hard_bounces,
   (end_date IS NOT NULL AND end_date < (now() AT TIME ZONE timezone)::date) AS past_end_date`;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -145,6 +146,7 @@ const campaignInput = z.object({
   daily_target: z.number().int().min(1).default(100),
   start_date: dateField().nullable().optional(),
   end_date: dateField().nullable().optional(),
+  auto_remove_hard_bounces: z.boolean().default(true),
 });
 
 const campaignPatch = z.object({
@@ -158,6 +160,7 @@ const campaignPatch = z.object({
   start_date: dateField().nullable().optional(),
   end_date: dateField().nullable().optional(),
   pause_reason: z.string().nullable().optional(),
+  auto_remove_hard_bounces: z.boolean().optional(),
 });
 
 /** Both the DB (grow_campaigns_date_range_check) and this route enforce
@@ -453,7 +456,8 @@ function buildAssistPrompt(org: { name: string; vertical: string | null } | null
   ].join(' ');
 }
 
-const ENROLLMENT_STATES = ['active', 'replied', 'bounced', 'unsubscribed', 'completed', 'held', 'failed'] as const;
+const ENROLLMENT_STATES =
+  ['active', 'replied', 'bounced', 'unsubscribed', 'completed', 'held', 'failed', 'removed'] as const;
 
 // Shared by the list, the id-export used for "select all matching this
 // filter", and the bulk actions below — one definition so a bulk delete
@@ -604,11 +608,12 @@ export default async function growRoutes(app: FastifyInstance) {
       const campaign = await q.one(
         `INSERT INTO grow_campaigns
            (org_id, name, timezone, window_start, window_end, weekdays_only, daily_target,
-            start_date, end_date)
-         VALUES (app.current_org(), $1,$2,$3,$4,$5,$6,$7,$8)
+            start_date, end_date, auto_remove_hard_bounces)
+         VALUES (app.current_org(), $1,$2,$3,$4,$5,$6,$7,$8,$9)
          RETURNING ${CAMPAIGN_FIELDS}`,
         [body.name, body.timezone, body.window_start, body.window_end,
-         body.weekdays_only, body.daily_target, body.start_date ?? null, body.end_date ?? null],
+         body.weekdays_only, body.daily_target, body.start_date ?? null, body.end_date ?? null,
+         body.auto_remove_hard_bounces],
       );
       const c = campaign as { id: string };
       await audit(q, {
@@ -2501,68 +2506,80 @@ export default async function growRoutes(app: FastifyInstance) {
     });
   });
 
-  // Removes an enrollment, keeps the contact. If this was the rank-1 side
-  // of a gate (see 009_grow.sql — a rank-2 contact waits for the rank-1
-  // contact in the same campaign to go quiet before entering the queue),
-  // whatever was gated on it would otherwise wait forever for an
-  // enrollment that no longer exists, so that gate is cleared first.
-  app.delete('/grow/enrollments/:id', async (req) => {
-    req.requireRole('staff');
-    const sess = req.requireAuth();
-    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
-
-    return req.db(async (q) => {
-      const enrollment = await q.one<{ id: string; contact_id: string; campaign_id: string }>(
-        `SELECT id, contact_id, campaign_id FROM grow_enrollments WHERE id = $1`, [id],
-      );
-      if (!enrollment) throw new HttpError(404, 'Enrollment not found', 'not_found');
-
-      const ungated = await q.exec(
-        `UPDATE grow_enrollments SET gated_on_contact_id = NULL
-          WHERE campaign_id = $1 AND gated_on_contact_id = $2`,
-        [enrollment.campaign_id, enrollment.contact_id],
-      );
-      await q.exec(`DELETE FROM grow_enrollments WHERE id = $1`, [id]);
-      await audit(q, {
-        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_enrollments.delete',
-        entityType: 'grow_enrollments', entityId: id, ip: req.ip,
-        diff: { contact_id: enrollment.contact_id, campaign_id: enrollment.campaign_id, ungated },
-      });
-      return { removed: true, ungated };
-    });
+  // Pulls contacts back out of a running campaign without destroying
+  // their send history: cancels whatever of theirs is still QUEUED in
+  // this campaign (anything already 'sent' — or 'bounced', 'failed' —
+  // is left exactly as it is, since that's the compliance record), marks
+  // their enrollment 'removed' so the scheduler's dueEnrollments() (which
+  // only ever picks up state = 'active') stops offering them the next
+  // step, and optionally suppresses the address org-wide so no future
+  // campaign can re-enroll it either. Contact ids, not enrollment ids —
+  // same reasoning as the old remove-contacts endpoint this replaces had:
+  // it's what the contacts list actually has on hand for a "select all
+  // matching this filter" selection spanning pages, without a second
+  // round trip to resolve each one to its enrollment id first.
+  //
+  // Superseded by this: the old DELETE /grow/enrollments/:id and
+  // POST /grow/campaigns/:id/remove-contacts. Both hard-deleted the
+  // enrollment row, which — because grow_messages.enrollment_id is
+  // ON DELETE CASCADE — silently destroyed every sent message's record
+  // along with it. Neither call site survives this change.
+  const bulkRemoveInput = z.object({
+    ids: z.array(z.string().uuid()).min(1).max(5000),
+    suppress: z.boolean().default(false),
   });
 
-  // Bulk counterpart, shaped around what the contacts list actually
-  // selects (contacts, filtered to one campaign) rather than enrollment
-  // ids the client would otherwise have no easy way to gather for a
-  // "select all matching this filter" selection spanning pages.
-  app.post('/grow/campaigns/:id/remove-contacts', async (req) => {
-    req.requireRole('staff');
+  app.post('/grow/campaigns/:id/contacts/bulk-remove', async (req) => {
+    req.requireRole('manager');
     const sess = req.requireAuth();
     const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
-    const { ids } = bulkIdsInput.parse(req.body);
+    const { ids, suppress } = bulkRemoveInput.parse(req.body);
 
     return req.db(async (q) => {
       const campaign = await q.one(`SELECT id FROM grow_campaigns WHERE id = $1`, [id]);
       if (!campaign) throw new HttpError(404, 'Campaign not found', 'not_found');
 
+      // Whoever was gated on one of these contacts (009_grow.sql's rank-2-
+      // waits-for-rank-1 gate) would otherwise wait forever for an
+      // enrollment that's about to go quiet for good.
       const ungated = await q.exec(
         `UPDATE grow_enrollments SET gated_on_contact_id = NULL
           WHERE campaign_id = $1 AND gated_on_contact_id = ANY($2)`,
         [id, ids],
       );
-      const removed = await q.exec(
-        `DELETE FROM grow_enrollments WHERE campaign_id = $1 AND contact_id = ANY($2)`,
+      const cancelled = await q.exec(
+        `UPDATE grow_messages SET status = 'cancelled'
+          WHERE campaign_id = $1 AND contact_id = ANY($2) AND status = 'queued'`,
         [id, ids],
       );
-      if (removed > 0) {
+      const removed = await q.exec(
+        `UPDATE grow_enrollments SET state = 'removed'
+          WHERE campaign_id = $1 AND contact_id = ANY($2)`,
+        [id, ids],
+      );
+
+      let suppressed = 0;
+      if (suppress) {
+        const contacts = await q.rows<{ email: string }>(
+          `SELECT DISTINCT email FROM grow_contacts WHERE id = ANY($1)`, [ids],
+        );
+        suppressed = await q.exec(
+          `INSERT INTO grow_suppressions (org_id, email, reason, campaign_id)
+           SELECT app.current_org(), e, 'manual', $2 FROM unnest($1::text[]) AS e
+           ON CONFLICT (org_id, email) DO NOTHING`,
+          [contacts.map((c) => c.email), id],
+        );
+      }
+
+      if (removed > 0 || cancelled > 0 || suppressed > 0) {
         await audit(q, {
-          orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'grow_enrollments.bulk_delete',
+          orgId: req.ctx.orgId, actorUser: sess.user_id,
+          action: suppress ? 'grow_enrollments.bulk_remove_and_suppress' : 'grow_enrollments.bulk_remove',
           entityType: 'grow_campaigns', entityId: id, ip: req.ip,
-          diff: { requested: ids.length, removed, ungated },
+          diff: { requested: ids.length, removed, cancelled, ungated, suppressed },
         });
       }
-      return { removed, ungated };
+      return { removed, cancelled, ungated, suppressed };
     });
   });
 

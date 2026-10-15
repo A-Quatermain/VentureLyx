@@ -213,7 +213,7 @@ async function dueEnrollments(q: Querier, campaign: GrowCampaign, limit: number)
                SELECT 1 FROM grow_enrollments g
                 WHERE g.contact_id = e.gated_on_contact_id
                   AND g.campaign_id = e.campaign_id
-                  AND g.state IN ('completed','bounced','failed')))
+                  AND g.state IN ('completed','bounced','failed','removed')))
       ORDER BY e.priority, e.next_eligible_at
       LIMIT $2`,
     [campaign.id, limit],

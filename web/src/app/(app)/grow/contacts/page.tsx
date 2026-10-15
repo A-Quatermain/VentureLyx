@@ -10,7 +10,7 @@ import { apiFetch, ApiError } from '@/lib/api';
 import type {
   GrowContactListItem, GrowEnrollmentState, GrowCampaign, OrgProfile,
   GrowContactIdsResponse, GrowBulkDeleteContactsResponse, GrowBulkSuppressResponse,
-  GrowBulkEnrollmentDeleteResponse,
+  GrowBulkRemoveResponse,
 } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -20,7 +20,7 @@ import { GrowClearAllContactsDialog } from '@/components/GrowClearAllContactsDia
 import { GrowNewContactDrawer } from '@/components/GrowNewContactDrawer';
 
 const ENROLLMENT_STATES: GrowEnrollmentState[] =
-  ['active', 'replied', 'bounced', 'unsubscribed', 'completed', 'held', 'failed'];
+  ['active', 'replied', 'bounced', 'unsubscribed', 'completed', 'held', 'failed', 'removed'];
 
 const ENROLLMENT_TONE: Record<GrowEnrollmentState, Tone> = {
   active: 'primary',
@@ -30,6 +30,7 @@ const ENROLLMENT_TONE: Record<GrowEnrollmentState, Tone> = {
   completed: 'success',
   held: 'warning',
   failed: 'destructive',
+  removed: 'muted',
 };
 
 const CONTACTS_KEY_PREFIX = '/grow/contacts';
@@ -43,6 +44,7 @@ export default function GrowContactsPage() {
   const role = useRole();
   const canEdit = atLeast(role, 'staff');
   const canDelete = atLeast(role, 'manager');
+  const canManage = atLeast(role, 'manager');
 
   const [tier, setTier] = useState('');
   const [region, setRegion] = useState('');
@@ -124,6 +126,25 @@ export default function GrowContactsPage() {
     }
   }
 
+  // Same filters as selectAllMatching, but overrides enrollment_state to
+  // 'bounced' regardless of whatever filter pill is currently active —
+  // a one-click shortcut straight to "Remove & suppress" for the one
+  // group almost everyone reaching for this bulk action actually wants.
+  async function selectAllBounced() {
+    const idParams = new URLSearchParams(params);
+    idParams.delete('page');
+    idParams.set('enrollment_state', 'bounced');
+    try {
+      const res = await apiFetch<GrowContactIdsResponse>(`/grow/contacts/ids?${idParams.toString()}`);
+      setSelected(new Set(res.ids));
+      say(res.truncated
+        ? `Selected the first ${res.ids.length.toLocaleString()} bounced contacts (there are more — narrow the filter to reach the rest).`
+        : `Selected all ${res.ids.length.toLocaleString()} bounced contact${res.ids.length === 1 ? '' : 's'}.`);
+    } catch (err) {
+      say(err instanceof ApiError ? err.message : 'Could not select bounced contacts.', 'destructive');
+    }
+  }
+
   async function refresh() {
     await mutate(key);
   }
@@ -167,15 +188,22 @@ export default function GrowContactsPage() {
     }
   }
 
-  async function onRemoveFromCampaignOne(c: GrowContactListItem) {
-    if (!c.enrollment_id) return;
-    if (!window.confirm(`Remove ${c.email} from this campaign? The contact itself is kept.`)) return;
+  async function onRemoveFromCampaignOne(c: GrowContactListItem, suppress: boolean) {
+    if (!campaignId) return;
+    const verb = suppress ? 'remove and suppress' : 'remove';
+    if (!window.confirm(
+      suppress
+        ? `Remove ${c.email} from this campaign and suppress it org-wide? No campaign will be able to email it again.`
+        : `Remove ${c.email} from this campaign? Already-sent messages are kept; anything still queued is cancelled.`,
+    )) return;
     try {
-      await apiFetch(`/grow/enrollments/${c.enrollment_id}`, { method: 'DELETE' });
+      const res = await apiFetch<GrowBulkRemoveResponse>(`/grow/campaigns/${campaignId}/contacts/bulk-remove`, {
+        method: 'POST', body: JSON.stringify({ ids: [c.id], suppress }),
+      });
       await refresh();
-      say(`Removed ${c.email} from this campaign.`, 'success');
+      say(`${suppress ? 'Removed and suppressed' : 'Removed'} ${c.email}${res.cancelled > 0 ? ` (${res.cancelled} queued message(s) cancelled)` : ''}.`, 'success');
     } catch (err) {
-      say(err instanceof ApiError ? err.message : `Could not remove ${c.email} from this campaign.`, 'destructive');
+      say(err instanceof ApiError ? err.message : `Could not ${verb} ${c.email}.`, 'destructive');
     }
   }
 
@@ -225,19 +253,27 @@ export default function GrowContactsPage() {
     }
   }
 
-  async function onBulkRemoveFromCampaign() {
+  async function onBulkRemoveFromCampaign(suppress: boolean) {
     if (!campaignId) return;
     const count = selected.size;
     const name = campaigns?.find((c) => c.id === campaignId)?.name ?? 'this campaign';
-    if (!window.confirm(`Remove ${count} contact${count === 1 ? '' : 's'} from "${name}"? Each contact itself is kept.`)) return;
+    const confirmMsg = suppress
+      ? `Remove ${count} contact${count === 1 ? '' : 's'} from "${name}" and suppress them org-wide? No campaign will be able to email them again.`
+      : `Remove ${count} contact${count === 1 ? '' : 's'} from "${name}"? Already-sent messages are kept; anything still queued for them is cancelled.`;
+    if (!window.confirm(confirmMsg)) return;
     setBulkBusy(true);
     try {
-      const res = await apiFetch<GrowBulkEnrollmentDeleteResponse>(`/grow/campaigns/${campaignId}/remove-contacts`, {
-        method: 'POST', body: JSON.stringify({ ids: [...selected] }),
+      const res = await apiFetch<GrowBulkRemoveResponse>(`/grow/campaigns/${campaignId}/contacts/bulk-remove`, {
+        method: 'POST', body: JSON.stringify({ ids: [...selected], suppress }),
       });
       clearSelection();
       await refresh();
-      say(`Removed ${res.removed} from "${name}"${res.ungated > 0 ? ` (${res.ungated} gated enrollment(s) freed up)` : ''}.`, 'success');
+      say(
+        `${suppress ? 'Removed and suppressed' : 'Removed'} ${res.removed} from "${name}"` +
+        `${res.cancelled > 0 ? `, cancelled ${res.cancelled} queued message(s)` : ''}` +
+        `${res.ungated > 0 ? ` (${res.ungated} gated enrollment(s) freed up)` : ''}.`,
+        'success',
+      );
     } catch (err) {
       say(err instanceof ApiError ? err.message : 'Could not remove these contacts from the campaign.', 'destructive');
     } finally {
@@ -363,6 +399,14 @@ export default function GrowContactsPage() {
         </div>
       </Card>
 
+      {selected.size === 0 && campaignId && (
+        <div>
+          <button onClick={selectAllBounced} className="text-xs font-medium text-primary hover:underline">
+            Select all bounced in this campaign
+          </button>
+        </div>
+      )}
+
       {selected.size > 0 && (
         <Card className="flex flex-wrap items-center justify-between gap-3 border-primary/40 bg-primary/5 p-3">
           <div className="flex flex-wrap items-center gap-3 text-sm">
@@ -370,6 +414,11 @@ export default function GrowContactsPage() {
             <button onClick={selectAllMatching} className="text-primary hover:underline">
               Select all matching this filter
             </button>
+            {campaignId && (
+              <button onClick={selectAllBounced} className="text-primary hover:underline">
+                Select all bounced
+              </button>
+            )}
             <button onClick={clearSelection} className="text-muted-foreground hover:underline">
               Clear selection
             </button>
@@ -380,14 +429,25 @@ export default function GrowContactsPage() {
                 <ProhibitInset size={14} weight="bold" className="mr-1.5 inline" /> Suppress
               </Button>
             )}
-            {canEdit && (
+            {canManage && (
               <Button
                 variant="ghost"
-                onClick={onBulkRemoveFromCampaign}
+                onClick={() => onBulkRemoveFromCampaign(false)}
                 disabled={bulkBusy || !campaignId}
                 title={campaignId ? undefined : 'Filter by a campaign first'}
               >
                 <X size={14} weight="bold" className="mr-1.5 inline" /> Remove from campaign
+              </Button>
+            )}
+            {canManage && (
+              <Button
+                variant="ghost"
+                onClick={() => onBulkRemoveFromCampaign(true)}
+                disabled={bulkBusy || !campaignId}
+                title={campaignId ? undefined : 'Filter by a campaign first'}
+                className="text-destructive hover:bg-destructive/10"
+              >
+                <ProhibitInset size={14} weight="bold" className="mr-1.5 inline" /> Remove & suppress
               </Button>
             )}
             {canDelete && (
@@ -510,8 +570,8 @@ export default function GrowContactsPage() {
                           </button>
                         ) : null
                       )}
-                      {canEdit && campaignId && c.enrollment_id && (
-                        <button onClick={() => onRemoveFromCampaignOne(c)} className="text-muted-foreground hover:text-destructive hover:underline">
+                      {canManage && campaignId && c.enrollment_id && (
+                        <button onClick={() => onRemoveFromCampaignOne(c, false)} className="text-muted-foreground hover:text-destructive hover:underline">
                           Remove from campaign
                         </button>
                       )}

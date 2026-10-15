@@ -685,6 +685,7 @@ export interface GrowCampaign {
   pause_reason: string | null;
   created_at: string;
   updated_at: string;
+  auto_remove_hard_bounces: boolean;
 }
 
 export interface GrowResumeInfo {
@@ -881,7 +882,7 @@ export interface GrowDomainTestSendResponse extends GrowCampaignTestSendRenderRe
 }
 
 export type GrowEnrollmentState =
-  | 'active' | 'replied' | 'bounced' | 'unsubscribed' | 'completed' | 'held' | 'failed';
+  | 'active' | 'replied' | 'bounced' | 'unsubscribed' | 'completed' | 'held' | 'failed' | 'removed';
 
 export type GrowSuppressionReason =
   | 'unsubscribed' | 'hard_bounce' | 'complaint' | 'manual' | 'chain_overflow';
@@ -954,14 +955,11 @@ export interface GrowBulkSuppressResponse {
   alreadySuppressed: number;
 }
 
-export interface GrowEnrollmentDeleteResponse {
-  removed: boolean;
-  ungated: number;
-}
-
-export interface GrowBulkEnrollmentDeleteResponse {
+export interface GrowBulkRemoveResponse {
   removed: number;
+  cancelled: number;
   ungated: number;
+  suppressed: number;
 }
 
 export interface GrowClearAllContactsResponse {
