@@ -60,26 +60,65 @@ export interface GrowCampaign {
 
 interface MailboxCapacity {
   id: string; address: string; from_name: string; reply_to: string | null;
-  cap: number; sent_today: number; remaining: number;
+  cap: number; committed_today: number; remaining: number;
 }
 
-/** Remaining sends per mailbox today, after warmup ramp and prior sends.
+// Fixed advisory-lock namespace for the per-mailbox lock below — nothing
+// else in this codebase takes an advisory lock today, but a literal
+// classid keeps it that way: anything added later under a different
+// classid can never collide with this one, whatever objid it picks.
+const MAILBOX_LOCK_CLASSID = 837264;
+
+/** Remaining sends per mailbox today, after warmup ramp and every message
+ *  already committed to it today — 'sent', 'sending' (claimed, in flight),
+ *  or still 'queued' — across EVERY campaign in the org, not just the one
+ *  calling this. A mailbox is one shared resource; two campaigns queuing
+ *  against it in the same planning pass must each see the other's
+ *  allocation. This used to count only 'sent', which is exactly the gap a
+ *  live diagnostic found: two campaigns each read "0 sent today, 25
+ *  remaining" independently and each queued up to the full cap, so a
+ *  25/day mailbox ended up with ~60 messages committed to it in one day.
+ *
+ *  pg_advisory_xact_lock, one per candidate mailbox, acquired in a fixed
+ *  (m.id) order and held for the rest of this transaction: planTick()
+ *  already runs one campaign's whole read-then-insert sequence inside one
+ *  transaction, and runPlanningPass() (growWorker.ts) plans every one of
+ *  an org's running campaigns inside that SAME transaction, one after
+ *  another — so today, this already serializes same-org campaigns
+ *  against each other by construction. The lock is what keeps that true
+ *  even if that ever changes (a second worker process, an overlapping
+ *  tick): a second transaction asking for this mailbox's committed count
+ *  blocks until the first transaction commits its allocation, instead of
+ *  reading a stale count and over-committing anyway. Re-entrant within
+ *  one transaction (a second campaign in the same planning pass re-locks
+ *  an already-held mailbox instantly, not a deadlock), and auto-released
+ *  at COMMIT/ROLLBACK — nothing to explicitly unlock.
+ *
  *  Reads the ramp through grow_mailbox_daily_cap() (db/migrations/009_grow.sql)
  *  — the same function api/src/lib/growMailboxWarmup.ts mirrors for the UI
  *  projection — so "today's cap" can never drift between what the UI shows
  *  and what this worker actually enforces. */
 async function mailboxCapacity(q: Querier, campaign: GrowCampaign): Promise<MailboxCapacity[]> {
+  await q.rows(
+    `SELECT pg_advisory_xact_lock($1, hashtext(m.id::text))
+       FROM grow_mailboxes m
+       JOIN grow_sending_domains d ON d.id = m.domain_id
+      WHERE m.status IN ('warming','active') AND d.enabled
+      ORDER BY m.id`,
+    [MAILBOX_LOCK_CLASSID],
+  );
+
   const rows = await q.rows<{
     id: string; address: string; from_name: string; reply_to: string | null;
-    cap: number; sent_today: string | number;
+    cap: number; committed_today: string | number;
   }>(
     `SELECT m.id, m.address, m.from_name, m.reply_to,
             grow_mailbox_daily_cap(m.*, (now() AT TIME ZONE $1)::date) AS cap,
             COUNT(msg.id) FILTER (
-              WHERE msg.status = 'sent'
-                AND (msg.sent_at AT TIME ZONE $1)::date
+              WHERE msg.status IN ('sent', 'sending', 'queued')
+                AND (COALESCE(msg.sent_at, msg.scheduled_at) AT TIME ZONE $1)::date
                     = (now() AT TIME ZONE $1)::date
-            ) AS sent_today
+            ) AS committed_today
        FROM grow_mailboxes m
        JOIN grow_sending_domains d ON d.id = m.domain_id
        LEFT JOIN grow_messages msg ON msg.mailbox_id = m.id
@@ -91,8 +130,8 @@ async function mailboxCapacity(q: Querier, campaign: GrowCampaign): Promise<Mail
   return rows
     .map((r) => ({
       id: r.id, address: r.address, from_name: r.from_name, reply_to: r.reply_to,
-      cap: r.cap, sent_today: Number(r.sent_today),
-      remaining: Math.max(0, r.cap - Number(r.sent_today)),
+      cap: r.cap, committed_today: Number(r.committed_today),
+      remaining: Math.max(0, r.cap - Number(r.committed_today)),
     }))
     .filter((r) => r.remaining > 0);
 }
@@ -424,18 +463,48 @@ export async function planTick(
 
 /** Worker side. SKIP LOCKED lets several worker ticks pull without
  *  colliding; the status flip to 'sending' means a crash mid-send never
- *  silently requeues the same message twice. Ported unchanged (onto
- *  grow_messages) from scheduler.js's claimDue(). */
+ *  silently requeues the same message twice. Ported from scheduler.js's
+ *  claimDue(), plus one addition beyond the ported original: a mailbox-
+ *  cap backstop.
+ *
+ *  mailboxCapacity() enforces the cap at planning time, but planning and
+ *  sending are two different passes, minutes apart, against a count that
+ *  can only have grown in between — this is the last chokepoint before a
+ *  send actually leaves, so it re-checks independently rather than
+ *  trusting planning never over-commits (which is exactly how the gap a
+ *  live diagnostic found happened: two campaigns each planned against the
+ *  same mailbox's stale count). The check here is deliberately narrower
+ *  than planning's — 'sent' + 'sending' only, not 'queued' — because
+ *  'queued' is the pool being chosen from, not something already
+ *  consuming real capacity.
+ *
+ *  A message whose mailbox is already at cap is simply left 'queued' —
+ *  not failed, not cancelled. scheduled_at stays in the past, so the next
+ *  check still considers it "due"; the cap check is always against
+ *  *today* as of whenever that check runs, so once the calendar date
+ *  rolls over and the mailbox's count resets to zero, this exact message
+ *  is the first thing claimed. Deferred to the next day, never dropped. */
 export async function claimDue<T extends { id: string; attempts: number }>(
   q: Querier, limit = 5,
 ): Promise<T[]> {
   return q.rows<T>(
-    `UPDATE grow_messages m
+    `WITH org_tz AS (SELECT timezone FROM organizations WHERE id = app.current_org())
+     UPDATE grow_messages m
         SET status = 'sending', attempts = attempts + 1
       WHERE m.id IN (
-        SELECT id FROM grow_messages
-         WHERE status = 'queued' AND scheduled_at <= now()
-         ORDER BY scheduled_at
+        SELECT msg.id
+          FROM grow_messages msg
+          JOIN grow_mailboxes mb ON mb.id = msg.mailbox_id
+         WHERE msg.status = 'queued'
+           AND msg.scheduled_at <= now()
+           AND (
+             SELECT COUNT(*) FROM grow_messages m2
+              WHERE m2.mailbox_id = mb.id
+                AND m2.status IN ('sent', 'sending')
+                AND (COALESCE(m2.sent_at, m2.scheduled_at) AT TIME ZONE (SELECT timezone FROM org_tz))::date
+                    = (now() AT TIME ZONE (SELECT timezone FROM org_tz))::date
+           ) < grow_mailbox_daily_cap(mb.*, (now() AT TIME ZONE (SELECT timezone FROM org_tz))::date)
+         ORDER BY msg.scheduled_at
          FOR UPDATE SKIP LOCKED
          LIMIT $1)
       RETURNING m.*`,
