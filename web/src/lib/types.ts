@@ -123,8 +123,17 @@ export interface PipelineFunnelStage {
   value: string;
 }
 
+// Growth Score sub-scores, each 0-100, null only when that dimension's
+// module is disabled for the org — see api/src/lib/growthScore.ts.
+export interface GrowthScoreBreakdown {
+  score: number | null;
+  visibility: number | null;
+  reputation: number | null;
+  sales: number | null;
+}
+
 export interface SummaryResponse {
-  org: { name: string; vertical: string | null; modules: unknown };
+  org: { name: string; vertical: string | null; modules: Record<string, boolean> | null };
   money: { collected: string; outstanding: string; last_month: string };
   channels: MoneyChannel[];
   opportunities: Opportunity[];
@@ -135,6 +144,7 @@ export interface SummaryResponse {
   reputation: { avg_rating: string | null; review_count: number };
   expenses: { this_month: string };
   pipelineFunnel: PipelineFunnelStage[];
+  growthScore: GrowthScoreBreakdown;
 }
 
 export interface RevenueTrendPoint {

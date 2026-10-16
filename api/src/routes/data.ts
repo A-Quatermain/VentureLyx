@@ -12,6 +12,7 @@ import { audit } from '../lib/auth.js';
 import { HttpError, requireProvisioned } from '../plugins/context.js';
 import { moduleWriteGate } from '../lib/moduleAccess.js';
 import { slugify } from '../lib/slug.js';
+import { computeGrowthScore } from '../lib/growthScore.js';
 
 // This file mixes two modules (plus Command Center, which is never gated)
 // under one router, so the module boundary is per-route here, not a
@@ -33,8 +34,11 @@ export default async function dataRoutes(app: FastifyInstance) {
     req.requireRole('viewer');
 
     return req.db(async (q) => {
-      const [org, money, opportunities, seo, leads, work, pipeline, reputation, expenses, pipelineFunnel] = await Promise.all([
-        q.one<{ name: string; vertical: string | null; modules: unknown }>(
+      const [
+        org, money, opportunities, seo, leads, work, pipeline, reputation, expenses, pipelineFunnel,
+        marketTargets, gbp, salesSignals,
+      ] = await Promise.all([
+        q.one<{ name: string; vertical: string | null; modules: Record<string, boolean> | null }>(
           `SELECT name, vertical, modules FROM organizations WHERE id = app.current_org()`,
         ),
 
@@ -99,8 +103,14 @@ export default async function dataRoutes(app: FastifyInstance) {
              FROM deals WHERE status = 'open'`,
         ),
 
-        q.one<{ avg_rating: string | null; review_count: number }>(
-          `SELECT avg(rating)::numeric(3,1)::text AS avg_rating, count(*)::int AS review_count FROM reviews`,
+        // avg_rating/review_count feed the Reviews tile exactly as before;
+        // recent_90d and replied are additive, read only by the Growth
+        // Score's Reputation sub-score below.
+        q.one<{ avg_rating: string | null; review_count: number; recent_90d: number; replied: number }>(
+          `SELECT avg(rating)::numeric(3,1)::text AS avg_rating, count(*)::int AS review_count,
+                  count(*) FILTER (WHERE reviewed_at >= now() - interval '90 days')::int AS recent_90d,
+                  count(*) FILTER (WHERE response_status = 'published')::int AS replied
+             FROM reviews`,
         ),
 
         q.one<{ this_month: string }>(
@@ -131,7 +141,70 @@ export default async function dataRoutes(app: FastifyInstance) {
             GROUP BY stages.label, stages.ord
             ORDER BY stages.ord`,
         ),
+
+        // The three additive reads below feed only the Growth Score's
+        // sub-scores (lib/growthScore.ts) — nothing here is shown on any
+        // other tile.
+
+        // Visibility's "coverage": what share of this org's target
+        // keywords (market_targets) currently rank in the top 20.
+        // current_position is a cached column on the row itself (kept in
+        // sync by whatever writes seo_rankings for this keyword), so this
+        // needs no join to seo_rankings.
+        q.one<{ total: number; in_top20: number }>(
+          `SELECT count(*)::int AS total,
+                  count(*) FILTER (WHERE current_position IS NOT NULL AND current_position <= 20)::int AS in_top20
+             FROM market_targets`,
+        ),
+
+        // Visibility's "gbp": Google Business isn't wired up yet anywhere
+        // in this app (integrations.ts's own header: GSC today, GBP is a
+        // future provider on the same table) — this always reads false
+        // for every org right now, which is the honest answer, not a
+        // stand-in for missing data.
+        q.one<{ connected: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM integrations WHERE provider = 'gbp' AND status = 'connected'
+           ) AS connected`,
+        ),
+
+        // Sales: lead flow (30-day window, wider than the 7-day one the
+        // New Leads tile uses above), pipeline conversion, and invoice
+        // collections. deals/invoices totals are lifetime, not monthly —
+        // "is this business converting and getting paid," not a trend.
+        q.one<{
+          new_leads_30d: number; deals_total: number; deals_won: number;
+          invoiced: string; paid: string;
+        }>(
+          `SELECT
+             (SELECT count(*) FROM parties
+               WHERE is_lead AND deleted_at IS NULL
+                 AND first_seen_at >= now() - interval '30 days')::int AS new_leads_30d,
+             (SELECT count(*) FROM deals)::int AS deals_total,
+             (SELECT count(*) FROM deals WHERE status = 'won')::int AS deals_won,
+             (SELECT COALESCE(sum(total), 0) FROM invoices)::text AS invoiced,
+             (SELECT COALESCE(sum(amount_paid), 0) FROM invoices)::text AS paid`,
+        ),
       ]);
+
+      const growthScore = computeGrowthScore({
+        modules: org?.modules ?? null,
+        seoHealth: seo?.health != null ? Number(seo.health) : null,
+        marketTargetsTotal: marketTargets?.total ?? 0,
+        marketTargetsInTop20: marketTargets?.in_top20 ?? 0,
+        gbpConnected: gbp?.connected ?? false,
+        reviewCount: reputation?.review_count ?? 0,
+        avgRating: reputation?.avg_rating != null ? Number(reputation.avg_rating) : null,
+        reviewsLast90d: reputation?.recent_90d ?? 0,
+        repliedCount: reputation?.replied ?? 0,
+        thisMonthRevenue: Number(money?.collected ?? 0),
+        lastMonthRevenue: Number(money?.last_month ?? 0),
+        newLeads30d: salesSignals?.new_leads_30d ?? 0,
+        dealsTotal: salesSignals?.deals_total ?? 0,
+        dealsWon: salesSignals?.deals_won ?? 0,
+        invoicedTotal: Number(salesSignals?.invoiced ?? 0),
+        invoicedPaid: Number(salesSignals?.paid ?? 0),
+      });
 
       // Revenue by acquisition channel — the claim no single-purpose tool can make.
       const channels = await q.rows<{ channel: string; amount: string }>(
@@ -146,7 +219,10 @@ export default async function dataRoutes(app: FastifyInstance) {
           ORDER BY sum(p.amount) DESC`,
       );
 
-      return { org, money, channels, opportunities, seo, leads, work, pipeline, reputation, expenses, pipelineFunnel };
+      return {
+        org, money, channels, opportunities, seo, leads, work, pipeline, reputation, expenses, pipelineFunnel,
+        growthScore,
+      };
     });
   });
 

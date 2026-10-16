@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -8,7 +9,9 @@ import {
 } from '@phosphor-icons/react';
 import { AreaChart, Area, ResponsiveContainer, Tooltip, XAxis } from 'recharts';
 import { useApi } from '@/lib/useApi';
-import type { SummaryResponse, Signal, Lead, MeResponse, Opportunity, RevenueTrendPoint, SetupProgress } from '@/lib/types';
+import type {
+  SummaryResponse, Signal, Lead, MeResponse, Opportunity, RevenueTrendPoint, SetupProgress, GrowthScoreBreakdown,
+} from '@/lib/types';
 import { formatMoney } from '@/lib/format';
 import { AIStreamPanel } from '@/components/AIStreamPanel';
 import { SetupChecklist } from '@/components/SetupChecklist';
@@ -22,23 +25,77 @@ function Metric({
   value,
   sub,
   icon: Icon,
+  href,
+  emptyLabel,
 }: {
   label: string;
   value: string;
   sub?: string;
   icon: typeof CurrencyDollar;
+  // Opt-in, additive: omitted on every tile that hasn't been given one, so
+  // those render exactly as before. href links the tile into its module;
+  // emptyLabel — shown instead of `sub`, only when passed — is this tile's
+  // version of the Revenue Trend card's own empty state ("No revenue
+  // recorded yet."), for the one specific case the value is genuinely
+  // empty rather than a real zero worth reading as-is (SEO Score's "—"/
+  // "run a scan" already did this; this is the same idea on the rest).
+  href?: string;
+  emptyLabel?: string;
 }) {
+  const body = (
+    <Card className={href ? 'p-5 transition hover:border-primary/40 hover:shadow-sm' : 'p-5'}>
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+          <Icon size={16} weight="duotone" className="text-primary" />
+        </div>
+      </div>
+      <div className="font-mono text-3xl font-semibold tabular-nums tracking-tight">{value}</div>
+      {emptyLabel ? (
+        <div className="mt-1 text-xs text-muted-foreground/70">{emptyLabel}</div>
+      ) : (
+        sub && <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
+      )}
+    </Card>
+  );
   return (
     <StaggerItem>
-      <Card className="p-5">
+      {href ? <Link href={href} className="block">{body}</Link> : body}
+    </StaggerItem>
+  );
+}
+
+// The one tile that doesn't fit Metric: no single module to link into (it
+// blends three), and it needs a breakdown reveal Metric has no use for.
+// Same Card shell and sizing as Metric, so it sits in the grid identically.
+function GrowthScoreMetric({ growthScore }: { growthScore: GrowthScoreBreakdown }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasScore = growthScore.score != null;
+  const breakdown = `Visibility ${growthScore.visibility ?? '—'} · Reputation ${growthScore.reputation ?? '—'} · Sales ${growthScore.sales ?? '—'}`;
+
+  return (
+    <StaggerItem>
+      <Card
+        className={hasScore ? 'cursor-pointer p-5' : 'p-5'}
+        title={hasScore ? breakdown : undefined}
+        onClick={hasScore ? () => setExpanded((v) => !v) : undefined}
+      >
         <div className="mb-3 flex items-center justify-between">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Growth Score</span>
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <Icon size={16} weight="duotone" className="text-primary" />
+            <Sparkle size={16} weight="duotone" className="text-primary" />
           </div>
         </div>
-        <div className="font-mono text-3xl font-semibold tabular-nums tracking-tight">{value}</div>
-        {sub && <div className="mt-1 text-xs text-muted-foreground">{sub}</div>}
+        <div className="font-mono text-3xl font-semibold tabular-nums tracking-tight">
+          {hasScore ? growthScore.score : '—'}
+        </div>
+        <div className="mt-1 text-xs text-muted-foreground/70">
+          {!hasScore
+            ? 'Set up to see your growth score'
+            : expanded
+              ? breakdown
+              : 'sales, reputation & visibility'}
+        </div>
       </Card>
     </StaggerItem>
   );
@@ -105,6 +162,16 @@ export default function CommandCenter() {
   const funnel = summary.pipelineFunnel ?? [];
   const funnelMax = Math.max(1, ...funnel.map((f) => f.count));
 
+  // organizations.modules: an absent key means enabled (same rule
+  // api/src/lib/moduleAccess.ts enforces on writes) — only an explicit
+  // `false` hides a tile. Growth Score itself is never hidden here since
+  // it blends all three and already degrades to "—" with no data.
+  const modules = summary.org.modules;
+  const moduleOn = (key: string) => modules?.[key] !== false;
+  const showOperateTiles = moduleOn('operate');
+  const showScaleSeo = moduleOn('scaleseo');
+  const showReviews = moduleOn('reviews');
+
   return (
     <div>
       <PageHeader
@@ -116,39 +183,75 @@ export default function CommandCenter() {
       <SetupChecklist />
 
       <Stagger className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Metric
-          label="Revenue"
-          value={formatMoney(summary.money.collected)}
-          sub="collected this month"
-          icon={CurrencyDollar}
-        />
-        <Metric label="New Leads" value={String(summary.leads.new_leads)} sub={`${summary.leads.stale} stale`} icon={TrendUp} />
-        <Metric label="Customers" value={String(customers)} sub="lifecycle: customer" icon={Users} />
-        <Metric
-          label="Jobs"
-          value={String(summary.work.today_total)}
-          sub={`${summary.work.today_done} done today`}
-          icon={Briefcase}
-        />
-        <Metric
-          label="SEO Score"
-          value={summary.seo?.health != null ? String(summary.seo.health) : '—'}
-          sub={summary.seo?.health ? 'of 100' : 'run a scan'}
-          icon={MagnifyingGlass}
-        />
-        <Metric
-          label="Reviews"
-          value={summary.reputation.avg_rating ?? '—'}
-          sub={`${summary.reputation.review_count} review${summary.reputation.review_count === 1 ? '' : 's'}`}
-          icon={Star}
-        />
-        <Metric label="Expenses" value={formatMoney(summary.expenses.this_month)} sub="this month" icon={Wallet} />
-        <Metric
-          label="Growth Score"
-          value={summary.seo?.health != null ? String(summary.seo.health) : '—'}
-          sub="sales, reputation & visibility"
-          icon={Sparkle}
-        />
+        {showOperateTiles && (
+          <Metric
+            label="Revenue"
+            value={formatMoney(summary.money.collected)}
+            sub="collected this month"
+            emptyLabel={Number(summary.money.collected) === 0 ? 'No revenue yet' : undefined}
+            icon={CurrencyDollar}
+            href="/operate"
+          />
+        )}
+        {showOperateTiles && (
+          <Metric
+            label="New Leads"
+            value={String(summary.leads.new_leads)}
+            sub={`${summary.leads.stale} stale`}
+            icon={TrendUp}
+            href="/operate/leads"
+          />
+        )}
+        {showOperateTiles && (
+          <Metric
+            label="Customers"
+            value={String(customers)}
+            sub="lifecycle: customer"
+            emptyLabel={customers === 0 ? 'No customers yet — add customers' : undefined}
+            icon={Users}
+            href="/operate/customers"
+          />
+        )}
+        {showOperateTiles && (
+          <Metric
+            label="Jobs"
+            value={String(summary.work.today_total)}
+            sub={`${summary.work.today_done} done today`}
+            emptyLabel={summary.work.today_total === 0 ? 'No jobs scheduled today' : undefined}
+            icon={Briefcase}
+            href="/operate"
+          />
+        )}
+        {showScaleSeo && (
+          <Metric
+            label="SEO Score"
+            value={summary.seo?.health != null ? String(summary.seo.health) : '—'}
+            sub={summary.seo?.health ? 'of 100' : 'run a scan'}
+            icon={MagnifyingGlass}
+            href="/scaleseo"
+          />
+        )}
+        {showReviews && (
+          <Metric
+            label="Reviews"
+            value={summary.reputation.avg_rating ?? '—'}
+            sub={`${summary.reputation.review_count} review${summary.reputation.review_count === 1 ? '' : 's'}`}
+            emptyLabel={summary.reputation.review_count === 0 ? 'No reviews yet' : undefined}
+            icon={Star}
+            href="/reviews"
+          />
+        )}
+        {showOperateTiles && (
+          <Metric
+            label="Expenses"
+            value={formatMoney(summary.expenses.this_month)}
+            sub="this month"
+            emptyLabel={Number(summary.expenses.this_month) === 0 ? 'No expenses logged yet' : undefined}
+            icon={Wallet}
+            href="/operate"
+          />
+        )}
+        <GrowthScoreMetric growthScore={summary.growthScore} />
       </Stagger>
 
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
