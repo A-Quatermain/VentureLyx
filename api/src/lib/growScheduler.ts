@@ -11,8 +11,9 @@
  * "queries carry no org_id filter and must not add one").
  *
  * Two entry points, same split as the standalone engine:
- *   planTick(q, campaignId)  — decides who gets queued today
- *   claimDue(q, limit)       — worker pulls messages whose time has come
+ *   planOrgCampaigns(q)  — decides who gets queued today, for every
+ *                          running campaign in the org at once
+ *   claimDue(q, limit)   — worker pulls messages whose time has come
  *
  * One deliberate change from the ported original: weekdays_only used
  * `now.getDay()` (server-local weekday) even though window_start/window_end
@@ -32,6 +33,17 @@
  * mailbox.status alone used to be the only gate, which meant pausing a
  * domain (as opposed to every mailbox under it individually) did nothing
  * to actually stop sends.
+ *
+ * Another: planOrgCampaigns() plans every running campaign in an org in
+ * one coordinated pass, not one isolated planTick() per campaign. Two
+ * campaigns sharing a mailbox pool used to each plan in sequence against
+ * whatever capacity was left when their turn came — the first campaign
+ * in the loop could (and, on the live org this was caught on, did)
+ * consume the entire pool before the second one was even considered,
+ * leaving it at zero while it still had plenty of contacts to send.
+ * allocateMailboxCapacity() below splits each mailbox's remaining
+ * capacity across every campaign that still wants it before any of them
+ * actually picks contacts — see its own doc comment for the policy.
  */
 import type { Querier } from './db.js';
 import { getSenderProfile, render, renderSenderFields } from './growTemplate.js';
@@ -58,7 +70,7 @@ export interface GrowCampaign {
   breaker_armed_at: string | Date | null;
 }
 
-interface MailboxCapacity {
+export interface MailboxCapacity {
   id: string; address: string; from_name: string; reply_to: string | null;
   cap: number; committed_today: number; remaining: number;
 }
@@ -97,8 +109,14 @@ const MAILBOX_LOCK_CLASSID = 837264;
  *  Reads the ramp through grow_mailbox_daily_cap() (db/migrations/009_grow.sql)
  *  — the same function api/src/lib/growMailboxWarmup.ts mirrors for the UI
  *  projection — so "today's cap" can never drift between what the UI shows
- *  and what this worker actually enforces. */
-async function mailboxCapacity(q: Querier, campaign: GrowCampaign): Promise<MailboxCapacity[]> {
+ *  and what this worker actually enforces.
+ *
+ *  Takes a plain timezone, not a campaign: the mailbox pool is an org-
+ *  level resource shared by every campaign, so "today" for this count
+ *  has to be one single answer for the whole allocation decision, not
+ *  whichever campaign happened to ask. planOrgCampaigns() passes the
+ *  org's own timezone. */
+async function mailboxCapacity(q: Querier, timezone: string): Promise<MailboxCapacity[]> {
   await q.rows(
     `SELECT pg_advisory_xact_lock($1, hashtext(m.id::text))
        FROM grow_mailboxes m
@@ -124,7 +142,7 @@ async function mailboxCapacity(q: Querier, campaign: GrowCampaign): Promise<Mail
        LEFT JOIN grow_messages msg ON msg.mailbox_id = m.id
       WHERE m.status IN ('warming','active') AND d.enabled
       GROUP BY m.id`,
-    [campaign.timezone],
+    [timezone],
   );
 
   return rows
@@ -325,59 +343,109 @@ export interface PlanTickResult {
   throttledByDomain?: number;
 }
 
-/** Plans one campaign's sends for today: enforces the circuit breaker, the
- *  daily target, mailbox warmup capacity, and per-domain caps (in that
- *  order, tightest last), then inserts grow_messages for whoever is due and
- *  fits. Mirrors scheduler.js's planTick() onto grow_* tables. */
-export async function planTick(
-  q: Querier, campaignId: string, now: Date = new Date(),
+export type GrowAllocationPolicy = 'equal_share_redistribute';
+
+// The only policy implemented today. Exported as an explicit constant —
+// per the brief, "make the policy a setting so weighting by target can
+// be added later" — rather than a bare default buried inside the
+// allocator. Adding a second policy later is a new branch in
+// allocateMailboxCapacity() keyed on this constant, not a rewrite of it.
+export const ALLOCATION_POLICY: GrowAllocationPolicy = 'equal_share_redistribute';
+
+export interface CampaignDemand {
+  campaignId: string;
+  /** Contacts this campaign could use today, already capped by its own
+   *  daily_target remaining — never more than that, however much mailbox
+   *  capacity ends up free. */
+  demand: number;
+}
+
+/** Splits each mailbox's remaining capacity across every campaign still
+ *  competing for it. This decides nothing about the hard ceiling — that's
+ *  entirely mailboxCapacity()'s committed_today count and claimDue()'s
+ *  send-time backstop, both unchanged and untouched by this function. All
+ *  this does is divide whatever is already under that ceiling.
+ *
+ *  equal_share_redistribute (the only policy today): walks the mailboxes
+ *  in a fixed order, carrying one running "remaining demand" per campaign
+ *  across all of them — so a campaign's total allocation across the
+ *  WHOLE pool is capped by its total demand, not just re-capped
+ *  independently at every single mailbox. For each mailbox: split its
+ *  capacity evenly across whichever campaigns still have demand left,
+ *  then hand out whatever's left over — because a campaign's demand fell
+ *  under its equal share, or just from the floor division's remainder —
+ *  one at a time, round-robin, to campaigns that still want more, until
+ *  either the mailbox runs out or every campaign's demand does. No
+ *  capacity sits idle while a campaign still wants it; no campaign sits
+ *  at zero while the pool still has room for it. */
+export function allocateMailboxCapacity(
+  mailboxes: MailboxCapacity[], demands: CampaignDemand[],
+): Map<string, Map<string, number>> {
+  const allocations = new Map<string, Map<string, number>>();
+  const remainingDemand = new Map(demands.map((d) => [d.campaignId, d.demand]));
+  const orderedMailboxes = [...mailboxes].sort((a, b) => a.id.localeCompare(b.id));
+
+  for (const mailbox of orderedMailboxes) {
+    let capacity = mailbox.remaining;
+    const perCampaign = new Map<string, number>();
+    allocations.set(mailbox.id, perCampaign);
+    if (capacity <= 0) continue;
+
+    const eligible = demands
+      .map((d) => d.campaignId)
+      .filter((id) => (remainingDemand.get(id) ?? 0) > 0);
+    if (eligible.length === 0) continue;
+
+    const equalShare = Math.floor(capacity / eligible.length);
+    if (equalShare > 0) {
+      for (const id of eligible) {
+        const give = Math.min(equalShare, remainingDemand.get(id)!);
+        perCampaign.set(id, (perCampaign.get(id) ?? 0) + give);
+        remainingDemand.set(id, remainingDemand.get(id)! - give);
+        capacity -= give;
+      }
+    }
+
+    // Round-robin the leftover (under-share campaigns, or just the floor
+    // division's remainder) to whoever still has demand. Removing an
+    // exhausted campaign from the queue in place, without advancing the
+    // pointer, keeps the rotation fair as campaigns drop out.
+    let queue = eligible.filter((id) => (remainingDemand.get(id) ?? 0) > 0);
+    let qi = 0;
+    while (capacity > 0 && queue.length > 0) {
+      const id = queue[qi % queue.length]!;
+      if ((remainingDemand.get(id) ?? 0) <= 0) {
+        queue = queue.filter((c) => c !== id);
+        continue;
+      }
+      perCampaign.set(id, (perCampaign.get(id) ?? 0) + 1);
+      remainingDemand.set(id, remainingDemand.get(id)! - 1);
+      capacity -= 1;
+      qi = (qi + 1) % queue.length;
+    }
+  }
+
+  return allocations;
+}
+
+/** The per-campaign half of planning: steps, domain caps, picking
+ *  candidates, inserting grow_messages and advancing enrollments. Exactly
+ *  what used to be the second half of planTick(), now bounded by this
+ *  campaign's specific per-mailbox allocation (from allocateMailboxCapacity())
+ *  instead of a mailbox list every campaign could freely draw down. */
+async function commitCampaignPlan(
+  q: Querier, campaign: GrowCampaign, candidates: DueEnrollment[], budget: number,
+  mailboxes: MailboxCapacity[], allocation: Map<string, number>, now: Date,
 ): Promise<PlanTickResult> {
-  const campaign = await q.one<GrowCampaign>(`SELECT * FROM grow_campaigns WHERE id = $1`, [campaignId]);
-  if (!campaign || campaign.status !== 'running') {
-    return { queued: 0, reason: 'campaign not running' };
-  }
-
-  const today = todayInTimezone(campaign.timezone);
-  if (campaign.start_date && today.getTime() < asUtcMidnight(campaign.start_date).getTime()) {
-    return { queued: 0, reason: 'before campaign start_date' };
-  }
-  if (campaign.end_date && today.getTime() > asUtcMidnight(campaign.end_date).getTime()) {
-    return { queued: 0, reason: 'after campaign end_date' };
-  }
-
-  if (campaign.weekdays_only && isWeekend(now, campaign.timezone)) {
-    return { queued: 0, reason: 'weekend' };
-  }
-
-  const halt = await circuitBreaker(q, campaign);
-  if (halt) {
-    await q.exec(`UPDATE grow_campaigns SET status = 'paused', pause_reason = $2 WHERE id = $1`, [campaign.id, halt]);
-    return { queued: 0, reason: halt, paused: true };
-  }
-
-  const sentTodayRow = await q.one<{ n: string | number }>(
-    `SELECT COUNT(*) AS n FROM grow_messages
-      WHERE campaign_id = $1
-        AND (COALESCE(sent_at, scheduled_at) AT TIME ZONE $2)::date
-            = (now() AT TIME ZONE $2)::date
-        AND status <> 'cancelled'`,
-    [campaign.id, campaign.timezone],
-  );
-  let budget = campaign.daily_target - Number(sentTodayRow?.n ?? 0);
-  if (budget <= 0) return { queued: 0, reason: 'daily target already met' };
-
-  const mailboxes = await mailboxCapacity(q, campaign);
-  const mailboxTotal = mailboxes.reduce((s, m) => s + m.remaining, 0);
-  if (mailboxTotal === 0) return { queued: 0, reason: 'no mailbox capacity' };
-  budget = Math.min(budget, mailboxTotal);
-
   const { caps, fallback } = await domainCapacity(q, campaign);
   const steps = await q.rows<{
     step_no: number; delay_days: number; applies_to_rank: number | null;
     subject_tmpl: string; body_tmpl: string;
   }>(`SELECT * FROM grow_sequence_steps WHERE campaign_id = $1 ORDER BY step_no`, [campaign.id]);
 
-  const candidates = await dueEnrollments(q, campaign, budget * 6);
+  const mailboxById = new Map(mailboxes.map((m) => [m.id, m]));
+  const remaining = new Map(allocation);
+  let usableMailboxIds = [...allocation.keys()].filter((id) => (remaining.get(id) ?? 0) > 0);
 
   const picked: Array<{ contact: DueEnrollment; step: typeof steps[number]; mailbox: MailboxCapacity }> = [];
   const domainUsed = new Map<string, number>();
@@ -385,6 +453,7 @@ export async function planTick(
 
   for (const c of candidates) {
     if (picked.length >= budget) break;
+    if (usableMailboxIds.length === 0) break;
 
     const cap = caps.has(c.recipient_domain) ? caps.get(c.recipient_domain)! : fallback;
     const used = domainUsed.get(c.recipient_domain) ?? 0;
@@ -396,16 +465,20 @@ export async function planTick(
     );
     if (!step) continue;
 
-    let mailbox: MailboxCapacity | null = null;
-    for (let n = 0; n < mailboxes.length; n++) {
-      const m = mailboxes[(mi + n) % mailboxes.length]!;
-      if (m.remaining > 0) { mailbox = m; mi = (mi + n + 1) % mailboxes.length; break; }
+    let chosenId: string | null = null;
+    for (let n = 0; n < usableMailboxIds.length; n++) {
+      const id = usableMailboxIds[(mi + n) % usableMailboxIds.length]!;
+      if ((remaining.get(id) ?? 0) > 0) { chosenId = id; mi = (mi + n + 1) % usableMailboxIds.length; break; }
     }
-    if (!mailbox) break;
+    if (!chosenId) break;
 
-    mailbox.remaining -= 1;
+    remaining.set(chosenId, remaining.get(chosenId)! - 1);
+    if (remaining.get(chosenId)! <= 0) {
+      usableMailboxIds = usableMailboxIds.filter((id) => id !== chosenId);
+      if (usableMailboxIds.length > 0) mi %= usableMailboxIds.length;
+    }
     domainUsed.set(c.recipient_domain, used + 1);
-    picked.push({ contact: c, step, mailbox });
+    picked.push({ contact: c, step, mailbox: mailboxById.get(chosenId)! });
   }
 
   const times = scheduleTimes(picked.length, campaign, now);
@@ -457,8 +530,136 @@ export async function planTick(
     queued: picked.length,
     considered: candidates.length,
     throttledByDomain: candidates.length - picked.length,
-    reason: picked.length < budget ? 'domain caps or no eligible contacts' : 'budget met',
+    reason: picked.length < budget ? 'domain caps or allocation exhausted' : 'budget met',
   };
+}
+
+/** Plans every running campaign in the org for today, in one coordinated
+ *  pass. Each campaign still clears every gate it always did — status,
+ *  date bounds, weekday, circuit breaker, its own daily_target budget,
+ *  the send window — individually and first; only campaigns that clear
+ *  all of those and still have contacts to send go into
+ *  allocateMailboxCapacity() for a shared split of the mailbox pool
+ *  (fetched once for the whole org, not once per campaign). Mirrors
+ *  scheduler.js's planTick() for each campaign's own gates and picking
+ *  logic (see commitCampaignPlan() above); the coordinated allocation
+ *  across campaigns is new, and the reason this exists (see this file's
+ *  header). */
+export async function planOrgCampaigns(
+  q: Querier, now: Date = new Date(),
+): Promise<Map<string, PlanTickResult>> {
+  const results = new Map<string, PlanTickResult>();
+
+  const campaigns = await q.rows<GrowCampaign>(`SELECT * FROM grow_campaigns WHERE status = 'running'`);
+  if (campaigns.length === 0) return results;
+
+  interface Ready { campaign: GrowCampaign; budget: number; candidates: DueEnrollment[] }
+  const ready: Ready[] = [];
+
+  for (const campaign of campaigns) {
+    const today = todayInTimezone(campaign.timezone);
+    if (campaign.start_date && today.getTime() < asUtcMidnight(campaign.start_date).getTime()) {
+      results.set(campaign.id, { queued: 0, reason: 'before campaign start_date' });
+      continue;
+    }
+    if (campaign.end_date && today.getTime() > asUtcMidnight(campaign.end_date).getTime()) {
+      results.set(campaign.id, { queued: 0, reason: 'after campaign end_date' });
+      continue;
+    }
+    if (campaign.weekdays_only && isWeekend(now, campaign.timezone)) {
+      results.set(campaign.id, { queued: 0, reason: 'weekend' });
+      continue;
+    }
+
+    const halt = await circuitBreaker(q, campaign);
+    if (halt) {
+      await q.exec(`UPDATE grow_campaigns SET status = 'paused', pause_reason = $2 WHERE id = $1`, [campaign.id, halt]);
+      results.set(campaign.id, { queued: 0, reason: halt, paused: true });
+      continue;
+    }
+
+    // Cheap "is there any window left today" check, reusing scheduleTimes()
+    // rather than re-deriving the same zoned start/end math separately —
+    // checked up front now (an allocation eligibility gate, per the
+    // brief) rather than only after picking, as the old single-campaign
+    // planTick() did.
+    if (scheduleTimes(1, campaign, now).length === 0) {
+      results.set(campaign.id, { queued: 0, reason: 'send window closed for today' });
+      continue;
+    }
+
+    const sentTodayRow = await q.one<{ n: string | number }>(
+      `SELECT COUNT(*) AS n FROM grow_messages
+        WHERE campaign_id = $1
+          AND (COALESCE(sent_at, scheduled_at) AT TIME ZONE $2)::date
+              = (now() AT TIME ZONE $2)::date
+          AND status <> 'cancelled'`,
+      [campaign.id, campaign.timezone],
+    );
+    const budget = campaign.daily_target - Number(sentTodayRow?.n ?? 0);
+    if (budget <= 0) {
+      results.set(campaign.id, { queued: 0, reason: 'daily target already met' });
+      continue;
+    }
+
+    const candidates = await dueEnrollments(q, campaign, budget * 6);
+    if (candidates.length === 0) {
+      results.set(campaign.id, { queued: 0, reason: 'no eligible contacts', considered: 0 });
+      continue;
+    }
+
+    ready.push({ campaign, budget, candidates });
+  }
+
+  if (ready.length === 0) return results;
+
+  // One mailbox-pool read for every ready campaign in this org, not one
+  // per campaign — the pool is an org-level resource, so "today's
+  // remaining capacity" has to be a single shared answer. Keyed by the
+  // org's own timezone, not any one campaign's (campaigns in the same org
+  // could in principle run different timezones; the mailbox pool can't
+  // have two different "today"s at once).
+  const org = await q.one<{ timezone: string }>(`SELECT timezone FROM organizations WHERE id = app.current_org()`);
+  const mailboxes = await mailboxCapacity(q, org?.timezone ?? ready[0]!.campaign.timezone);
+  if (mailboxes.length === 0) {
+    for (const r of ready) results.set(r.campaign.id, { queued: 0, reason: 'no mailbox capacity' });
+    return results;
+  }
+
+  const demands: CampaignDemand[] = ready.map((r) => ({
+    campaignId: r.campaign.id,
+    demand: Math.min(r.budget, r.candidates.length),
+  }));
+  const allocation = allocateMailboxCapacity(mailboxes, demands);
+
+  for (const r of ready) {
+    const perCampaignAllocation = new Map<string, number>();
+    for (const mailbox of mailboxes) {
+      const slots = allocation.get(mailbox.id)?.get(r.campaign.id) ?? 0;
+      if (slots > 0) perCampaignAllocation.set(mailbox.id, slots);
+    }
+    if (perCampaignAllocation.size === 0) {
+      results.set(r.campaign.id, { queued: 0, reason: 'no mailbox capacity allocated this tick' });
+      continue;
+    }
+    // One campaign's commit failing (a bad template, a one-off DB error)
+    // must not lose every other campaign's already-committed inserts in
+    // this same transaction — caught and recorded here, same resilience
+    // the old per-campaign try/catch in runPlanningPass() gave each
+    // isolated planTick() call.
+    try {
+      const result = await commitCampaignPlan(
+        q, r.campaign, r.candidates, r.budget, mailboxes, perCampaignAllocation, now,
+      );
+      results.set(r.campaign.id, result);
+    } catch (err) {
+      results.set(r.campaign.id, {
+        queued: 0, reason: `commit failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  return results;
 }
 
 /** Worker side. SKIP LOCKED lets several worker ticks pull without

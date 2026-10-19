@@ -601,7 +601,7 @@ function AddMailboxDrawer({
   const initial = {
     domain_id: domains[0]?.id ?? '', address: '', from_name: '', reply_to: '',
     smtp_host: '', smtp_port: '465', imap_host: '', imap_port: '993',
-    username: '', password: '', steady_cap: '25',
+    username: '', password: '', steady_cap: '50',
   };
   const [form, setForm] = useState(initial);
   const [busy, setBusy] = useState(false);

@@ -13,7 +13,11 @@
  * systemd services:
  *
  *   planning pass  — every PLANNER_INTERVAL_MS, calls growScheduler.ts's
- *                    planTick() for every org's every running campaign.
+ *                    planOrgCampaigns() once per org, which plans every
+ *                    one of that org's running campaigns in one
+ *                    coordinated pass (so two campaigns sharing a
+ *                    mailbox pool split it fairly, instead of the first
+ *                    one planned taking all of it).
  *   sending pass   — every SENDER_POLL_MS, calls claimDue() for every org
  *                    with at least one grow_mailbox, sends what it claims.
  *   polling pass   — every POLLER_INTERVAL_MS, the IMAP reply/bounce
@@ -32,7 +36,7 @@ import {
   GROW_BASE_URL, GROW_BASE_URL_USABLE, getSenderProfile, hasUnrenderedPlaceholder,
   firstUnrenderedPlaceholder, renderUnsubscribeFooter,
 } from '../lib/growTemplate.js';
-import { claimDue, planTick } from '../lib/growScheduler.js';
+import { claimDue, planOrgCampaigns } from '../lib/growScheduler.js';
 import { pollMailbox, matchGrowMessage, type MailboxCreds } from '../lib/growPoller.js';
 import { promoteOnReply } from '../lib/growPromote.js';
 import { classifyReply } from '../lib/growClassify.js';
@@ -117,15 +121,24 @@ async function runPlanningPass(): Promise<void> {
       const campaigns = await q.rows<{ id: string; name: string }>(
         `SELECT id, name FROM grow_campaigns WHERE status = 'running'`,
       );
-      for (const campaign of campaigns) {
-        try {
-          const result = await planTick(q, campaign.id);
-          if (result.queued > 0 || result.paused) {
+      if (campaigns.length === 0) return;
+      try {
+        // One coordinated pass for every running campaign in this org —
+        // see growScheduler.ts's planOrgCampaigns() for why this replaced
+        // a per-campaign loop each independently calling what used to be
+        // planTick(). A single commit failure inside it is already caught
+        // and recorded per-campaign there, so this catch is only for
+        // anything that escapes that (the campaign fetch above, the
+        // mailbox-pool read, the allocator itself).
+        const results = await planOrgCampaigns(q);
+        for (const campaign of campaigns) {
+          const result = results.get(campaign.id);
+          if (result && (result.queued > 0 || result.paused)) {
             log.info({ orgId, campaign: campaign.name, ...result }, 'planTick');
           }
-        } catch (err) {
-          log.error({ err, orgId, campaign: campaign.name }, 'planTick failed');
         }
+      } catch (err) {
+        log.error({ err, orgId }, 'planOrgCampaigns failed');
       }
     });
   }

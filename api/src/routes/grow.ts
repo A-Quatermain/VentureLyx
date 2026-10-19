@@ -204,7 +204,7 @@ const mailboxInput = z.object({
   imap_port: z.number().int().min(1).max(65535).nullable().optional().default(993),
   username: z.string().trim().min(1),
   password: z.string().min(1).max(500),
-  steady_cap: z.number().int().min(1).max(1000).default(25),
+  steady_cap: z.number().int().min(1).max(1000).default(50),
 });
 
 // Every field editable after creation. All optional — a PATCH only touches
