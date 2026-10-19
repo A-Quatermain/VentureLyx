@@ -17,6 +17,7 @@
  */
 import nodemailer from 'nodemailer';
 import { ImapFlow } from 'imapflow';
+import { normalizeSmartPunctuation } from './growTemplate.js';
 
 const CONNECT_TIMEOUT_MS = 10_000;
 
@@ -90,8 +91,8 @@ export async function sendRenderedTestEmail(
       from: `"${mailbox.from_name}" <${mailbox.address}>`,
       replyTo: mailbox.reply_to || undefined,
       to,
-      subject,
-      text,
+      subject: normalizeSmartPunctuation(subject),
+      text: normalizeSmartPunctuation(text),
     });
     return {
       ok: true,

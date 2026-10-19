@@ -53,6 +53,26 @@ const RESERVED_KEYS = new Set(['unsubscribe_footer', 'sender_website', 'sender_p
 // every other unresolved reserved token.
 const PLACEHOLDER_RE = /\{\{\s*[\w.:]+\s*\}\}/;
 
+// Smart punctuation -> ASCII, belt-and-suspenders against mojibake. The
+// MIME layer (growWorker.ts's sendMail call) already declares and encodes
+// UTF-8 correctly, so this isn't needed to make the bytes transmit right —
+// it's here so a render that reaches an intermediary that mishandles
+// multi-byte UTF-8 (a relay, a client's own charset-sniffing) degrades to
+// a plain straight quote/dash instead of a garbled multi-char sequence.
+const SMART_PUNCTUATION_RE = /[‘’“”–—]/g;
+const SMART_PUNCTUATION_MAP: Record<string, string> = {
+  '‘': "'", '’': "'", // left/right single quote
+  '“': '"', '”': '"', // left/right double quote
+  '–': '-', '—': '-', // en dash, em dash
+};
+
+/** Run on subject and body right before handing either to the SMTP
+ *  transport — not at template-save time, so previews and the editor keep
+ *  showing the author's actual typography. */
+export function normalizeSmartPunctuation(text: string): string {
+  return text.replace(SMART_PUNCTUATION_RE, (ch) => SMART_PUNCTUATION_MAP[ch]!);
+}
+
 /** Ported from scheduler.js's render(). */
 export function render(tmpl: string, contact: RenderableContact): string {
   return tmpl.replace(/\{\{\s*(\w+)\s*\}\}/g, (match, key: string) => {

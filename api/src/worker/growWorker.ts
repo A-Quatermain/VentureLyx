@@ -34,7 +34,7 @@ import { withPlatform, withTenant } from '../lib/db.js';
 import { decryptSecret } from '../lib/auth.js';
 import {
   GROW_BASE_URL, GROW_BASE_URL_USABLE, getSenderProfile, hasUnrenderedPlaceholder,
-  firstUnrenderedPlaceholder, renderUnsubscribeFooter,
+  firstUnrenderedPlaceholder, renderUnsubscribeFooter, normalizeSmartPunctuation,
 } from '../lib/growTemplate.js';
 import { claimDue, planOrgCampaigns } from '../lib/growScheduler.js';
 import { pollMailbox, matchGrowMessage, type MailboxCreds } from '../lib/growPoller.js';
@@ -305,8 +305,8 @@ async function sendOne(q: Querier, message: ClaimedMessage): Promise<void> {
       from: `"${mailbox.from_name}" <${mailbox.address}>`,
       replyTo: mailbox.reply_to || undefined,
       to: contact.email,
-      subject: message.subject,
-      text: body,
+      subject: normalizeSmartPunctuation(message.subject),
+      text: normalizeSmartPunctuation(body),
       headers: {
         'List-Unsubscribe': `<${unsubscribeUrl}>`,
         'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
