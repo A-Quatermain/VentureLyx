@@ -2722,10 +2722,13 @@ export default async function growRoutes(app: FastifyInstance) {
       // Already on this org's do-not-contact list (a prior hard bounce,
       // or a manual suppress) — dry-run visibility only; enrollContacts()
       // is what actually enforces this at commit time, same as it already
-      // does for every other enroll path.
+      // does for every other enroll path. Checked straight against
+      // grow_suppressions (keyed on email alone), not joined through
+      // grow_contacts — a suppressed address commonly has no contact row
+      // yet (this is its first time being imported at all), and joining
+      // through grow_contacts would silently undercount exactly that case.
       const suppressedRow = emails.length === 0 ? { n: 0 } : await q.one<{ n: string | number }>(
-        `SELECT COUNT(*) AS n FROM grow_contacts c
-          WHERE c.email = ANY($1::text[]) AND EXISTS (SELECT 1 FROM grow_suppressions s WHERE s.email = c.email)`,
+        `SELECT COUNT(*) AS n FROM grow_suppressions s WHERE s.email = ANY($1::text[])`,
         [emails],
       );
       return {
