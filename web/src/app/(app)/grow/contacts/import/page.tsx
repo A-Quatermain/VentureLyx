@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import Link from 'next/link';
 import { mutate } from 'swr';
 import {
-  UploadSimple, FileCsv, CheckCircle, WarningCircle, CaretLeft, Plus, Trash, ArrowRight,
+  UploadSimple, FileCsv, CheckCircle, WarningCircle, CaretLeft, Plus, Trash, ArrowRight, DownloadSimple,
 } from '@phosphor-icons/react';
 import { apiFetch, ApiError } from '@/lib/api';
 import { useApi } from '@/lib/useApi';
@@ -68,6 +68,24 @@ function buildFormData(file: File, campaignId: string, mapping?: GrowImportMappi
   fd.append('campaignId', campaignId);
   if (mapping) fd.append('mapping', JSON.stringify(mapping));
   return fd;
+}
+
+function csvEscape(value: string | number): string {
+  const s = String(value);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function downloadRejectedRowsCsv(rejections: { line: number; email: string; code: string; detail: string }[]) {
+  const header = ['line', 'email', 'reason_code', 'detail'];
+  const rows = rejections.map((r) => [r.line, r.email, r.code, r.detail].map(csvEscape).join(','));
+  const csv = [header.join(','), ...rows].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'rejected-rows.csv';
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function StepIndicator({ current }: { current: Step }) {
@@ -522,7 +540,7 @@ export default function GrowContactsImportPage() {
             </Card>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
             <Card className="p-4 text-center">
               <p className="font-mono text-2xl font-semibold tabular-nums" data-numeric>{summary.dedupedExisting}</p>
               <p className="mt-0.5 text-xs text-muted-foreground">Already existed (deduped)</p>
@@ -531,7 +549,39 @@ export default function GrowContactsImportPage() {
               <p className="font-mono text-2xl font-semibold tabular-nums text-warning" data-numeric>{summary.skippedAlreadyInAnotherCampaign}</p>
               <p className="mt-0.5 text-xs text-muted-foreground">Already active in another campaign</p>
             </Card>
+            <Card className="p-4 text-center">
+              <p className="font-mono text-2xl font-semibold tabular-nums" data-numeric>{summary.suppressed}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Already on do-not-contact list</p>
+            </Card>
           </div>
+
+          <Card className="p-0">
+            <div className="border-b border-border px-4 py-3">
+              <p className="text-sm font-semibold">Email verification</p>
+            </div>
+            <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
+              <div className="text-center">
+                <p className="font-mono text-xl font-semibold tabular-nums text-success" data-numeric>{summary.validCount}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">Valid</p>
+              </div>
+              <div className="text-center">
+                <p className="font-mono text-xl font-semibold tabular-nums text-warning" data-numeric>{summary.riskyCount}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">Risky (added, flagged)</p>
+              </div>
+              <div className="text-center">
+                <p className="font-mono text-xl font-semibold tabular-nums text-warning" data-numeric>{summary.unknownCount}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">Unknown (added, flagged)</p>
+              </div>
+              <div className="text-center">
+                <p className="font-mono text-xl font-semibold tabular-nums" data-numeric>{summary.roleAddressCount}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">Role addresses (flagged)</p>
+              </div>
+            </div>
+            <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+              Invalid addresses (dead domain, disposable, or provider-confirmed) are in &ldquo;Rejected&rdquo; above — they
+              won&rsquo;t be added at all.
+            </p>
+          </Card>
 
           <Card className="p-0">
             <div className="border-b border-border px-4 py-3">
@@ -553,9 +603,14 @@ export default function GrowContactsImportPage() {
 
           {summary.rejectionsByCode.length > 0 && (
             <Card className="p-0">
-              <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-                <WarningCircle size={16} className="text-destructive" />
-                <p className="text-sm font-semibold">Rejected rows, by reason</p>
+              <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <WarningCircle size={16} className="text-destructive" />
+                  <p className="text-sm font-semibold">Rejected rows, by reason</p>
+                </div>
+                <Button variant="ghost" onClick={() => downloadRejectedRowsCsv(summary.rejections)}>
+                  <DownloadSimple size={14} weight="bold" className="mr-1.5 inline" /> Download full list
+                </Button>
               </div>
               <ul className="divide-y divide-border">
                 {summary.rejectionsByCode.map((g) => (
@@ -591,12 +646,14 @@ export default function GrowContactsImportPage() {
             <CheckCircle size={28} weight="fill" className="text-success" />
           </div>
           <h2 className="font-display text-xl font-bold tracking-tight">Import complete</h2>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {[
               { label: 'Created', value: result.created },
               { label: 'Deduped (existing)', value: result.dedupedExisting },
               { label: 'Skipped (active elsewhere)', value: result.skippedAlreadyInAnotherCampaign },
+              { label: 'Suppressed (do-not-contact)', value: result.suppressed },
               { label: 'Enrolled', value: result.enrolled },
+              { label: 'Risky/unknown (flagged)', value: result.riskyCount + result.unknownCount },
             ].map((s) => (
               <div key={s.label} className="rounded-lg border border-border px-4 py-3">
                 <p className="font-mono text-xl font-semibold tabular-nums" data-numeric>{s.value}</p>

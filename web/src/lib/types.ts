@@ -1173,6 +1173,13 @@ export interface GrowImportRejectionGroup {
   examples: GrowImportRejectionExample[];
 }
 
+export interface GrowImportRejection {
+  line: number;
+  email: string;
+  code: string;
+  detail: string;
+}
+
 export interface GrowImportSummary {
   totalRows: number;
   acceptedCount: number;
@@ -1180,12 +1187,22 @@ export interface GrowImportSummary {
   byTier: Array<{ tier: string; count: number }>;
   uniqueDomains: number;
   rejectionsByCode: GrowImportRejectionGroup[];
+  /** Every rejection, uncapped — for a "download the full list" export. */
+  rejections: GrowImportRejection[];
+  /** Verify-on-import breakdown of acceptedCount. All zero for an import
+   *  that predates this feature. */
+  validCount: number;
+  riskyCount: number;
+  unknownCount: number;
+  roleAddressCount: number;
 }
 
 export interface GrowImportPreviewResponse extends GrowImportSummary {
   note: string | null;
   dedupedExisting: number;
   skippedAlreadyInAnotherCampaign: number;
+  /** Already on this org's do-not-contact list — won't be enrolled. */
+  suppressed: number;
 }
 
 export interface GrowImportCommitResponse extends GrowImportSummary {
@@ -1193,6 +1210,7 @@ export interface GrowImportCommitResponse extends GrowImportSummary {
   created: number;
   dedupedExisting: number;
   skippedAlreadyInAnotherCampaign: number;
+  suppressed: number;
   enrolled: number;
 }
 

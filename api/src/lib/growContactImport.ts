@@ -55,6 +55,15 @@ export interface GrowContactRow {
   pep: boolean | null;
   non_profit: boolean | null;
   religious: boolean | null;
+  /** Verify-on-import (growEmailVerify.ts), applied by the upload endpoint
+   *  AFTER this row is built — toContact() always defaults these three so
+   *  the shape is complete either way. Null verdict/reason here (the
+   *  default, and always what scripts/import-contacts.js's CLI path
+   *  produces) means "never run through verification," distinct from a
+   *  verified row that happened to come back 'valid' with no reason. */
+  email_verify_verdict: 'valid' | 'risky' | 'unknown' | null;
+  email_verify_reason: string | null;
+  is_role_address: boolean;
   /** Fields with no dedicated typed column — currently grade_levels and
    *  denomination (growContactImportMapping.ts's OrgField list), routed
    *  here instead of growing the typed-column list for data that's
@@ -201,6 +210,7 @@ export const INSERT_COLUMNS = [
   'entity_external_id', 'entity_name', 'region', 'city', 'state', 'phone',
   'recipient_domain', 'is_free_provider', 'enrollment', 'tier', 'is_chain', 'domain_rank',
   'fes_eo', 'ftc', 'fes_ua', 'pep', 'non_profit', 'religious',
+  'email_verify_verdict', 'email_verify_reason', 'is_role_address',
 ] as const;
 
 // The only two OrgFields (growContactImportMapping.ts) with no dedicated
@@ -263,6 +273,9 @@ export function toContact(record: Record<string, string>, org: string): GrowCont
     pep: parseStrictBool(record.pep, 'pep', { nullable: true }),
     non_profit: parseStrictBool(record.non_profit, 'non_profit', { nullable: true }),
     religious: parseStrictBool(record.religious, 'religious', { nullable: true }),
+    email_verify_verdict: null,
+    email_verify_reason: null,
+    is_role_address: false,
     attrs: buildAttrs(record),
   };
 }
@@ -274,7 +287,7 @@ export function toContact(record: Record<string, string>, org: string): GrowCont
 export function processRecords(
   entries: RecordEntry[],
   org: string,
-): { accepted: GrowContactRow[]; rejections: Rejection[] } {
+): { accepted: GrowContactRow[]; rejections: Rejection[]; acceptedLines: Map<string, number> } {
   const accepted: GrowContactRow[] = [];
   const rejections: Rejection[] = [];
   const seenEmails = new Map<string, number>(); // email -> first line seen, for in-file dedupe
@@ -297,16 +310,20 @@ export function processRecords(
     }
   }
 
-  return { accepted, rejections };
+  // Also doubles as the email -> line lookup verify-on-import
+  // (growEmailVerify.ts's applyEmailVerification, called by the upload
+  // endpoint after this returns) needs when it moves a row that passed
+  // every check here into rejections for failing verification instead.
+  return { accepted, rejections, acceptedLines: seenEmails };
 }
 
 export function processRows(
   text: string,
   org: string,
-): { totalRows: number; accepted: GrowContactRow[]; rejections: Rejection[] } {
+): { totalRows: number; accepted: GrowContactRow[]; rejections: Rejection[]; acceptedLines: Map<string, number> } {
   const { records } = parseCsvRecords(text);
-  const { accepted, rejections } = processRecords(records, org);
-  return { totalRows: records.length, accepted, rejections };
+  const { accepted, rejections, acceptedLines } = processRecords(records, org);
+  return { totalRows: records.length, accepted, rejections, acceptedLines };
 }
 
 export interface ImportSummary {
@@ -320,6 +337,17 @@ export interface ImportSummary {
     count: number;
     examples: Array<{ line: number; email: string; detail: string }>;
   }>;
+  /** Every rejection, uncapped — rejectionsByCode's own examples cap at 5
+   *  per code for the inline summary; this is what a "download the full
+   *  list" button on the import screen builds a CSV from. */
+  rejections: Rejection[];
+  /** Breakdown of acceptedCount by verify-on-import verdict
+   *  (growEmailVerify.ts) — all zero for the CLI path, which never runs
+   *  verification, so acceptedCount there just isn't explained by these. */
+  validCount: number;
+  riskyCount: number;
+  unknownCount: number;
+  roleAddressCount: number;
 }
 
 /** Same shape both the CLI's printReport() and the upload endpoint's JSON
@@ -335,10 +363,18 @@ export function summarize({
 }): ImportSummary {
   const byTier = new Map<string, number>();
   const domains = new Set<string>();
+  let validCount = 0;
+  let riskyCount = 0;
+  let unknownCount = 0;
+  let roleAddressCount = 0;
   for (const c of accepted) {
     const tier = c.tier ?? '(none)';
     byTier.set(tier, (byTier.get(tier) ?? 0) + 1);
     domains.add(c.recipient_domain);
+    if (c.email_verify_verdict === 'valid') validCount += 1;
+    else if (c.email_verify_verdict === 'risky') riskyCount += 1;
+    else if (c.email_verify_verdict === 'unknown') unknownCount += 1;
+    if (c.is_role_address) roleAddressCount += 1;
   }
 
   const byCode = new Map<string, Rejection[]>();
@@ -360,5 +396,10 @@ export function summarize({
         count: list.length,
         examples: list.slice(0, 5).map((r) => ({ line: r.line, email: r.email, detail: r.detail })),
       })),
+    rejections,
+    validCount,
+    riskyCount,
+    unknownCount,
+    roleAddressCount,
   };
 }

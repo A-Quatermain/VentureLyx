@@ -26,6 +26,7 @@ import {
   applyMapping, canAutoAccept, guessMapping, mappingMatchesHeaders, type MappingConfig,
 } from '../lib/growContactImportMapping.js';
 import { ingestFile } from '../lib/growContactImportXlsx.js';
+import { applyEmailVerification } from '../lib/growEmailVerify.js';
 import { enrollContacts } from '../lib/growEnroll.js';
 import { classifyBounce } from '../lib/growBounceClassify.js';
 import type { Querier } from '../lib/db.js';
@@ -2692,7 +2693,10 @@ export default async function growRoutes(app: FastifyInstance) {
     const mapping = parseMappingField(fields.mapping);
     const { records, note } = ingestFile(buffer, filename);
     const expanded = applyMapping(records, mapping);
-    const { accepted, rejections } = processRecords(expanded, req.ctx.orgId!);
+    const processed = processRecords(expanded, req.ctx.orgId!);
+    const { accepted, rejections } = await applyEmailVerification(
+      processed.accepted, processed.rejections, processed.acceptedLines,
+    );
     const summary = summarize({ totalRows: expanded.length, accepted, rejections });
 
     return req.db(async (q) => {
@@ -2715,11 +2719,21 @@ export default async function growRoutes(app: FastifyInstance) {
                      AND e2.state = 'active' AND cp2.status = 'running')`,
         [emails, campaignId],
       );
+      // Already on this org's do-not-contact list (a prior hard bounce,
+      // or a manual suppress) — dry-run visibility only; enrollContacts()
+      // is what actually enforces this at commit time, same as it already
+      // does for every other enroll path.
+      const suppressedRow = emails.length === 0 ? { n: 0 } : await q.one<{ n: string | number }>(
+        `SELECT COUNT(*) AS n FROM grow_contacts c
+          WHERE c.email = ANY($1::text[]) AND EXISTS (SELECT 1 FROM grow_suppressions s WHERE s.email = c.email)`,
+        [emails],
+      );
       return {
         ...summary,
         note,
         dedupedExisting: Number(existingRow?.n ?? 0),
         skippedAlreadyInAnotherCampaign: Number(skippedRow?.n ?? 0),
+        suppressed: Number(suppressedRow?.n ?? 0),
       };
     });
   });
@@ -2732,11 +2746,17 @@ export default async function growRoutes(app: FastifyInstance) {
     const mapping = parseMappingField(fields.mapping);
     const { records } = ingestFile(buffer, filename);
     const expanded = applyMapping(records, mapping);
+    const processed = processRecords(expanded, req.ctx.orgId!);
+    // Verification does real DNS/HTTP work — run it before opening the
+    // transaction below, not inside it, so a slow provider call never
+    // holds a DB connection idle.
+    const { accepted, rejections } = await applyEmailVerification(
+      processed.accepted, processed.rejections, processed.acceptedLines,
+    );
+    const summary = summarize({ totalRows: expanded.length, accepted, rejections });
 
     return req.db(async (q) => {
       await assertCampaignExists(q, campaignId);
-      const { accepted, rejections } = processRecords(expanded, req.ctx.orgId!);
-      const summary = summarize({ totalRows: expanded.length, accepted, rejections });
 
       const INSERT_COLUMNS_WITH_ATTRS = [...INSERT_COLUMNS, 'attrs'] as const;
       let created = 0;
@@ -2797,6 +2817,7 @@ export default async function growRoutes(app: FastifyInstance) {
         created,
         dedupedExisting: accepted.length - created,
         skippedAlreadyInAnotherCampaign: enrollResult.skippedActiveElsewhere,
+        suppressed: enrollResult.suppressed,
         enrolled: enrollResult.enrolled,
       };
     });
