@@ -20,7 +20,7 @@ export interface OrgProfile {
 export type AIFeature =
   | 'seo_recommendations' | 'page_generation' | 'review_response'
   | 'next_best_action' | 'metric_explanation' | 'business_blueprint' | 'sequence_writing'
-  | 'ai_visibility_check' | 'reply_classification' | 'followup_assistant';
+  | 'ai_visibility_check' | 'reply_classification' | 'followup_assistant' | 'seo_issue_fix';
 
 export type AIProvider = 'anthropic' | 'openai';
 export type AIProviderPreference = 'auto' | AIProvider;

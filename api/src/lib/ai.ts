@@ -23,12 +23,13 @@ export type Feature =
   | 'sequence_writing'
   | 'ai_visibility_check'
   | 'reply_classification'
-  | 'followup_assistant';
+  | 'followup_assistant'
+  | 'seo_issue_fix';
 
 export const FEATURES: Feature[] = [
   'seo_recommendations', 'page_generation', 'review_response',
   'next_best_action', 'metric_explanation', 'business_blueprint', 'sequence_writing',
-  'ai_visibility_check', 'reply_classification', 'followup_assistant',
+  'ai_visibility_check', 'reply_classification', 'followup_assistant', 'seo_issue_fix',
 ];
 
 export type Provider = 'anthropic' | 'openai';
@@ -55,6 +56,9 @@ export const FEATURE_TIER: Record<Feature, Tier> = {
   // Drafting one follow-up message for one specific lead/job — same shape
   // of task as review_response, same tier.
   followup_assistant: 'primary',
+  // A title/meta description or a page's structured data — same short,
+  // well-defined shape as review_response.
+  seo_issue_fix: 'primary',
 };
 
 // claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5-20251001 are the current

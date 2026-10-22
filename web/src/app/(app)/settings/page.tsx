@@ -36,6 +36,7 @@ const FEATURE_LABEL: Record<AIFeature, string> = {
   ai_visibility_check: 'AI visibility checks',
   reply_classification: 'Grow reply classification',
   followup_assistant: 'Operate follow-up drafting',
+  seo_issue_fix: 'ScaleSEO issue fixes',
 };
 
 export default function SettingsPage() {

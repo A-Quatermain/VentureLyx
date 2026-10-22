@@ -122,9 +122,12 @@ export const ISSUE_GUIDANCE: Record<string, IssueGuidance> = {
   images_missing_alt: {
     customerImpact: 'Someone using a screen reader (common for visually impaired visitors) can’t tell what these images show.',
     whyItMatters: 'It’s both an accessibility gap and a missed ranking signal — Google uses this text to understand images.',
-    steps: ['Venturelyx can draft short descriptions for these images.', 'Review and add them to each image.'],
-    timeEstimate: 'A few minutes per image once drafted',
-    who: 'ai',
+    // Not AI-draftable honestly: the crawler only stores a per-page COUNT of
+    // alt-less images (seo_pages.images_no_alt), never which images or what
+    // they show — there's nothing real to ground a draft in.
+    steps: ['Open the page and find each image with no description text.', 'Add a short, specific description of what the image actually shows (not just "image" or the filename).'],
+    timeEstimate: 'A few minutes per image',
+    who: 'diy',
   },
   thin_content: {
     customerImpact: 'This page doesn’t say much — a visitor may not find enough information to make a decision.',
@@ -157,9 +160,11 @@ export const ISSUE_GUIDANCE: Record<string, IssueGuidance> = {
   missing_canonical: {
     customerImpact: 'Not something a visitor sees directly.',
     whyItMatters: 'It tells search engines which version of a page’s URL is the “real” one to rank — without it, near-identical URLs can quietly split your ranking strength.',
-    steps: ['Venturelyx can set this the next time this page is rebuilt through AI Page Builder, or ask your web person to add a canonical tag directly.'],
+    // Not an AI drafting task — the canonical value is almost always just
+    // this page's own clean URL, a one-line technical fact, not content.
+    steps: ['Ask your web person to add a canonical tag pointing to this page’s own URL (most website builders have a field for this).'],
     timeEstimate: 'A few minutes for a developer',
-    who: 'ai',
+    who: 'pro',
   },
   broken_external_link: {
     customerImpact: 'A link to another website on your page no longer works.',
@@ -211,6 +216,17 @@ export const ISSUE_GUIDANCE: Record<string, IssueGuidance> = {
     who: 'ai',
   },
 };
+
+// Mirrors api/src/routes/ai.ts's TITLE_META_CODES/SCHEMA_CODES exactly — the
+// only issue codes with enough real per-page data (seo_pages' own title/
+// meta_description/h1/schema_types) to ground an honest AI draft. Every
+// other auto_fixable code gets a "How to fix" button that expands the
+// guidance above instead of claiming to draft something.
+export const AI_DRAFTABLE_CODES = new Set([
+  'missing_title', 'title_too_long', 'title_too_short',
+  'missing_meta_desc', 'duplicate_meta_desc', 'meta_desc_too_long',
+  'no_schema', 'missing_local_business_schema', 'incomplete_local_business_schema', 'missing_faq_schema',
+]);
 
 export const FALLBACK_GUIDANCE: IssueGuidance = {
   customerImpact: 'This affects how search engines and visitors experience this page.',

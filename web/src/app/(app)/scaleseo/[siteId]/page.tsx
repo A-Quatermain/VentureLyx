@@ -27,7 +27,7 @@ import { CrawlButton } from '@/components/CrawlButton';
 import { AIStreamPanel } from '@/components/AIStreamPanel';
 import { SitePicker } from '@/components/SitePicker';
 import { SiteDrawer } from '@/components/SiteDrawer';
-import { ISSUE_GUIDANCE, FALLBACK_GUIDANCE, WHO_LABEL, type WhoCanDo } from '@/lib/seoGuidance';
+import { ISSUE_GUIDANCE, FALLBACK_GUIDANCE, WHO_LABEL, AI_DRAFTABLE_CODES, type WhoCanDo } from '@/lib/seoGuidance';
 
 const TABS = ['Get Found', 'Scanner', 'Keywords', 'Coverage', 'Competitors', 'AI Page Builder', 'History'] as const;
 type Tab = (typeof TABS)[number];
@@ -57,9 +57,9 @@ export default function ScaleSeoHealthPage({
   const [builderKind, setBuilderKind] = useState<PageKind>('service_page');
   const [builderTopic, setBuilderTopic] = useState('');
 
-  function onFixIssue(code: string) {
+  function onFixIssue(code: string, url?: string) {
     setBuilderKind('service_page');
-    setBuilderTopic(`Fix SEO issue: ${code.replace(/_/g, ' ')}`);
+    setBuilderTopic(url ? `Rewrite ${url} to lead with a direct answer (weak Q&A structure)` : `Fix SEO issue: ${code.replace(/_/g, ' ')}`);
     setTab('AI Page Builder');
   }
 
@@ -434,7 +434,7 @@ const SUBSCORE_LABELS = {
   performance: 'Performance',
 } as const;
 
-function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code: string) => void }) {
+function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code: string, url?: string) => void }) {
   // No score yet (brand-new site, or a crawl just queued) — poll until one
   // lands instead of leaving a static "waiting" sentence up; stops itself
   // the moment a real score arrives.
@@ -575,7 +575,7 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
         ) : (
           <ul className="divide-y divide-border">
             {issues.map((issue) => (
-              <IssueRow key={issue.code} issue={issue} onFixIssue={onFixIssue} />
+              <IssueRow key={issue.code} issue={issue} siteId={siteId} onFixIssue={onFixIssue} />
             ))}
           </ul>
         )}
@@ -695,9 +695,25 @@ function AiAnswerChecksCard({ siteId }: { siteId: string }) {
 // it matter, how long will it take, and can Venturelyx do it or do they
 // need to find someone. ISSUE_GUIDANCE is keyed by the crawler's own fixed
 // issue vocabulary (workers/seo/scoring.py), not generated per-row.
-function IssueRow({ issue, onFixIssue }: { issue: SeoIssueGroup; onFixIssue: (code: string) => void }) {
+function IssueRow({
+  issue, siteId, onFixIssue,
+}: {
+  issue: SeoIssueGroup;
+  siteId: string;
+  onFixIssue: (code: string, url?: string) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const [drafting, setDrafting] = useState(false);
   const guidance = ISSUE_GUIDANCE[issue.code] ?? FALLBACK_GUIDANCE;
+  // AI genuinely drafts something real for these (title/meta/schema,
+  // grounded in that page's own crawled data) — everything else auto_fixable
+  // gets an honest "How to fix" that just opens the guidance below, since
+  // there's no real per-image or per-canonical draft to ground (see
+  // lib/seoGuidance.ts's AI_DRAFTABLE_CODES comment). weak_qa_structure is
+  // the one exception: it's a real full-page-body rewrite, so it still
+  // jumps to the AI Page Builder via onFixIssue.
+  const canAiDraft = AI_DRAFTABLE_CODES.has(issue.code);
+  const targetUrl = issue.examples[0];
 
   return (
     <li className="p-4">
@@ -722,12 +738,38 @@ function IssueRow({ issue, onFixIssue }: { issue: SeoIssueGroup; onFixIssue: (co
             className={`mt-1 shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`}
           />
         </button>
-        {issue.auto_fixable && (
-          <Button variant="ai" className="shrink-0" onClick={() => onFixIssue(issue.code)}>
-            Fix this for me
+        {issue.auto_fixable && canAiDraft && targetUrl && (
+          <Button variant="ai" className="shrink-0" onClick={() => setDrafting((v) => !v)}>
+            Draft this fix
+          </Button>
+        )}
+        {issue.auto_fixable && issue.code === 'weak_qa_structure' && (
+          <Button variant="ai" className="shrink-0" onClick={() => onFixIssue(issue.code, targetUrl)}>
+            Rewrite with AI
+          </Button>
+        )}
+        {issue.auto_fixable && !canAiDraft && issue.code !== 'weak_qa_structure' && (
+          <Button variant="ghost" className="shrink-0" onClick={() => setOpen(true)}>
+            How to fix
           </Button>
         )}
       </div>
+
+      {drafting && targetUrl && (
+        <div className="mt-3 ml-0 sm:ml-9">
+          <AIStreamPanel
+            key={`${issue.code}-${targetUrl}`}
+            path="/ai/seo-issue-fix/stream"
+            body={{ siteId, code: issue.code, url: targetUrl }}
+            title={`Draft for ${targetUrl}`}
+            triggerLabel="Draft this"
+            autoStart
+          />
+          <p className="mt-1 text-xs text-muted-foreground/70">
+            Copy this into the page{issue.pages > 1 ? ` (shown for ${targetUrl} — the other ${issue.pages - 1} affected page(s) need their own draft)` : ''}.
+          </p>
+        </div>
+      )}
 
       {open && (
         <div className="mt-3 ml-0 space-y-3 rounded-lg bg-muted p-4 text-sm sm:ml-9">

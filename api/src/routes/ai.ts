@@ -13,6 +13,7 @@ import {
 import { HttpError, requireProvisioned } from '../plugins/context.js';
 import { moduleWriteGate } from '../lib/moduleAccess.js';
 import { computeGrowthScore } from '../lib/growthScore.js';
+import { getSenderProfile } from '../lib/growTemplate.js';
 import type { Querier } from '../lib/db.js';
 
 const METRIC_KEYS = [
@@ -117,6 +118,85 @@ export default async function aiRoutes(app: FastifyInstance) {
       system: prompt.system,
       messages: [{ role: 'user', content: prompt.user }],
       maxTokens: 400,
+      providerPreference: ctx.providerPreference,
+      clients: ctx.clients,
+      modelOverride: ctx.modelOverride,
+      onUsage: (usage) => req.db((q) => logAiUsage(q, { orgId, feature, ...usage })),
+    });
+
+    await streamEventsToSSE(reply, gen);
+  });
+
+  // ---- ScaleSEO: AI per-issue fix draft ---------------------------------------
+  // The "Fix this for me" button on an auto_fixable issue used to jump to the
+  // AI Page Builder with a vague seeded topic — nonsensical for "missing
+  // title" or "no schema," which aren't a new-page-body task at all (that's
+  // thin_content/weak_qa_structure's job, and that one still routes to the
+  // Page Builder, now with its own real seed). This instead drafts the exact
+  // short text the guidance in lib/seoGuidance.ts already promises ("Venturelyx
+  // can draft a title/meta description/structured data for this page"),
+  // grounded in that one real page's current seo_pages row. Two buckets only —
+  // the ones with enough real data to ground a draft honestly:
+  //   title/meta: a title (<=60 chars) and/or meta description (~155 chars).
+  //   schema: LocalBusiness or FAQPage JSON-LD from the org's real profile.
+  // images_missing_alt has no per-image URL anywhere in the schema (seo_pages
+  // only stores a COUNT of alt-less images) and missing_canonical isn't a
+  // drafting task at all — both stay on the honest "How to fix" guidance
+  // path in the UI rather than being routed here.
+  const TITLE_META_CODES = [
+    'missing_title', 'title_too_long', 'title_too_short',
+    'missing_meta_desc', 'duplicate_meta_desc', 'meta_desc_too_long',
+  ] as const;
+  const SCHEMA_CODES = [
+    'no_schema', 'missing_local_business_schema', 'incomplete_local_business_schema', 'missing_faq_schema',
+  ] as const;
+  const ISSUE_FIX_CODES = [...TITLE_META_CODES, ...SCHEMA_CODES] as const;
+
+  app.post('/ai/seo-issue-fix/stream', { preHandler: moduleWriteGate('scaleseo') }, async (req, reply) => {
+    req.requireRole('staff');
+    const orgId = req.ctx.orgId!;
+    const feature = 'seo_issue_fix' as const;
+    const { siteId, code, url } = z.object({
+      siteId: z.string().uuid(),
+      code: z.enum(ISSUE_FIX_CODES),
+      url: z.string().trim().min(1),
+    }).parse(req.body);
+
+    const { prompt, ctx } = await req.db(async (q) => {
+      const context = await resolveAIContext(q, orgId, feature);
+      const org = await q.one<{ name: string; vertical: string | null }>(
+        `SELECT name, vertical FROM organizations WHERE id = app.current_org()`,
+      );
+      const page = await q.one<{
+        title: string | null; meta_description: string | null; h1: string | null;
+        word_count: number; schema_types: string[] | null;
+      }>(
+        `SELECT p.title, p.meta_description, p.h1, p.word_count, p.schema_types
+           FROM seo_pages p
+          WHERE p.site_id = $1 AND p.url = $2
+          ORDER BY p.crawl_id DESC LIMIT 1`,
+        [siteId, url],
+      );
+      if (!page) throw new HttpError(404, 'That page was not found in the latest crawl', 'not_found');
+
+      if ((TITLE_META_CODES as readonly string[]).includes(code)) {
+        return { prompt: buildSeoTitleMetaPrompt(org, url, page), ctx: context };
+      }
+      const sender = await getSenderProfile(q);
+      return { prompt: buildSeoSchemaPrompt(org, sender, url, page, code), ctx: context };
+    });
+
+    if (ctx.capExceeded) {
+      await streamEventsToSSE(reply, staticEvents(CAP_MESSAGE));
+      return;
+    }
+
+    const gen = streamAI({
+      orgId,
+      feature,
+      system: prompt.system,
+      messages: [{ role: 'user', content: prompt.user }],
+      maxTokens: 500,
       providerPreference: ctx.providerPreference,
       clients: ctx.clients,
       modelOverride: ctx.modelOverride,
@@ -670,6 +750,66 @@ function buildInvoiceReminderPrompt(
   ];
 
   const user = `${lines.join('\n')}\n\nDraft the payment reminder.`;
+  return { system, user };
+}
+
+function buildSeoTitleMetaPrompt(
+  org: { name: string; vertical: string | null } | null,
+  url: string,
+  page: { title: string | null; meta_description: string | null; h1: string | null; word_count: number },
+): { system: string; user: string } {
+  const system =
+    `You are drafting the <title> tag and meta description for one page of ${org?.name ?? 'this business'}'s website` +
+    `${org?.vertical ? ` (a ${org.vertical} business)` : ''}. ` +
+    `Ground this strictly in the page's own current content given below — never invent a service, offer, or ` +
+    `claim not implied by it. Output exactly two labeled lines, nothing else: ` +
+    `"Title: <60 characters or fewer>" and "Meta description: <150-160 characters>". No preamble, no markdown.`;
+
+  const user = [
+    `Page: ${url}`,
+    `Current title: ${page.title ?? '(none)'}`,
+    `Current meta description: ${page.meta_description ?? '(none)'}`,
+    `Main heading (H1): ${page.h1 ?? '(none)'}`,
+    `Word count: ${page.word_count}`,
+  ].join('\n');
+
+  return { system, user };
+}
+
+const SCHEMA_TYPE_NAME: Record<string, string> = {
+  no_schema: 'LocalBusiness',
+  missing_local_business_schema: 'LocalBusiness',
+  incomplete_local_business_schema: 'LocalBusiness',
+  missing_faq_schema: 'FAQPage',
+};
+
+function buildSeoSchemaPrompt(
+  org: { name: string; vertical: string | null } | null,
+  sender: { website_url: string | null; phone: string | null; mailing_address: string | null },
+  url: string,
+  page: { title: string | null; h1: string | null; schema_types: string[] | null },
+  code: string,
+): { system: string; user: string } {
+  const schemaType = SCHEMA_TYPE_NAME[code] ?? 'LocalBusiness';
+  const system =
+    `You are drafting ${schemaType} JSON-LD structured data for one page of ${org?.name ?? 'this business'}'s website` +
+    `${org?.vertical ? ` (a ${org.vertical} business)` : ''}. ` +
+    `Use ONLY the real facts given below — never invent an address, phone number, hours, or rating that isn't ` +
+    `given. Omit a field entirely (don't fabricate a placeholder) if its real value isn't given. Output a single ` +
+    `fenced \`\`\`json code block containing one valid JSON-LD object with "@context": "https://schema.org" and ` +
+    `"@type": "${schemaType}" — nothing else, no explanation before or after.`;
+
+  const user = [
+    `Page: ${url}`,
+    `Page title: ${page.title ?? '(none)'}`,
+    `Main heading: ${page.h1 ?? '(none)'}`,
+    `Business name: ${org?.name ?? '(unknown)'}`,
+    `Website: ${sender.website_url ?? '(not on file)'}`,
+    `Phone: ${sender.phone ?? '(not on file)'}`,
+    `Address: ${sender.mailing_address ?? '(not on file)'}`,
+    `Already-present schema types on this page: ${page.schema_types?.join(', ') || 'none'}`,
+  ].join('\n');
+
   return { system, user };
 }
 
