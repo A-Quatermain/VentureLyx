@@ -189,7 +189,7 @@ export default async function operateRoutes(app: FastifyInstance) {
       );
 
       const jobs = await db.rows(
-        `SELECT id, number, title, status, scheduled_at, created_at
+        `SELECT id, number, title, status, scheduled_start AS scheduled_at, created_at
            FROM work_orders WHERE party_id = $1 ORDER BY created_at DESC LIMIT 20`,
         [id],
       );
