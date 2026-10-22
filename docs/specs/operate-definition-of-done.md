@@ -57,3 +57,12 @@ multi-currency. Mark them "coming soon."
 - Vendor DB, documents, and accounting sync are clean "coming soon."
 - Operate's numbers still flow correctly into Command Center and the Growth Score.
 - Matches the shared design, light and dark, down to phone width.
+
+## Onboarding / Data import (added scope)
+A new client must be able to bring their existing data in and start day one with real
+numbers, not $0. Two additive pieces, specced separately:
+- Import existing invoices -> docs/specs/operate-invoice-import.md
+- Unified "Import your data" (customers, invoices, open jobs) ->
+  docs/specs/operate-data-migration.md
+Both reuse one shared CSV import framework (mapping, preview, dedupe, error report)
+and must flow correctly into Command Center and the Growth Score.
