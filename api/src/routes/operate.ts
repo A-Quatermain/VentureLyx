@@ -826,4 +826,463 @@ export default async function operateRoutes(app: FastifyInstance) {
       return { ok: true };
     });
   });
+
+  // ---- Log a manual activity (note/call) on a party --------------------
+  // Editing the party record already bumps last_activity_at (see PATCH
+  // above) but was the only "activity" signal available — there was no way
+  // for a human to just log "called, left voicemail" without changing any
+  // field. Writes straight to timeline_events via the same logTimeline()
+  // every other Operate action and the Grow bridge use, so it reads
+  // identically in the Detail screen's timeline.
+  const activityInput = z.object({
+    kind: z.enum(['note', 'call', 'email', 'meeting']).default('note'),
+    body: z.string().trim().min(1).max(4000),
+  });
+
+  app.post('/operate/parties/:id/activity', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const body = activityInput.parse(req.body);
+
+    return req.db(async (db) => {
+      const party = await db.one<{ id: string; display_name: string }>(
+        `SELECT id, display_name FROM parties WHERE id = $1 AND deleted_at IS NULL`,
+        [id],
+      );
+      if (!party) throw new HttpError(404, 'Customer not found', 'not_found');
+
+      await db.exec(`UPDATE parties SET last_activity_at = now() WHERE id = $1`, [id]);
+      await logTimeline(db, {
+        orgId: req.ctx.orgId, partyId: id, module: 'operate', eventType: `activity.${body.kind}`,
+        title: body.kind === 'note' ? 'Note added' : `Logged a ${body.kind}`,
+        body: body.body, actorUserId: sess.user_id, actorLabel: sess.full_name,
+      });
+      return { ok: true };
+    });
+  });
+
+  // ---- Jobs / work orders -----------------------------------------------
+  // docs/OPERATE-SPEC.md's full shape includes work_order_lines, recurrence
+  // generation, and assignee scheduling; docs/specs/operate-definition-of-
+  // done.md scopes v1 down to "create, schedule, update status" — the part
+  // that closes the lead -> job -> invoice path end to end. Lines/recurrence
+  // stay out until a client actually needs them.
+  const workOrderInput = z.object({
+    party_id: z.string().uuid(),
+    title: z.string().trim().min(1),
+    description: z.string().trim().nullable().optional(),
+    scheduled_start: z.string().datetime().nullable().optional(),
+    scheduled_end: z.string().datetime().nullable().optional(),
+    address_line1: z.string().trim().nullable().optional(),
+    city: z.string().trim().nullable().optional(),
+    region: z.string().trim().nullable().optional(),
+    postal_code: z.string().trim().nullable().optional(),
+  });
+
+  const WORK_ORDER_STATUSES = ['scheduled', 'dispatched', 'in_progress', 'complete', 'cancelled'] as const;
+
+  app.get('/operate/jobs', async (req) => {
+    req.requireRole('viewer');
+    const { status, party } = z.object({
+      status: z.enum(WORK_ORDER_STATUSES).optional(),
+      party: z.string().uuid().optional(),
+    }).parse(req.query);
+
+    return req.db((q) =>
+      q.rows(
+        `SELECT wo.id, wo.number, wo.title, wo.description, wo.status,
+                wo.scheduled_start, wo.scheduled_end, wo.started_at, wo.completed_at,
+                wo.party_id, p.display_name AS party_name, wo.created_at
+           FROM work_orders wo
+           JOIN parties p ON p.id = wo.party_id
+          WHERE ($1::text IS NULL OR wo.status = $1)
+            AND ($2::uuid IS NULL OR wo.party_id = $2)
+          ORDER BY wo.scheduled_start ASC NULLS LAST, wo.created_at DESC
+          LIMIT 200`,
+        [status ?? null, party ?? null],
+      ),
+    );
+  });
+
+  app.post('/operate/jobs', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const body = workOrderInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const party = await q.one<{ id: string; display_name: string }>(
+        `SELECT id, display_name FROM parties WHERE id = $1 AND deleted_at IS NULL`,
+        [body.party_id],
+      );
+      if (!party) throw new HttpError(404, 'Customer not found', 'not_found');
+
+      const job = await q.one<{ id: string }>(
+        `INSERT INTO work_orders
+           (org_id, party_id, title, description, scheduled_start, scheduled_end,
+            address_line1, city, region, postal_code)
+         VALUES (app.current_org(), $1,$2,$3,$4,$5,$6,$7,$8,$9)
+         RETURNING id, number, title, description, status, scheduled_start,
+                   scheduled_end, started_at, completed_at, party_id, created_at`,
+        [
+          body.party_id, body.title, body.description ?? null,
+          body.scheduled_start ?? null, body.scheduled_end ?? null,
+          body.address_line1 ?? null, body.city ?? null, body.region ?? null, body.postal_code ?? null,
+        ],
+      );
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'operate.job.create',
+        entityType: 'work_orders', entityId: job!.id, ip: req.ip,
+      });
+      await logTimeline(q, {
+        orgId: req.ctx.orgId, partyId: body.party_id, module: 'operate', eventType: 'job.created',
+        title: `Job scheduled: ${body.title}`, actorUserId: sess.user_id, actorLabel: sess.full_name,
+        entityType: 'work_orders', entityId: job!.id,
+      });
+      return job;
+    });
+  });
+
+  app.patch('/operate/jobs/:id', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const body = workOrderInput.partial().omit({ party_id: true }).parse(req.body);
+
+    if (Object.keys(body).length === 0) {
+      throw new HttpError(400, 'Nothing to update', 'invalid_input');
+    }
+
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    let i = 1;
+    for (const [key, value] of Object.entries(body)) {
+      fields.push(`${key} = $${i}`);
+      values.push(value);
+      i += 1;
+    }
+    values.push(id);
+
+    return req.db(async (q) => {
+      const job = await q.one<{ id: string; party_id: string; title: string }>(
+        `UPDATE work_orders SET ${fields.join(', ')}, updated_at = now()
+          WHERE id = $${i}
+        RETURNING id, number, title, description, status, scheduled_start,
+                  scheduled_end, started_at, completed_at, party_id, created_at`,
+        values,
+      );
+      if (!job) throw new HttpError(404, 'Job not found', 'not_found');
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'operate.job.update',
+        entityType: 'work_orders', entityId: id, ip: req.ip, diff: body,
+      });
+      return job;
+    });
+  });
+
+  app.post('/operate/jobs/:id/status', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const { status } = z.object({ status: z.enum(WORK_ORDER_STATUSES) }).parse(req.body);
+
+    return req.db(async (q) => {
+      const job = await q.one<{ id: string; party_id: string; title: string }>(
+        `UPDATE work_orders SET status = $1, updated_at = now(),
+                started_at = CASE WHEN $1 = 'in_progress' AND started_at IS NULL THEN now() ELSE started_at END,
+                completed_at = CASE WHEN $1 = 'complete' THEN now() ELSE completed_at END
+          WHERE id = $2
+        RETURNING id, number, title, description, status, scheduled_start,
+                  scheduled_end, started_at, completed_at, party_id, created_at`,
+        [status, id],
+      );
+      if (!job) throw new HttpError(404, 'Job not found', 'not_found');
+      await logTimeline(q, {
+        orgId: req.ctx.orgId, partyId: job.party_id, module: 'operate', eventType: 'job.status_changed',
+        title: `${job.title}: ${status.replace(/_/g, ' ')}`, actorUserId: sess.user_id, actorLabel: sess.full_name,
+        entityType: 'work_orders', entityId: id,
+      });
+      return job;
+    });
+  });
+
+  // ---- Invoices and payments ---------------------------------------------
+  // v1 scope per docs/specs/operate-definition-of-done.md: create, send,
+  // mark paid / record a payment, overdue tracking. No tax engine exists
+  // anywhere in this codebase yet, so tax is always 0 — honest, not
+  // fabricated, until a real rate is configurable. No void/edit-after-send
+  // in v1 (not named in the DoD's flow); draft invoices can still be edited
+  // via a future PATCH if a client needs it, not built until asked.
+  const invoiceLineInput = z.object({
+    description: z.string().trim().min(1),
+    quantity: z.number().positive().default(1),
+    unit_price: z.number().min(0),
+    taxable: z.boolean().default(true),
+  });
+  const invoiceInput = z.object({
+    party_id: z.string().uuid(),
+    work_order_id: z.string().uuid().nullable().optional(),
+    due_on: z.string().date().nullable().optional(),
+    lines: z.array(invoiceLineInput).min(1),
+  });
+  const paymentInput = z.object({
+    amount: z.number().positive(),
+    method: z.enum(['card', 'ach', 'cash', 'check']).nullable().optional(),
+  });
+
+  app.get('/operate/invoices', async (req) => {
+    req.requireRole('viewer');
+    const { status, party, overdue } = z.object({
+      status: z.enum(['draft', 'sent', 'partial', 'paid', 'void']).optional(),
+      party: z.string().uuid().optional(),
+      overdue: z.coerce.boolean().optional(),
+    }).parse(req.query);
+
+    return req.db((q) =>
+      q.rows(
+        `SELECT i.id, i.number, i.status, i.subtotal::text, i.tax::text, i.total::text,
+                i.amount_paid::text, (i.total - i.amount_paid)::text AS balance,
+                i.issued_on, i.due_on, i.paid_at, i.party_id, p.display_name AS party_name,
+                (i.due_on IS NOT NULL AND i.due_on < current_date AND i.status IN ('sent','partial'))
+                  AS is_overdue,
+                i.created_at
+           FROM invoices i
+           JOIN parties p ON p.id = i.party_id
+          WHERE ($1::text IS NULL OR i.status = $1)
+            AND ($2::uuid IS NULL OR i.party_id = $2)
+            AND ($3::boolean IS NULL OR
+                 (i.due_on IS NOT NULL AND i.due_on < current_date AND i.status IN ('sent','partial')) = $3)
+          ORDER BY i.created_at DESC
+          LIMIT 200`,
+        [status ?? null, party ?? null, overdue ?? null],
+      ),
+    );
+  });
+
+  app.get('/operate/invoices/:id', async (req) => {
+    req.requireRole('viewer');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const invoice = await q.one(
+        `SELECT i.id, i.number, i.status, i.subtotal::text, i.tax::text, i.total::text,
+                i.amount_paid::text, (i.total - i.amount_paid)::text AS balance,
+                i.issued_on, i.due_on, i.paid_at, i.party_id, p.display_name AS party_name,
+                i.created_at
+           FROM invoices i JOIN parties p ON p.id = i.party_id
+          WHERE i.id = $1`,
+        [id],
+      );
+      if (!invoice) throw new HttpError(404, 'Invoice not found', 'not_found');
+      const lines = await q.rows(
+        `SELECT id, description, quantity::text, unit_price::text, taxable, position
+           FROM invoice_lines WHERE invoice_id = $1 ORDER BY position`,
+        [id],
+      );
+      const payments = await q.rows(
+        `SELECT id, amount::text, method, received_at FROM payments
+          WHERE invoice_id = $1 ORDER BY received_at DESC`,
+        [id],
+      );
+      return { ...invoice, lines, payments };
+    });
+  });
+
+  app.post('/operate/invoices', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const body = invoiceInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const party = await q.one<{ id: string; display_name: string }>(
+        `SELECT id, display_name FROM parties WHERE id = $1 AND deleted_at IS NULL`,
+        [body.party_id],
+      );
+      if (!party) throw new HttpError(404, 'Customer not found', 'not_found');
+
+      // Gap-free per-org numbering without a sequence table: an advisory
+      // lock scoped to this transaction (auto-released on COMMIT/ROLLBACK)
+      // serializes concurrent invoice creates for the same org, per
+      // docs/OPERATE-SPEC.md's "allocate inside the insert transaction —
+      // SELECT max(...) + 1 outside a transaction races."
+      await q.exec(`SELECT pg_advisory_xact_lock(hashtext(app.current_org() || ':invoice_number'))`);
+      const numberRow = await q.one<{ next: number }>(
+        `SELECT COALESCE(max(substring(number from 5)::int), 0) + 1 AS next
+           FROM invoices WHERE number LIKE 'INV-%'`,
+      );
+      const number = `INV-${String(numberRow!.next).padStart(4, '0')}`;
+
+      const subtotal = body.lines.reduce((sum, l) => sum + l.quantity * l.unit_price, 0);
+      const invoice = await q.one<{ id: string }>(
+        `INSERT INTO invoices (org_id, party_id, work_order_id, number, status, subtotal, tax, total, due_on)
+         VALUES (app.current_org(), $1,$2,$3,'draft',$4,0,$4,$5)
+         RETURNING id, number, status, subtotal::text, tax::text, total::text,
+                   amount_paid::text, issued_on, due_on, party_id, created_at`,
+        [
+          body.party_id, body.work_order_id ?? null, number, subtotal.toFixed(2),
+          body.due_on ?? null,
+        ],
+      );
+      let position = 0;
+      for (const line of body.lines) {
+        await q.exec(
+          `INSERT INTO invoice_lines (org_id, invoice_id, description, quantity, unit_price, taxable, position)
+           VALUES (app.current_org(), $1,$2,$3,$4,$5,$6)`,
+          [invoice!.id, line.description, line.quantity, line.unit_price, line.taxable, position++],
+        );
+      }
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'operate.invoice.create',
+        entityType: 'invoices', entityId: invoice!.id, ip: req.ip,
+      });
+      await logTimeline(q, {
+        orgId: req.ctx.orgId, partyId: body.party_id, module: 'operate', eventType: 'invoice.created',
+        title: `Invoice ${number} created`, actorUserId: sess.user_id, actorLabel: sess.full_name,
+        entityType: 'invoices', entityId: invoice!.id,
+      });
+      return invoice;
+    });
+  });
+
+  app.post('/operate/invoices/:id/send', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const invoice = await q.one<{ id: string; party_id: string; number: string; status: string }>(
+        `SELECT id, party_id, number, status FROM invoices WHERE id = $1`,
+        [id],
+      );
+      if (!invoice) throw new HttpError(404, 'Invoice not found', 'not_found');
+      if (invoice.status !== 'draft') {
+        throw new HttpError(400, 'Only a draft invoice can be sent', 'invalid_state');
+      }
+      const updated = await q.one(
+        `UPDATE invoices SET status = 'sent', issued_on = COALESCE(issued_on, current_date),
+                due_on = COALESCE(due_on, current_date + interval '30 days')
+          WHERE id = $1
+        RETURNING id, number, status, subtotal::text, tax::text, total::text,
+                  amount_paid::text, issued_on, due_on, party_id, created_at`,
+        [id],
+      );
+      await logTimeline(q, {
+        orgId: req.ctx.orgId, partyId: invoice.party_id, module: 'operate', eventType: 'invoice.sent',
+        title: `Invoice ${invoice.number} sent`, actorUserId: sess.user_id, actorLabel: sess.full_name,
+        entityType: 'invoices', entityId: id,
+      });
+      return updated;
+    });
+  });
+
+  app.post('/operate/invoices/:id/payments', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    const body = paymentInput.parse(req.body);
+
+    return req.db(async (q) => {
+      const invoice = await q.one<{
+        id: string; party_id: string; number: string; status: string; total: string; amount_paid: string;
+      }>(
+        `SELECT id, party_id, number, status, total::text, amount_paid::text FROM invoices WHERE id = $1`,
+        [id],
+      );
+      if (!invoice) throw new HttpError(404, 'Invoice not found', 'not_found');
+      if (invoice.status === 'draft') {
+        throw new HttpError(400, 'Send the invoice before recording a payment against it', 'invalid_state');
+      }
+      if (invoice.status === 'paid' || invoice.status === 'void') {
+        throw new HttpError(400, 'This invoice is already settled', 'invalid_state');
+      }
+
+      await q.exec(
+        `INSERT INTO payments (org_id, invoice_id, party_id, amount, method, status)
+         VALUES (app.current_org(), $1,$2,$3,$4,'succeeded')`,
+        [id, invoice.party_id, body.amount.toFixed(2), body.method ?? null],
+      );
+      const updated = await q.one(
+        `UPDATE invoices SET
+                amount_paid = amount_paid + $2,
+                status = CASE WHEN amount_paid + $2 >= total THEN 'paid' ELSE 'partial' END,
+                paid_at = CASE WHEN amount_paid + $2 >= total THEN now() ELSE paid_at END
+          WHERE id = $1
+        RETURNING id, number, status, subtotal::text, tax::text, total::text,
+                  amount_paid::text, issued_on, due_on, paid_at, party_id, created_at`,
+        [id, body.amount.toFixed(2)],
+      );
+      await logTimeline(q, {
+        orgId: req.ctx.orgId, partyId: invoice.party_id, module: 'operate', eventType: 'payment.recorded',
+        title: `Payment of $${body.amount.toFixed(2)} on invoice ${invoice.number}`,
+        actorUserId: sess.user_id, actorLabel: sess.full_name,
+        entityType: 'invoices', entityId: id,
+      });
+      return updated;
+    });
+  });
+
+  // ---- Accounting export (v1 = CSV export, not a live sync) -------------
+  // One row per invoice line, header names matching the field names
+  // QuickBooks Online's own bulk invoice-import template uses, so a
+  // bookkeeper can open this straight into that importer. Full API sync
+  // (QuickBooks/Xero) is explicitly "coming soon" per the DoD — this is the
+  // v1 substitute, not a placeholder for it.
+  // Explicit String() first: a caller passing a Date straight through
+  // (forgetting ::text in its SQL) must not silently reach .join(',') below
+  // and come out as Date.prototype.toString()'s "Thu Oct 22 2026 00:00:00
+  // GMT+0000 (...)" — coerce once, here, so every cell is a real string
+  // before the quote-escaping check runs.
+  function csvCell(value: unknown): string {
+    const str = String(value);
+    return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+  }
+
+  app.get('/operate/invoices/export.csv', async (req, reply) => {
+    req.requireRole('viewer');
+    const rows = await req.db((q) =>
+      q.rows<{
+        number: string; party_name: string; issued_on: string | null; due_on: string | null;
+        description: string; quantity: string; unit_price: string;
+      }>(
+        `SELECT i.number, p.display_name AS party_name, i.issued_on::text, i.due_on::text,
+                il.description, il.quantity::text, il.unit_price::text
+           FROM invoices i
+           JOIN parties p ON p.id = i.party_id
+           JOIN invoice_lines il ON il.invoice_id = i.id
+          WHERE i.status != 'draft'
+          ORDER BY i.number, il.position`,
+      ),
+    );
+    const header = 'InvoiceNo,Customer,InvoiceDate,DueDate,ItemDescription,ItemQuantity,ItemRate,ItemAmount';
+    const lines = rows.map((r) => [
+      r.number, r.party_name, r.issued_on ?? '', r.due_on ?? '',
+      r.description, r.quantity, r.unit_price, (Number(r.quantity) * Number(r.unit_price)).toFixed(2),
+    ].map(csvCell).join(','));
+    reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', 'attachment; filename="invoices.csv"')
+      .send([header, ...lines].join('\n'));
+  });
+
+  app.get('/operate/payments/export.csv', async (req, reply) => {
+    req.requireRole('viewer');
+    const rows = await req.db((q) =>
+      q.rows<{ number: string | null; party_name: string; received_at: string; amount: string; method: string | null }>(
+        `SELECT i.number, p.display_name AS party_name,
+                to_char(pay.received_at, 'YYYY-MM-DD') AS received_at, pay.amount::text, pay.method
+           FROM payments pay
+           JOIN parties p ON p.id = pay.party_id
+      LEFT JOIN invoices i ON i.id = pay.invoice_id
+          ORDER BY pay.received_at DESC`,
+      ),
+    );
+    const header = 'InvoiceNo,Customer,PaymentDate,Amount,PaymentMethod';
+    const lines = rows.map((r) => [
+      r.number ?? '', r.party_name, r.received_at, r.amount, r.method ?? '',
+    ].map(csvCell).join(','));
+    reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', 'attachment; filename="payments.csv"')
+      .send([header, ...lines].join('\n'));
+  });
 }

@@ -54,6 +54,12 @@ export default function OperatePage() {
             <Link href="/operate/customers" className="text-sm font-medium text-primary hover:underline">
               Customers →
             </Link>
+            <Link href="/operate/jobs" className="text-sm font-medium text-primary hover:underline">
+              Jobs →
+            </Link>
+            <Link href="/operate/invoices" className="text-sm font-medium text-primary hover:underline">
+              Invoices →
+            </Link>
             <Link href="/operate/catalog" className="text-sm font-medium text-primary hover:underline">
               Catalog →
             </Link>
@@ -98,9 +104,12 @@ export default function OperatePage() {
           </Card>
 
           <Card className="p-0">
-            <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-              <CalendarBlank size={16} className="text-muted-foreground" />
-              <p className="text-sm font-semibold">Job Scheduling</p>
+            <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+              <div className="flex items-center gap-2">
+                <CalendarBlank size={16} className="text-muted-foreground" />
+                <p className="text-sm font-semibold">Job Scheduling</p>
+              </div>
+              <Link href="/operate/jobs" className="text-xs font-medium text-primary hover:underline">All jobs →</Link>
             </div>
             {!schedule ? (
               <div className="space-y-2 p-4">
@@ -108,7 +117,12 @@ export default function OperatePage() {
                 <Skeleton className="h-10 rounded-lg bg-muted" />
               </div>
             ) : schedule.length === 0 ? (
-              <p className="p-4 text-sm text-muted-foreground">No jobs scheduled yet.</p>
+              <div className="p-4">
+                <p className="text-sm text-muted-foreground">No jobs scheduled yet.</p>
+                <Link href="/operate/jobs" className="mt-1 inline-block text-xs font-medium text-primary hover:underline">
+                  Schedule your first job →
+                </Link>
+              </div>
             ) : (
               <ul className="divide-y divide-border">
                 {schedule.map((job) => {
@@ -133,9 +147,12 @@ export default function OperatePage() {
           </Card>
 
           <Card className="p-0">
-            <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-              <Receipt size={16} className="text-muted-foreground" />
-              <p className="text-sm font-semibold">Invoices Summary</p>
+            <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Receipt size={16} className="text-muted-foreground" />
+                <p className="text-sm font-semibold">Invoices Summary</p>
+              </div>
+              <Link href="/operate/invoices" className="text-xs font-medium text-primary hover:underline">All invoices →</Link>
             </div>
             {!money ? (
               <div className="space-y-2 p-4">

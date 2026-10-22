@@ -411,6 +411,64 @@ export interface OperateMoneyResponse {
   upcoming: { count: number; total: string };
 }
 
+export type WorkOrderStatus = 'scheduled' | 'dispatched' | 'in_progress' | 'complete' | 'cancelled';
+
+export interface WorkOrderListItem {
+  id: string;
+  number: string | null;
+  title: string;
+  description: string | null;
+  status: WorkOrderStatus;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  party_id: string;
+  party_name: string;
+  created_at: string;
+}
+
+export type InvoiceStatus = 'draft' | 'sent' | 'partial' | 'paid' | 'void';
+
+export interface InvoiceListItem {
+  id: string;
+  number: string;
+  status: InvoiceStatus;
+  subtotal: string;
+  tax: string;
+  total: string;
+  amount_paid: string;
+  balance: string;
+  issued_on: string | null;
+  due_on: string | null;
+  paid_at: string | null;
+  party_id: string;
+  party_name: string;
+  is_overdue: boolean;
+  created_at: string;
+}
+
+export interface InvoiceLineItem {
+  id: string;
+  description: string;
+  quantity: string;
+  unit_price: string;
+  taxable: boolean;
+  position: number;
+}
+
+export interface InvoicePayment {
+  id: string;
+  amount: string;
+  method: string | null;
+  received_at: string;
+}
+
+export interface InvoiceDetail extends Omit<InvoiceListItem, 'is_overdue'> {
+  lines: InvoiceLineItem[];
+  payments: InvoicePayment[];
+}
+
 export type Lifecycle = 'new' | 'working' | 'qualified' | 'customer' | 'lost' | 'dormant';
 export type PartyKind = 'person' | 'company';
 export type ContactChannel = 'email' | 'phone' | 'sms' | 'whatsapp' | 'url';

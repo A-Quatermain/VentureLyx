@@ -7,6 +7,7 @@ import { mutate } from 'swr';
 import {
   CaretLeft, Phone, EnvelopeSimple, Globe, ChatCircle, MapPin, Tag, Note,
   PencilSimple, Trash, ClockCounterClockwise, Megaphone, Briefcase, FileText, Receipt, Sparkle,
+  CalendarPlus, NotePencil,
 } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -16,6 +17,9 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Skeleton, SkeletonCard } from '@/components/ui/Skeleton';
 import { CustomerDrawer } from '@/components/CustomerDrawer';
+import { JobDrawer } from '@/components/JobDrawer';
+import { InvoiceDrawer } from '@/components/InvoiceDrawer';
+import { ActivityDrawer } from '@/components/ActivityDrawer';
 import { AIStreamPanel } from '@/components/AIStreamPanel';
 import { toneSoft, type Tone } from '@/components/ui/tone';
 import type { Lifecycle as LifecycleT } from '@/lib/types';
@@ -69,6 +73,9 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   const { data: timeline, isLoading: timelineLoading } = useApi<TimelineEvent[]>(`/operate/parties/${id}/timeline`);
 
   const [editing, setEditing] = useState(false);
+  const [addingJob, setAddingJob] = useState(false);
+  const [addingInvoice, setAddingInvoice] = useState(false);
+  const [loggingActivity, setLoggingActivity] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function onDelete() {
@@ -143,6 +150,21 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
             <a href={`mailto:${email.value}`} className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-border px-3 text-sm hover:bg-muted">
               <EnvelopeSimple size={14} weight="bold" /> Email
             </a>
+          )}
+          {canEdit && (
+            <Button variant="ghost" onClick={() => setLoggingActivity(true)}>
+              <NotePencil size={14} weight="bold" className="mr-1.5 inline" /> Log activity
+            </Button>
+          )}
+          {canEdit && (
+            <Button variant="ghost" onClick={() => setAddingJob(true)}>
+              <CalendarPlus size={14} weight="bold" className="mr-1.5 inline" /> New job
+            </Button>
+          )}
+          {canEdit && (
+            <Button variant="ghost" onClick={() => setAddingInvoice(true)}>
+              <Receipt size={14} weight="bold" className="mr-1.5 inline" /> New invoice
+            </Button>
           )}
           {canEdit && (
             <Button variant="ghost" onClick={() => setEditing(true)}>
@@ -254,9 +276,16 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
             </Card>
           )}
 
-          {(jobs.length > 0 || quotes.length > 0 || invoices.length > 0) && (
-            <Card className="p-5">
-              <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Work</p>
+          <Card className="p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Jobs</p>
+              <button type="button" onClick={() => setAddingJob(true)} className="text-xs font-medium text-primary hover:underline">
+                + New job
+              </button>
+            </div>
+            {jobs.length === 0 && quotes.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No jobs yet.</p>
+            ) : (
               <div className="flex flex-col gap-2.5">
                 {jobs.map((j) => (
                   <div key={j.id} className="flex items-center gap-2 text-sm">
@@ -273,10 +302,25 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
                     <span className="shrink-0 text-xs text-muted-foreground">{q.status}</span>
                   </div>
                 ))}
+              </div>
+            )}
+          </Card>
+
+          <Card className="p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Invoices</p>
+              <button type="button" onClick={() => setAddingInvoice(true)} className="text-xs font-medium text-primary hover:underline">
+                + New invoice
+              </button>
+            </div>
+            {invoices.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No invoices yet.</p>
+            ) : (
+              <div className="flex flex-col gap-2.5">
                 {invoices.map((inv) => <InvoiceRow key={inv.id} invoice={inv} />)}
               </div>
-            </Card>
-          )}
+            )}
+          </Card>
         </div>
 
         <Card className="lg:col-span-2">
@@ -312,6 +356,9 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
         contacts={contacts}
         onSaved={() => mutate(`/operate/parties/${id}`)}
       />
+      <JobDrawer open={addingJob} onOpenChange={setAddingJob} partyId={id} />
+      <InvoiceDrawer open={addingInvoice} onOpenChange={setAddingInvoice} partyId={id} />
+      <ActivityDrawer open={loggingActivity} onOpenChange={setLoggingActivity} partyId={id} />
     </div>
   );
 }
