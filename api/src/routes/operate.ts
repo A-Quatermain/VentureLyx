@@ -8,7 +8,7 @@
  * Role grades (spec's ground rules): reading is viewer, creating/editing is
  * staff, deleting is manager.
  */
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../lib/auth.js';
 import { syncMarketTargets } from '../lib/marketTargets.js';
@@ -18,6 +18,7 @@ import { moduleWriteGate } from '../lib/moduleAccess.js';
 import { ingestFile } from '../lib/growContactImportXlsx.js';
 import { logTimeline } from '../lib/timeline.js';
 import { getOrCreateDefaultPipeline, type PipelineStage as PipelineStageRow } from '../lib/growPromote.js';
+import type { Querier } from '../lib/db.js';
 
 const partyInput = z.object({
   kind: z.enum(['person', 'company']).default('person'),
@@ -70,6 +71,172 @@ const catalogItemInput = z.object({
   is_active: z.boolean().default(true),
   priority: z.number().int().default(100),
 });
+
+// ---- Import existing invoices (onboarding/migration) -----------------------
+// Mirrors Grow's contact-import SHAPE (inspect -> preview -> commit,
+// alias-based column matching, lenient optional fields) without its saved-
+// mapping-profile machinery (grow_import_profiles) — this is a one-time
+// historical migration, not a recurring import, same reasoning
+// POST /operate/customers/import's own header comment already gives for why
+// it stays simpler than Grow's pipeline.
+const INVOICE_IMPORT_FIELDS = [
+  'customer_name', 'customer_email', 'invoice_number', 'issue_date', 'due_date',
+  'description', 'total', 'amount_paid', 'paid_date', 'status',
+] as const;
+type InvoiceImportField = (typeof INVOICE_IMPORT_FIELDS)[number];
+
+const INVOICE_IMPORT_ALIASES: Record<InvoiceImportField, string[]> = {
+  customer_name: ['customername', 'customer', 'name', 'client', 'clientname'],
+  customer_email: ['customeremail', 'email', 'clientemail'],
+  invoice_number: ['invoicenumber', 'invoiceno', 'number', 'invoiceid', 'invoice'],
+  issue_date: ['issuedate', 'invoicedate', 'date', 'issued'],
+  due_date: ['duedate', 'due'],
+  description: ['description', 'lineitem', 'lineitems', 'items', 'service', 'memo'],
+  total: ['total', 'amount', 'invoicetotal', 'amountdue', 'grandtotal'],
+  amount_paid: ['amountpaid', 'paid', 'paidamount'],
+  paid_date: ['paiddate', 'paymentdate', 'datepaid'],
+  status: ['status', 'invoicestatus'],
+};
+
+type InvoiceImportMapping = Partial<Record<InvoiceImportField, string>>;
+
+function guessInvoiceMapping(headers: string[]): InvoiceImportMapping {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const mapping: InvoiceImportMapping = {};
+  for (const field of INVOICE_IMPORT_FIELDS) {
+    const match = headers.find((h) => INVOICE_IMPORT_ALIASES[field].includes(norm(h)));
+    if (match) mapping[field] = match;
+  }
+  return mapping;
+}
+
+function parseImportMoney(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const cleaned = raw.replace(/[$,\s]/g, '');
+  if (cleaned === '') return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseImportDate(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const d = new Date(trimmed);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+
+interface InvoiceImportRow {
+  line: number;
+  customerName: string | null;
+  customerEmail: string | null;
+  invoiceNumber: string | null;
+  issuedOn: string;
+  dueOn: string;
+  description: string;
+  total: number;
+  amountPaid: number;
+  paidDate: string | null;
+  status: 'paid' | 'partial' | 'sent';
+  customerKey: string;
+}
+
+interface InvoiceImportRejection {
+  line: number;
+  customer: string;
+  reason: string;
+}
+
+function shapeInvoiceImportRow(
+  record: Record<string, string>,
+  line: number,
+  mapping: InvoiceImportMapping,
+): { row: InvoiceImportRow } | { rejection: InvoiceImportRejection } {
+  const get = (f: InvoiceImportField): string | undefined => {
+    const h = mapping[f];
+    return h ? record[h]?.trim() : undefined;
+  };
+
+  const customerName = get('customer_name') || null;
+  const customerEmail = get('customer_email')?.toLowerCase() || null;
+  if (!customerName && !customerEmail) {
+    return { rejection: { line, customer: '(unknown)', reason: 'No customer name or email' } };
+  }
+  const total = parseImportMoney(get('total'));
+  if (total === null || total < 0) {
+    return {
+      rejection: { line, customer: customerName ?? customerEmail!, reason: 'Missing or invalid total' },
+    };
+  }
+
+  const explicitStatus = (get('status') || '').toLowerCase().trim();
+  const amountPaidRaw = get('amount_paid');
+  // Numbers win over labels when both are given; the label only fills a gap
+  // when amount_paid itself is missing — a common shape for a historical
+  // export that says "Status: Paid" with no separate paid-amount column.
+  // A mapped column with a genuinely blank cell comes back as '' from the
+  // CSV parser, not undefined — both count as "not given" here, or the
+  // gap-fill never actually fires for the one shape it exists for.
+  const amountPaid = amountPaidRaw !== undefined && amountPaidRaw !== ''
+    ? (parseImportMoney(amountPaidRaw) ?? 0)
+    : (explicitStatus === 'paid' ? total : 0);
+
+  const issuedOn = parseImportDate(get('issue_date')) ?? new Date().toISOString().slice(0, 10);
+  const dueOn = parseImportDate(get('due_date'))
+    ?? new Date(new Date(issuedOn).getTime() + 30 * 86_400_000).toISOString().slice(0, 10);
+  const paidDate = parseImportDate(get('paid_date'));
+  const invoiceNumber = get('invoice_number') || null;
+  const description = get('description') || 'Imported invoice';
+
+  const status: InvoiceImportRow['status'] =
+    amountPaid >= total && total > 0 ? 'paid' : amountPaid > 0 ? 'partial' : 'sent';
+
+  return {
+    row: {
+      line, customerName, customerEmail, invoiceNumber, issuedOn, dueOn, description,
+      total, amountPaid, paidDate, status,
+      customerKey: customerEmail ?? customerName!.toLowerCase(),
+    },
+  };
+}
+
+function splitInvoiceImportRows(
+  records: Array<{ record: Record<string, string>; line: number }>,
+  mapping: InvoiceImportMapping,
+): { accepted: InvoiceImportRow[]; rejections: InvoiceImportRejection[] } {
+  const accepted: InvoiceImportRow[] = [];
+  const rejections: InvoiceImportRejection[] = [];
+  for (const { record, line } of records) {
+    const shaped = shapeInvoiceImportRow(record, line, mapping);
+    if ('row' in shaped) accepted.push(shaped.row);
+    else rejections.push(shaped.rejection);
+  }
+  return { accepted, rejections };
+}
+
+// Dedupes against both already-imported invoice numbers (existingNumbers,
+// a DB lookup the caller already has) AND a duplicate invoice_number WITHIN
+// this same file — the latter matters because two colliding INSERTs in one
+// transaction would hit invoices' UNIQUE (org_id, number) constraint and
+// roll back the ENTIRE commit, not just that one row. A numberless row
+// never collides with anything here (it always gets a fresh generated
+// number at insert time).
+function dedupeImportedInvoices(
+  accepted: InvoiceImportRow[], existingNumbers: Set<string>,
+): { newRows: InvoiceImportRow[]; alreadyImported: number } {
+  const seenInFile = new Set<string>();
+  const newRows: InvoiceImportRow[] = [];
+  let alreadyImported = 0;
+  for (const r of accepted) {
+    if (r.invoiceNumber && (existingNumbers.has(r.invoiceNumber) || seenInFile.has(r.invoiceNumber))) {
+      alreadyImported++;
+      continue;
+    }
+    if (r.invoiceNumber) seenInFile.add(r.invoiceNumber);
+    newRows.push(r);
+  }
+  return { newRows, alreadyImported };
+}
 
 export default async function operateRoutes(app: FastifyInstance) {
   // A pre-payment org (never-paid prospect) is locked out entirely, reads
@@ -1013,6 +1180,21 @@ export default async function operateRoutes(app: FastifyInstance) {
   // fabricated, until a real rate is configurable. No void/edit-after-send
   // in v1 (not named in the DoD's flow); draft invoices can still be edited
   // via a future PATCH if a client needs it, not built until asked.
+  // Gap-free per-org numbering without a sequence table: an advisory lock
+  // scoped to the caller's transaction (auto-released on COMMIT/ROLLBACK)
+  // serializes concurrent invoice creates for the same org, per
+  // docs/OPERATE-SPEC.md's "allocate inside the insert transaction — SELECT
+  // max(...) + 1 outside a transaction races." Shared by the live create
+  // route and the bulk import commit below — one numbering rule, not two.
+  async function nextInvoiceNumber(q: Querier): Promise<string> {
+    await q.exec(`SELECT pg_advisory_xact_lock(hashtext(app.current_org() || ':invoice_number'))`);
+    const row = await q.one<{ next: number }>(
+      `SELECT COALESCE(max(substring(number from 5)::int), 0) + 1 AS next
+         FROM invoices WHERE number LIKE 'INV-%'`,
+    );
+    return `INV-${String(row!.next).padStart(4, '0')}`;
+  }
+
   const invoiceLineInput = z.object({
     description: z.string().trim().min(1),
     quantity: z.number().positive().default(1),
@@ -1100,18 +1282,7 @@ export default async function operateRoutes(app: FastifyInstance) {
       );
       if (!party) throw new HttpError(404, 'Customer not found', 'not_found');
 
-      // Gap-free per-org numbering without a sequence table: an advisory
-      // lock scoped to this transaction (auto-released on COMMIT/ROLLBACK)
-      // serializes concurrent invoice creates for the same org, per
-      // docs/OPERATE-SPEC.md's "allocate inside the insert transaction —
-      // SELECT max(...) + 1 outside a transaction races."
-      await q.exec(`SELECT pg_advisory_xact_lock(hashtext(app.current_org() || ':invoice_number'))`);
-      const numberRow = await q.one<{ next: number }>(
-        `SELECT COALESCE(max(substring(number from 5)::int), 0) + 1 AS next
-           FROM invoices WHERE number LIKE 'INV-%'`,
-      );
-      const number = `INV-${String(numberRow!.next).padStart(4, '0')}`;
-
+      const number = await nextInvoiceNumber(q);
       const subtotal = body.lines.reduce((sum, l) => sum + l.quantity * l.unit_price, 0);
       const invoice = await q.one<{ id: string }>(
         `INSERT INTO invoices (org_id, party_id, work_order_id, number, status, subtotal, tax, total, due_on)
@@ -1218,6 +1389,228 @@ export default async function operateRoutes(app: FastifyInstance) {
         entityType: 'invoices', entityId: id,
       });
       return updated;
+    });
+  });
+
+  // ---- Import existing invoices (onboarding/migration) ------------------
+  async function readInvoiceImportUpload(
+    req: FastifyRequest,
+  ): Promise<{ buffer: Buffer; filename: string; fields: Record<string, string> }> {
+    const fields: Record<string, string> = {};
+    let file: { buffer: Buffer; filename: string } | null = null;
+    for await (const part of req.parts()) {
+      if (part.type === 'file') {
+        const buffer = await part.toBuffer();
+        if (part.file.truncated) throw new HttpError(400, 'File is too large (15MB limit)', 'file_too_large');
+        file = { buffer, filename: part.filename };
+      } else {
+        fields[part.fieldname] = String(part.value ?? '');
+      }
+    }
+    if (!file) throw new HttpError(400, 'No file was uploaded', 'no_file');
+    return { buffer: file.buffer, filename: file.filename, fields };
+  }
+
+  app.post('/operate/invoices/import/inspect', async (req) => {
+    req.requireRole('staff');
+    const { buffer, filename } = await readInvoiceImportUpload(req);
+    const { headers, records, note } = ingestFile(buffer, filename);
+    if (headers.length === 0) throw new HttpError(400, 'No columns found in this file', 'empty_file');
+
+    return {
+      headers,
+      rowCount: records.length,
+      sampleRows: records.slice(0, 5).map((r) => r.record),
+      suggestedMapping: guessInvoiceMapping(headers),
+      note,
+    };
+  });
+
+  const importMappingField = z.object({
+    mapping: z.string().transform((s, ctx) => {
+      try { return JSON.parse(s) as InvoiceImportMapping; } catch {
+        ctx.addIssue({ code: 'custom', message: 'mapping must be valid JSON' });
+        return {} as InvoiceImportMapping;
+      }
+    }),
+  });
+
+  app.post('/operate/invoices/import/preview', async (req) => {
+    req.requireRole('staff');
+    const { buffer, filename, fields } = await readInvoiceImportUpload(req);
+    const { mapping } = importMappingField.parse(fields);
+    const { records, note } = ingestFile(buffer, filename);
+    const { accepted, rejections } = splitInvoiceImportRows(records, mapping);
+
+    return req.db(async (q) => {
+      const numbers = accepted.map((r) => r.invoiceNumber).filter((n): n is string => !!n);
+      const existingNumbers = numbers.length === 0 ? new Set<string>() : new Set(
+        (await q.rows<{ number: string }>(`SELECT number FROM invoices WHERE number = ANY($1::text[])`, [numbers]))
+          .map((r) => r.number),
+      );
+      const { newRows, alreadyImported } = dedupeImportedInvoices(accepted, existingNumbers);
+
+      const uniqueKeys = [...new Set(newRows.map((r) => r.customerKey))];
+      const emails = newRows.filter((r) => r.customerEmail).map((r) => r.customerEmail!);
+      const names = newRows.filter((r) => !r.customerEmail && r.customerName).map((r) => r.customerName!);
+      const matchedKeys = new Set<string>();
+      if (emails.length > 0) {
+        const rows = await q.rows<{ value: string }>(
+          `SELECT lower(pc.value) AS value FROM party_contacts pc
+             JOIN parties p ON p.id = pc.party_id
+            WHERE pc.channel = 'email' AND lower(pc.value) = ANY($1::text[]) AND p.deleted_at IS NULL`,
+          [emails.map((e) => e.toLowerCase())],
+        );
+        for (const r of rows) matchedKeys.add(r.value);
+      }
+      if (names.length > 0) {
+        const rows = await q.rows<{ value: string }>(
+          `SELECT lower(display_name) AS value FROM parties
+            WHERE lower(display_name) = ANY($1::text[]) AND deleted_at IS NULL`,
+          [names.map((n) => n.toLowerCase())],
+        );
+        for (const r of rows) matchedKeys.add(r.value);
+      }
+      const customersLinked = uniqueKeys.filter((k) => matchedKeys.has(k)).length;
+      const customersNew = uniqueKeys.length - customersLinked;
+
+      const totalAmount = newRows.reduce((sum, r) => sum + r.total, 0);
+      const outstandingAmount = newRows.reduce((sum, r) => sum + (r.status === 'paid' ? 0 : r.total - r.amountPaid), 0);
+
+      return {
+        totalRows: records.length,
+        acceptedCount: newRows.length,
+        rejectedCount: rejections.length,
+        alreadyImported,
+        customersNew,
+        customersLinked,
+        totalAmount: totalAmount.toFixed(2),
+        outstandingAmount: outstandingAmount.toFixed(2),
+        rejections,
+        note,
+      };
+    });
+  });
+
+  app.post('/operate/invoices/import/commit', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { buffer, filename, fields } = await readInvoiceImportUpload(req);
+    const { mapping } = importMappingField.parse(fields);
+    const { records } = ingestFile(buffer, filename);
+    const { accepted, rejections } = splitInvoiceImportRows(records, mapping);
+
+    return req.db(async (q) => {
+      const numbers = accepted.map((r) => r.invoiceNumber).filter((n): n is string => !!n);
+      const existingNumbers = numbers.length === 0 ? new Set<string>() : new Set(
+        (await q.rows<{ number: string }>(`SELECT number FROM invoices WHERE number = ANY($1::text[])`, [numbers]))
+          .map((r) => r.number),
+      );
+      const { newRows, alreadyImported } = dedupeImportedInvoices(accepted, existingNumbers);
+
+      // Resolve every row's customer BEFORE creating any invoice — two rows
+      // for the same customer (by email, else by name) must land on the
+      // same party, not create one each.
+      const keyToPartyId = new Map<string, string>();
+      const uniqueByKey = new Map<string, InvoiceImportRow>();
+      for (const r of newRows) if (!uniqueByKey.has(r.customerKey)) uniqueByKey.set(r.customerKey, r);
+
+      const emailRows = [...uniqueByKey.values()].filter((r) => r.customerEmail);
+      if (emailRows.length > 0) {
+        const found = await q.rows<{ id: string; email: string }>(
+          `SELECT p.id, lower(pc.value) AS email FROM party_contacts pc
+             JOIN parties p ON p.id = pc.party_id
+            WHERE pc.channel = 'email' AND lower(pc.value) = ANY($1::text[]) AND p.deleted_at IS NULL`,
+          [emailRows.map((r) => r.customerEmail!.toLowerCase())],
+        );
+        for (const f of found) keyToPartyId.set(f.email, f.id);
+      }
+      const nameRows = [...uniqueByKey.values()].filter((r) => !r.customerEmail && !keyToPartyId.has(r.customerKey));
+      if (nameRows.length > 0) {
+        const found = await q.rows<{ id: string; name: string }>(
+          `SELECT id, lower(display_name) AS name FROM parties
+            WHERE lower(display_name) = ANY($1::text[]) AND deleted_at IS NULL`,
+          [nameRows.map((r) => r.customerName!.toLowerCase())],
+        );
+        for (const f of found) keyToPartyId.set(f.name, f.id);
+      }
+
+      let partiesCreated = 0;
+      const partiesLinked = keyToPartyId.size;
+      for (const r of uniqueByKey.values()) {
+        if (keyToPartyId.has(r.customerKey)) continue;
+        const displayName = r.customerName ?? r.customerEmail!;
+        const party = await q.one<{ id: string }>(
+          `INSERT INTO parties (org_id, kind, display_name, is_lead, is_customer, lifecycle)
+           VALUES (app.current_org(), 'person', $1, false, true, 'customer')
+           RETURNING id`,
+          [displayName],
+        );
+        if (r.customerEmail) {
+          await q.exec(
+            `INSERT INTO party_contacts (org_id, party_id, channel, value, is_primary)
+             VALUES (app.current_org(), $1, 'email', $2, true)`,
+            [party!.id, r.customerEmail],
+          );
+        }
+        await logTimeline(q, {
+          orgId: req.ctx.orgId, partyId: party!.id, module: 'operate', eventType: 'party.created',
+          title: `Added ${displayName} (invoice import)`, actorUserId: sess.user_id, actorLabel: sess.full_name,
+        });
+        keyToPartyId.set(r.customerKey, party!.id);
+        partiesCreated++;
+      }
+
+      let created = 0;
+      let paymentsRecorded = 0;
+      for (const r of newRows) {
+        const partyId = keyToPartyId.get(r.customerKey)!;
+        const number = r.invoiceNumber ?? await nextInvoiceNumber(q);
+        const invoice = await q.one<{ id: string }>(
+          `INSERT INTO invoices (org_id, party_id, number, status, subtotal, tax, total, amount_paid,
+                                  issued_on, due_on, paid_at)
+           VALUES (app.current_org(), $1,$2,$3,$4,0,$4,$5,$6,$7,$8)
+           RETURNING id`,
+          [
+            partyId, number, r.status, r.total.toFixed(2), r.amountPaid.toFixed(2),
+            r.issuedOn, r.dueOn, r.status === 'paid' ? (r.paidDate ?? r.issuedOn) : null,
+          ],
+        );
+        await q.exec(
+          `INSERT INTO invoice_lines (org_id, invoice_id, description, quantity, unit_price, position)
+           VALUES (app.current_org(), $1,$2,1,$3,0)`,
+          [invoice!.id, r.description, r.total.toFixed(2)],
+        );
+        if (r.amountPaid > 0) {
+          await q.exec(
+            `INSERT INTO payments (org_id, invoice_id, party_id, amount, received_at, status)
+             VALUES (app.current_org(), $1,$2,$3,$4,'succeeded')`,
+            [invoice!.id, partyId, r.amountPaid.toFixed(2), r.paidDate ?? r.issuedOn],
+          );
+          paymentsRecorded++;
+        }
+        await logTimeline(q, {
+          orgId: req.ctx.orgId, partyId, module: 'operate', eventType: 'invoice.created',
+          title: `Invoice ${number} imported`, actorUserId: sess.user_id, actorLabel: sess.full_name,
+          entityType: 'invoices', entityId: invoice!.id,
+        });
+        created++;
+      }
+
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'operate.invoices.import',
+        entityType: 'invoices', ip: req.ip,
+        diff: { filename, created, partiesCreated, partiesLinked, paymentsRecorded, alreadyImported, rejected: rejections.length },
+      });
+
+      const totalAmount = newRows.reduce((sum, r) => sum + r.total, 0);
+      const outstandingAmount = newRows.reduce((sum, r) => sum + (r.status === 'paid' ? 0 : r.total - r.amountPaid), 0);
+
+      return {
+        created, partiesCreated, partiesLinked, paymentsRecorded, alreadyImported,
+        rejectedCount: rejections.length, rejections,
+        totalAmount: totalAmount.toFixed(2), outstandingAmount: outstandingAmount.toFixed(2),
+      };
     });
   });
 

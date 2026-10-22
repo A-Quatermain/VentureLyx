@@ -82,9 +82,14 @@ export default function InvoicesPage() {
         title="Invoices"
         subtitle="Create, send, and get paid."
         actions={canEdit && (
-          <Button onClick={() => setAdding(true)}>
-            <Receipt size={14} weight="bold" className="mr-1.5 inline" /> New invoice
-          </Button>
+          <div className="flex items-center gap-2">
+            <Link href="/operate/invoices/import" className="text-sm font-medium text-primary hover:underline">
+              Import invoices
+            </Link>
+            <Button onClick={() => setAdding(true)}>
+              <Receipt size={14} weight="bold" className="mr-1.5 inline" /> New invoice
+            </Button>
+          </div>
         )}
       />
 
@@ -137,9 +142,14 @@ export default function InvoicesPage() {
             {tab === 'all' ? 'No invoices yet.' : `No ${TABS.find((t) => t.key === tab)?.label.toLowerCase()} invoices.`}
           </p>
           {canEdit && tab === 'all' && (
-            <Button onClick={() => setAdding(true)} className="mt-3">
-              <Receipt size={14} weight="bold" className="mr-1.5 inline" /> Create your first invoice
-            </Button>
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-3">
+              <Button onClick={() => setAdding(true)}>
+                <Receipt size={14} weight="bold" className="mr-1.5 inline" /> Create your first invoice
+              </Button>
+              <Link href="/operate/invoices/import" className="text-sm font-medium text-primary hover:underline">
+                or import your existing invoices →
+              </Link>
+            </div>
           )}
         </Card>
       ) : (

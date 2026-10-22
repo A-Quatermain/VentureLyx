@@ -70,7 +70,7 @@ const STEP_META: StepMeta[] = [
   {
     key: 'customers',
     label: 'Add your customers',
-    reason: 'CSV import or manual — this makes revenue tracking work.',
+    reason: 'CSV import, manual, or bring your existing invoices — this makes revenue tracking work.',
     icon: Users,
     cta: 'Add customers',
     href: () => '/operate/customers',

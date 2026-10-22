@@ -1273,6 +1273,52 @@ export interface GrowImportCommitResponse extends GrowImportSummary {
   enrolled: number;
 }
 
+// ---- Operate: import existing invoices ---------------------------------
+export type InvoiceImportField =
+  | 'customer_name' | 'customer_email' | 'invoice_number' | 'issue_date' | 'due_date'
+  | 'description' | 'total' | 'amount_paid' | 'paid_date' | 'status';
+
+export type InvoiceImportMapping = Partial<Record<InvoiceImportField, string>>;
+
+export interface InvoiceImportInspectResponse {
+  headers: string[];
+  rowCount: number;
+  sampleRows: Record<string, string>[];
+  suggestedMapping: InvoiceImportMapping;
+  note: string | null;
+}
+
+export interface InvoiceImportRejection {
+  line: number;
+  customer: string;
+  reason: string;
+}
+
+export interface InvoiceImportPreviewResponse {
+  totalRows: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  alreadyImported: number;
+  customersNew: number;
+  customersLinked: number;
+  totalAmount: string;
+  outstandingAmount: string;
+  rejections: InvoiceImportRejection[];
+  note: string | null;
+}
+
+export interface InvoiceImportCommitResponse {
+  created: number;
+  partiesCreated: number;
+  partiesLinked: number;
+  paymentsRecorded: number;
+  alreadyImported: number;
+  rejectedCount: number;
+  rejections: InvoiceImportRejection[];
+  totalAmount: string;
+  outstandingAmount: string;
+}
+
 // ---- Admin ---------------------------------------------------------------
 export interface AdminSummary {
   userCount: number;

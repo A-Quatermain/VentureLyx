@@ -142,6 +142,9 @@ export default function CustomersPage() {
               <Button variant="ghost" onClick={() => setImporting(true)}>
                 Import CSV
               </Button>
+              <Link href="/operate/invoices/import" className="text-sm font-medium text-primary hover:underline">
+                Import invoices
+              </Link>
               <Button onClick={() => setAdding(true)}>Add customer</Button>
             </>
           )}
@@ -188,13 +191,16 @@ export default function CustomersPage() {
             <p className="max-w-sm text-sm text-muted-foreground">
               {isFiltered
                 ? 'No customers match this search or filter.'
-                : 'No customers yet — add them by CSV import or one at a time. This is what makes revenue tracking work.'}
+                : 'No customers yet — add them by CSV import, one at a time, or by importing your existing invoices. This is what makes revenue tracking work.'}
             </p>
             {canEdit && !isFiltered && (
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button variant="ghost" onClick={() => setImporting(true)}>
                   Import CSV
                 </Button>
+                <Link href="/operate/invoices/import">
+                  <Button variant="ghost">Import invoices</Button>
+                </Link>
                 <Button onClick={() => setAdding(true)}>Add your first customer</Button>
               </div>
             )}
