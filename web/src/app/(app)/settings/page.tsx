@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { mutate } from 'swr';
-import { Cpu, Key, ChartBar, CaretDown, MapPin, MagnifyingGlass, TrendUp } from '@phosphor-icons/react';
+import { Cpu, Key, ChartBar, CaretDown, MapPin, MagnifyingGlass, TrendUp, UploadSimple, ArrowRight } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import { API_BASE } from '@/lib/config';
@@ -54,6 +54,7 @@ export default function SettingsPage() {
         <YourBusinessesCard />
         <BillingCard canEdit={canEdit} />
         <BusinessCard canEdit={canEdit} />
+        <ImportDataCard />
         <ServiceAreaCard canEdit={canEdit} />
         <GrowSenderProfileCard canEdit={canEdit} />
         <GscCard canEdit={canEdit} />
@@ -185,6 +186,27 @@ function BillingCard({ canEdit }: { canEdit: boolean }) {
         </div>
       )}
       {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+    </Card>
+  );
+}
+
+function ImportDataCard() {
+  return (
+    <Card className="p-6">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+            <UploadSimple size={18} weight="duotone" className="text-primary" />
+          </div>
+          <div>
+            <p className="font-display text-lg font-bold tracking-tight">Import your data</p>
+            <p className="text-sm text-muted-foreground">Bring in customers, invoices, and open jobs from a spreadsheet.</p>
+          </div>
+        </div>
+        <Link href="/operate/import" className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-primary hover:underline">
+          Open <ArrowRight size={13} weight="bold" />
+        </Link>
+      </div>
     </Card>
   );
 }

@@ -19,6 +19,10 @@ import { ingestFile } from '../lib/growContactImportXlsx.js';
 import { logTimeline } from '../lib/timeline.js';
 import { getOrCreateDefaultPipeline, type PipelineStage as PipelineStageRow } from '../lib/growPromote.js';
 import type { Querier } from '../lib/db.js';
+import {
+  readImportUpload, guessMapping, parseMoney, parseDateOnly, splitImportRows,
+  findExistingCustomers, resolveOrCreateCustomers,
+} from '../lib/operateImport.js';
 
 const partyInput = z.object({
   kind: z.enum(['person', 'company']).default('person'),
@@ -58,6 +62,8 @@ const PARTY_FIELDS = `id, kind, display_name, first_name, last_name, company_nam
   is_lead, is_customer, is_vendor, lifecycle, city, address_line1, address_line2,
   region, postal_code, country, notes, tags, first_seen_at, last_activity_at`;
 
+const WORK_ORDER_STATUSES = ['scheduled', 'dispatched', 'in_progress', 'complete', 'cancelled'] as const;
+
 const catalogItemInput = z.object({
   kind: z.enum(['service', 'product', 'package', 'fee']).default('service'),
   name: z.string().min(1),
@@ -71,6 +77,170 @@ const catalogItemInput = z.object({
   is_active: z.boolean().default(true),
   priority: z.number().int().default(100),
 });
+
+// ---- Import existing customers (onboarding/migration) ----------------------
+// Part of the same unified "import your data" flow as invoices/jobs below —
+// shares lib/operateImport.ts's generic framework (readImportUpload,
+// guessMapping, splitImportRows, findExistingCustomers). Standalone from
+// invoices/jobs: a client can bring in a customer list with no invoices or
+// jobs attached to it at all. Supersedes the older one-shot
+// POST /operate/customers/import (no preview, no dedupe, always created a
+// new party) — that route and its only caller (CustomerImportDrawer) are
+// removed in the same change that adds this.
+const CUSTOMER_IMPORT_FIELDS = ['name', 'email', 'phone', 'company', 'address', 'city', 'lifecycle'] as const;
+type CustomerImportField = (typeof CUSTOMER_IMPORT_FIELDS)[number];
+
+const CUSTOMER_IMPORT_ALIASES: Record<CustomerImportField, string[]> = {
+  name: ['name', 'customername', 'fullname', 'contactname', 'client'],
+  email: ['email', 'emailaddress', 'customeremail'],
+  phone: ['phone', 'phonenumber', 'mobile', 'cell', 'telephone'],
+  company: ['company', 'companyname', 'business', 'businessname'],
+  address: ['address', 'addressline1', 'street', 'streetaddress'],
+  city: ['city'],
+  lifecycle: ['lifecycle', 'stage', 'customerstatus'],
+};
+
+type CustomerImportMapping = Partial<Record<CustomerImportField, string>>;
+
+const CUSTOMER_LIFECYCLES = ['new', 'working', 'qualified', 'customer', 'lost', 'dormant'] as const;
+
+interface CustomerImportRow {
+  line: number;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  company: string | null;
+  address: string | null;
+  city: string | null;
+  lifecycle: (typeof CUSTOMER_LIFECYCLES)[number];
+  key: string;
+}
+
+interface CustomerImportRejection {
+  line: number;
+  label: string;
+  reason: string;
+}
+
+function shapeCustomerImportRow(
+  record: Record<string, string>, line: number, mapping: CustomerImportMapping,
+): { row: CustomerImportRow } | { rejection: CustomerImportRejection } {
+  const get = (f: CustomerImportField): string | undefined => {
+    const h = mapping[f];
+    return h ? record[h]?.trim() : undefined;
+  };
+
+  const name = get('name') || null;
+  const email = get('email')?.toLowerCase() || null;
+  if (!name && !email) {
+    return { rejection: { line, label: '(unknown)', reason: 'No name or email' } };
+  }
+  const lifecycleRaw = (get('lifecycle') || '').toLowerCase().trim();
+  const lifecycle = (CUSTOMER_LIFECYCLES as readonly string[]).includes(lifecycleRaw)
+    ? (lifecycleRaw as CustomerImportRow['lifecycle'])
+    : 'customer';
+
+  return {
+    row: {
+      line, name, email,
+      phone: get('phone') || null,
+      company: get('company') || null,
+      address: get('address') || null,
+      city: get('city') || null,
+      lifecycle,
+      key: email ?? name!.toLowerCase(),
+    },
+  };
+}
+
+function splitCustomerImportRows(
+  records: Array<{ record: Record<string, string>; line: number }>,
+  mapping: CustomerImportMapping,
+): { accepted: CustomerImportRow[]; rejections: CustomerImportRejection[] } {
+  return splitImportRows(records, (record, line) => shapeCustomerImportRow(record, line, mapping));
+}
+
+// ---- Import existing (open) jobs (onboarding/migration) --------------------
+// Same shared framework as customers/invoices above. Jobs have no natural
+// unique key the way an invoice_number or a customer's email does — two
+// rows CAN legitimately describe the same customer's same-titled job twice
+// (a recurring "Monthly cleaning"). Re-import dedupes on a best-effort
+// signature instead: this customer + this exact title + this exact
+// scheduled date (or all three with no date, if none was given) — good
+// enough to make re-running the same file a no-op, honestly short of a
+// real identifier.
+const JOB_IMPORT_FIELDS = ['title', 'customer_name', 'customer_email', 'status', 'scheduled_date', 'notes'] as const;
+type JobImportField = (typeof JOB_IMPORT_FIELDS)[number];
+
+const JOB_IMPORT_ALIASES: Record<JobImportField, string[]> = {
+  title: ['title', 'job', 'jobtitle', 'service', 'description'],
+  customer_name: ['customername', 'customer', 'name', 'client', 'clientname'],
+  customer_email: ['customeremail', 'email', 'clientemail'],
+  status: ['status', 'jobstatus'],
+  scheduled_date: ['scheduleddate', 'scheduled', 'date', 'jobdate'],
+  notes: ['notes', 'description', 'details', 'memo'],
+};
+
+type JobImportMapping = Partial<Record<JobImportField, string>>;
+
+interface JobImportRow {
+  line: number;
+  title: string;
+  customerName: string | null;
+  customerEmail: string | null;
+  customerKey: string;
+  status: (typeof WORK_ORDER_STATUSES)[number];
+  scheduledDate: string | null;
+  notes: string | null;
+  signature: string;
+}
+
+interface JobImportRejection {
+  line: number;
+  label: string;
+  reason: string;
+}
+
+function shapeJobImportRow(
+  record: Record<string, string>, line: number, mapping: JobImportMapping,
+): { row: JobImportRow } | { rejection: JobImportRejection } {
+  const get = (f: JobImportField): string | undefined => {
+    const h = mapping[f];
+    return h ? record[h]?.trim() : undefined;
+  };
+
+  const title = get('title') || null;
+  if (!title) {
+    return { rejection: { line, label: '(unknown)', reason: 'Missing title' } };
+  }
+  const customerName = get('customer_name') || null;
+  const customerEmail = get('customer_email')?.toLowerCase() || null;
+  if (!customerName && !customerEmail) {
+    return { rejection: { line, label: title, reason: 'No customer name or email' } };
+  }
+
+  const statusRaw = (get('status') || '').toLowerCase().replace(/\s+/g, '_');
+  const status = (WORK_ORDER_STATUSES as readonly string[]).includes(statusRaw)
+    ? (statusRaw as JobImportRow['status'])
+    : 'scheduled';
+  const scheduledDate = parseDateOnly(get('scheduled_date'));
+  const customerKey = customerEmail ?? customerName!.toLowerCase();
+
+  return {
+    row: {
+      line, title, customerName, customerEmail, customerKey, status,
+      scheduledDate, notes: get('notes') || null,
+      signature: `${customerKey}|${title.toLowerCase()}|${scheduledDate ?? ''}`,
+    },
+  };
+}
+
+function splitJobImportRows(
+  records: Array<{ record: Record<string, string>; line: number }>,
+  mapping: JobImportMapping,
+): { accepted: JobImportRow[]; rejections: JobImportRejection[] } {
+  return splitImportRows(records, (record, line) => shapeJobImportRow(record, line, mapping));
+}
 
 // ---- Import existing invoices (onboarding/migration) -----------------------
 // Mirrors Grow's contact-import SHAPE (inspect -> preview -> commit,
@@ -99,32 +269,6 @@ const INVOICE_IMPORT_ALIASES: Record<InvoiceImportField, string[]> = {
 };
 
 type InvoiceImportMapping = Partial<Record<InvoiceImportField, string>>;
-
-function guessInvoiceMapping(headers: string[]): InvoiceImportMapping {
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const mapping: InvoiceImportMapping = {};
-  for (const field of INVOICE_IMPORT_FIELDS) {
-    const match = headers.find((h) => INVOICE_IMPORT_ALIASES[field].includes(norm(h)));
-    if (match) mapping[field] = match;
-  }
-  return mapping;
-}
-
-function parseImportMoney(raw: string | undefined): number | null {
-  if (!raw) return null;
-  const cleaned = raw.replace(/[$,\s]/g, '');
-  if (cleaned === '') return null;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
-}
-
-function parseImportDate(raw: string | undefined): string | null {
-  if (!raw) return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  const d = new Date(trimmed);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
-}
 
 interface InvoiceImportRow {
   line: number;
@@ -162,7 +306,7 @@ function shapeInvoiceImportRow(
   if (!customerName && !customerEmail) {
     return { rejection: { line, customer: '(unknown)', reason: 'No customer name or email' } };
   }
-  const total = parseImportMoney(get('total'));
+  const total = parseMoney(get('total'));
   if (total === null || total < 0) {
     return {
       rejection: { line, customer: customerName ?? customerEmail!, reason: 'Missing or invalid total' },
@@ -178,13 +322,13 @@ function shapeInvoiceImportRow(
   // CSV parser, not undefined — both count as "not given" here, or the
   // gap-fill never actually fires for the one shape it exists for.
   const amountPaid = amountPaidRaw !== undefined && amountPaidRaw !== ''
-    ? (parseImportMoney(amountPaidRaw) ?? 0)
+    ? (parseMoney(amountPaidRaw) ?? 0)
     : (explicitStatus === 'paid' ? total : 0);
 
-  const issuedOn = parseImportDate(get('issue_date')) ?? new Date().toISOString().slice(0, 10);
-  const dueOn = parseImportDate(get('due_date'))
+  const issuedOn = parseDateOnly(get('issue_date')) ?? new Date().toISOString().slice(0, 10);
+  const dueOn = parseDateOnly(get('due_date'))
     ?? new Date(new Date(issuedOn).getTime() + 30 * 86_400_000).toISOString().slice(0, 10);
-  const paidDate = parseImportDate(get('paid_date'));
+  const paidDate = parseDateOnly(get('paid_date'));
   const invoiceNumber = get('invoice_number') || null;
   const description = get('description') || 'Imported invoice';
 
@@ -204,14 +348,7 @@ function splitInvoiceImportRows(
   records: Array<{ record: Record<string, string>; line: number }>,
   mapping: InvoiceImportMapping,
 ): { accepted: InvoiceImportRow[]; rejections: InvoiceImportRejection[] } {
-  const accepted: InvoiceImportRow[] = [];
-  const rejections: InvoiceImportRejection[] = [];
-  for (const { record, line } of records) {
-    const shaped = shapeInvoiceImportRow(record, line, mapping);
-    if ('row' in shaped) accepted.push(shaped.row);
-    else rejections.push(shaped.rejection);
-  }
-  return { accepted, rejections };
+  return splitImportRows(records, (record, line) => shapeInvoiceImportRow(record, line, mapping));
 }
 
 // Dedupes against both already-imported invoice numbers (existingNumbers,
@@ -412,111 +549,131 @@ export default async function operateRoutes(app: FastifyInstance) {
     });
   });
 
-  // ---- Bulk-import customers from a CSV/XLSX file ---------------------------
-  // Deliberately simpler than Grow's contact importer (growContactImport*.ts):
-  // fixed column names matched flexibly by alias, no mapping screen, no saved
-  // import profile. Grow's richer pipeline exists because marketing contacts
-  // have many optional fields and get re-imported repeatedly; a customer list
-  // is name/contact/city/company and is typically imported once. Reuses
-  // ingestFile() — the actual CSV/XLSX parsing, not the contact-shaping logic
-  // — since turning a file into rows is identical work either way.
-  const IMPORT_COLUMN_ALIASES: Record<string, string[]> = {
-    name: ['name', 'fullname', 'customername', 'contactname', 'client'],
-    email: ['email', 'emailaddress'],
-    phone: ['phone', 'phonenumber', 'mobile', 'cell', 'telephone'],
-    city: ['city'],
-    company: ['company', 'companyname', 'business', 'businessname'],
-  };
-
-  function findColumn(headers: string[], field: keyof typeof IMPORT_COLUMN_ALIASES): string | null {
-    const aliases = IMPORT_COLUMN_ALIASES[field]!;
-    for (const h of headers) {
-      if (aliases.includes(h.toLowerCase().replace(/[^a-z0-9]/g, ''))) return h;
-    }
-    return null;
-  }
-
-  app.post('/operate/customers/import', async (req) => {
+  // ---- Import existing customers (onboarding/migration) ------------------
+  app.post('/operate/customers/import/inspect', async (req) => {
     req.requireRole('staff');
-    const sess = req.requireAuth();
-
-    const fields: Record<string, string> = {};
-    let file: { buffer: Buffer; filename: string } | null = null;
-    for await (const part of req.parts()) {
-      if (part.type === 'file') {
-        const buffer = await part.toBuffer();
-        if (part.file.truncated) throw new HttpError(400, 'File is too large (15MB limit)', 'file_too_large');
-        file = { buffer, filename: part.filename };
-      } else {
-        fields[part.fieldname] = String(part.value ?? '');
-      }
-    }
-    if (!file) throw new HttpError(400, 'No file was uploaded', 'no_file');
-
-    const { headers, records } = ingestFile(file.buffer, file.filename);
+    const { buffer, filename } = await readImportUpload(req);
+    const { headers, records, note } = ingestFile(buffer, filename);
     if (headers.length === 0) throw new HttpError(400, 'No columns found in this file', 'empty_file');
 
-    const nameCol = findColumn(headers, 'name');
-    if (!nameCol) {
-      throw new HttpError(400, 'Could not find a name column — expected a header like "Name"', 'missing_column');
-    }
-    const emailCol = findColumn(headers, 'email');
-    const phoneCol = findColumn(headers, 'phone');
-    const cityCol = findColumn(headers, 'city');
-    const companyCol = findColumn(headers, 'company');
+    return {
+      headers,
+      rowCount: records.length,
+      sampleRows: records.slice(0, 5).map((r) => r.record),
+      suggestedMapping: guessMapping(headers, CUSTOMER_IMPORT_ALIASES),
+      note,
+    };
+  });
 
-    return req.db(async (db) => {
-      let imported = 0;
-      const skipped: Array<{ line: number; reason: string }> = [];
+  app.post('/operate/customers/import/preview', async (req) => {
+    req.requireRole('staff');
+    const { buffer, filename, fields } = await readImportUpload(req);
+    const { mapping } = importMappingField.parse(fields);
+    const { records, note } = ingestFile(buffer, filename);
+    const { accepted, rejections } = splitCustomerImportRows(records, mapping as CustomerImportMapping);
 
-      for (const { record, line } of records) {
-        const name = record[nameCol]?.trim();
-        if (!name) {
-          skipped.push({ line, reason: 'Missing name' });
+    return req.db(async (q) => {
+      const uniqueKeys = [...new Set(accepted.map((r) => r.key))];
+      const matched = await findExistingCustomers(q, accepted.map((r) => ({ name: r.name, email: r.email })));
+      const customersLinked = uniqueKeys.filter((k) => matched.has(k)).length;
+      const customersNew = uniqueKeys.length - customersLinked;
+
+      return {
+        totalRows: records.length,
+        acceptedCount: accepted.length,
+        rejectedCount: rejections.length,
+        customersNew,
+        customersLinked,
+        rejections,
+        note,
+      };
+    });
+  });
+
+  app.post('/operate/customers/import/commit', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { buffer, filename, fields } = await readImportUpload(req);
+    const { mapping } = importMappingField.parse(fields);
+    const { records } = ingestFile(buffer, filename);
+    const { accepted, rejections } = splitCustomerImportRows(records, mapping as CustomerImportMapping);
+
+    return req.db(async (q) => {
+      const uniqueByKey = new Map<string, CustomerImportRow>();
+      for (const r of accepted) if (!uniqueByKey.has(r.key)) uniqueByKey.set(r.key, r);
+
+      const matched = await findExistingCustomers(q, [...uniqueByKey.values()].map((r) => ({ name: r.name, email: r.email })));
+
+      let created = 0;
+      const linked = matched.size;
+      for (const r of uniqueByKey.values()) {
+        const existingId = matched.get(r.key);
+        if (existingId) {
+          // Fill blanks only — an import must never overwrite a real,
+          // already-on-file detail with whatever a spreadsheet happened to say.
+          await q.exec(
+            `UPDATE parties SET
+                company_name = COALESCE(company_name, $2),
+                city = COALESCE(city, $3),
+                address_line1 = COALESCE(address_line1, $4)
+              WHERE id = $1`,
+            [existingId, r.company, r.city, r.address],
+          );
+          if (r.email) {
+            await q.exec(
+              `INSERT INTO party_contacts (org_id, party_id, channel, value, is_primary)
+               SELECT app.current_org(), $1, 'email', $2, true
+                WHERE NOT EXISTS (SELECT 1 FROM party_contacts WHERE party_id = $1 AND channel = 'email')`,
+              [existingId, r.email],
+            );
+          }
+          if (r.phone) {
+            await q.exec(
+              `INSERT INTO party_contacts (org_id, party_id, channel, value, is_primary)
+               SELECT app.current_org(), $1, 'phone', $2, true
+                WHERE NOT EXISTS (SELECT 1 FROM party_contacts WHERE party_id = $1 AND channel = 'phone')`,
+              [existingId, r.phone],
+            );
+          }
           continue;
         }
-        const email = emailCol ? record[emailCol]?.trim() : '';
-        const phone = phoneCol ? record[phoneCol]?.trim() : '';
-        const city = cityCol ? record[cityCol]?.trim() : '';
-        const company = companyCol ? record[companyCol]?.trim() : '';
 
-        const party = await db.one<{ id: string }>(
-          `INSERT INTO parties (org_id, kind, display_name, company_name, is_lead, is_customer, lifecycle, city)
-           VALUES (app.current_org(), 'person', $1, $2, false, true, 'customer', $3)
+        const displayName = r.name ?? r.email!;
+        const party = await q.one<{ id: string }>(
+          `INSERT INTO parties (org_id, kind, display_name, company_name, city, address_line1,
+                                 is_lead, is_customer, lifecycle)
+           VALUES (app.current_org(), 'person', $1,$2,$3,$4, false, true, $5)
            RETURNING id`,
-          [name, company || null, city || null],
+          [displayName, r.company, r.city, r.address, r.lifecycle],
         );
-        const partyId = party!.id;
-
-        if (email) {
-          await db.exec(
+        if (r.email) {
+          await q.exec(
             `INSERT INTO party_contacts (org_id, party_id, channel, value, is_primary)
-             VALUES (app.current_org(), $1, 'email', $2, true)
-             ON CONFLICT DO NOTHING`,
-            [partyId, email],
+             VALUES (app.current_org(), $1, 'email', $2, true)`,
+            [party!.id, r.email],
           );
         }
-        if (phone) {
-          await db.exec(
+        if (r.phone) {
+          await q.exec(
             `INSERT INTO party_contacts (org_id, party_id, channel, value, is_primary)
-             VALUES (app.current_org(), $1, 'phone', $2, true)
-             ON CONFLICT DO NOTHING`,
-            [partyId, phone],
+             VALUES (app.current_org(), $1, 'phone', $2, true)`,
+            [party!.id, r.phone],
           );
         }
-        await logTimeline(db, {
-          orgId: req.ctx.orgId, partyId, eventType: 'party.created',
-          title: `Added ${name} (CSV import)`, actorUserId: sess.user_id, actorLabel: sess.full_name,
+        await logTimeline(q, {
+          orgId: req.ctx.orgId, partyId: party!.id, module: 'operate', eventType: 'party.created',
+          title: `Added ${displayName} (customer import)`, actorUserId: sess.user_id, actorLabel: sess.full_name,
         });
-        imported++;
+        created++;
       }
 
-      await audit(db, {
+      await audit(q, {
         orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'operate.customers.import',
-        entityType: 'parties', ip: req.ip, diff: { imported, skipped: skipped.length, filename: file.filename },
+        entityType: 'parties', ip: req.ip,
+        diff: { filename, created, linked, rejected: rejections.length },
       });
 
-      return { imported, skipped };
+      return { created, linked, rejectedCount: rejections.length, rejections };
     });
   });
 
@@ -1047,8 +1204,6 @@ export default async function operateRoutes(app: FastifyInstance) {
     postal_code: z.string().trim().nullable().optional(),
   });
 
-  const WORK_ORDER_STATUSES = ['scheduled', 'dispatched', 'in_progress', 'complete', 'cancelled'] as const;
-
   app.get('/operate/jobs', async (req) => {
     req.requireRole('viewer');
     const { status, party } = z.object({
@@ -1170,6 +1325,138 @@ export default async function operateRoutes(app: FastifyInstance) {
         entityType: 'work_orders', entityId: id,
       });
       return job;
+    });
+  });
+
+  // ---- Import existing (open) jobs (onboarding/migration) ---------------
+  app.post('/operate/jobs/import/inspect', async (req) => {
+    req.requireRole('staff');
+    const { buffer, filename } = await readImportUpload(req);
+    const { headers, records, note } = ingestFile(buffer, filename);
+    if (headers.length === 0) throw new HttpError(400, 'No columns found in this file', 'empty_file');
+
+    return {
+      headers,
+      rowCount: records.length,
+      sampleRows: records.slice(0, 5).map((r) => r.record),
+      suggestedMapping: guessMapping(headers, JOB_IMPORT_ALIASES),
+      note,
+    };
+  });
+
+  // Signature-based job dedupe needs a RESOLVED party id (two rows naming
+  // the same customer by name vs by email must collapse to the same check),
+  // but preview must not create anyone — so a row whose customer doesn't
+  // exist yet is trivially never "already imported" (there's no party yet
+  // to have a job against), and only rows matching an EXISTING customer are
+  // checked against that customer's real existing jobs.
+  async function findAlreadyImportedJobSignatures(
+    q: Querier, rows: JobImportRow[],
+  ): Promise<Set<string>> {
+    const existingParties = await findExistingCustomers(q, rows.map((r) => ({ name: r.customerName, email: r.customerEmail })));
+    const partyIds = [...new Set(rows.filter((r) => existingParties.has(r.customerKey)).map((r) => existingParties.get(r.customerKey)!))];
+    if (partyIds.length === 0) return new Set();
+
+    const existingJobs = await q.rows<{ party_id: string; title: string; sched: string | null }>(
+      `SELECT party_id, lower(title) AS title, scheduled_start::date::text AS sched
+         FROM work_orders WHERE party_id = ANY($1::uuid[])`,
+      [partyIds],
+    );
+    const existingSigs = new Set(existingJobs.map((j) => `${j.party_id}|${j.title}|${j.sched ?? ''}`));
+
+    const matched = new Set<string>();
+    for (const r of rows) {
+      const partyId = existingParties.get(r.customerKey);
+      if (!partyId) continue;
+      const sig = `${partyId}|${r.title.toLowerCase()}|${r.scheduledDate ?? ''}`;
+      if (existingSigs.has(sig)) matched.add(`${r.line}`);
+    }
+    return matched;
+  }
+
+  app.post('/operate/jobs/import/preview', async (req) => {
+    req.requireRole('staff');
+    const { buffer, filename, fields } = await readImportUpload(req);
+    const { mapping } = importMappingField.parse(fields);
+    const { records, note } = ingestFile(buffer, filename);
+    const { accepted, rejections } = splitJobImportRows(records, mapping as JobImportMapping);
+
+    return req.db(async (q) => {
+      const alreadyImportedLines = await findAlreadyImportedJobSignatures(q, accepted);
+      const newRows = accepted.filter((r) => !alreadyImportedLines.has(`${r.line}`));
+
+      const uniqueKeys = [...new Set(newRows.map((r) => r.customerKey))];
+      const matched = await findExistingCustomers(q, newRows.map((r) => ({ name: r.customerName, email: r.customerEmail })));
+      const customersLinked = uniqueKeys.filter((k) => matched.has(k)).length;
+      const customersNew = uniqueKeys.length - customersLinked;
+
+      return {
+        totalRows: records.length,
+        acceptedCount: newRows.length,
+        rejectedCount: rejections.length,
+        alreadyImported: alreadyImportedLines.size,
+        customersNew,
+        customersLinked,
+        rejections,
+        note,
+      };
+    });
+  });
+
+  app.post('/operate/jobs/import/commit', async (req) => {
+    req.requireRole('staff');
+    const sess = req.requireAuth();
+    const { buffer, filename, fields } = await readImportUpload(req);
+    const { mapping } = importMappingField.parse(fields);
+    const { records } = ingestFile(buffer, filename);
+    const { accepted, rejections } = splitJobImportRows(records, mapping as JobImportMapping);
+
+    return req.db(async (q) => {
+      const alreadyImportedLines = await findAlreadyImportedJobSignatures(q, accepted);
+      const newRows = accepted.filter((r) => !alreadyImportedLines.has(`${r.line}`));
+
+      const { keyToPartyId, created: partiesCreated, linked: partiesLinked } = await resolveOrCreateCustomers(
+        q, newRows.map((r) => ({ name: r.customerName, email: r.customerEmail })),
+        { orgId: req.ctx.orgId, actorUserId: sess.user_id, actorLabel: sess.full_name, sourceLabel: 'job import' },
+      );
+
+      // A second, in-file dedupe pass: two new rows for the SAME brand-new
+      // customer with the same title+date would otherwise both insert,
+      // since neither matched anything in the database above.
+      const seenSignatures = new Set<string>();
+      let created = 0;
+      let skippedInFile = 0;
+      for (const r of newRows) {
+        const partyId = keyToPartyId.get(r.customerKey)!;
+        const sig = `${partyId}|${r.title.toLowerCase()}|${r.scheduledDate ?? ''}`;
+        if (seenSignatures.has(sig)) { skippedInFile++; continue; }
+        seenSignatures.add(sig);
+
+        const job = await q.one<{ id: string }>(
+          `INSERT INTO work_orders (org_id, party_id, title, description, scheduled_start, status)
+           VALUES (app.current_org(), $1,$2,$3,$4,$5)
+           RETURNING id`,
+          [partyId, r.title, r.notes, r.scheduledDate, r.status],
+        );
+        await logTimeline(q, {
+          orgId: req.ctx.orgId, partyId, module: 'operate', eventType: 'job.created',
+          title: `Job imported: ${r.title}`, actorUserId: sess.user_id, actorLabel: sess.full_name,
+          entityType: 'work_orders', entityId: job!.id,
+        });
+        created++;
+      }
+
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'operate.jobs.import',
+        entityType: 'work_orders', ip: req.ip,
+        diff: { filename, created, partiesCreated, partiesLinked, alreadyImported: alreadyImportedLines.size + skippedInFile, rejected: rejections.length },
+      });
+
+      return {
+        created, partiesCreated, partiesLinked,
+        alreadyImported: alreadyImportedLines.size + skippedInFile,
+        rejectedCount: rejections.length, rejections,
+      };
     });
   });
 
@@ -1393,27 +1680,9 @@ export default async function operateRoutes(app: FastifyInstance) {
   });
 
   // ---- Import existing invoices (onboarding/migration) ------------------
-  async function readInvoiceImportUpload(
-    req: FastifyRequest,
-  ): Promise<{ buffer: Buffer; filename: string; fields: Record<string, string> }> {
-    const fields: Record<string, string> = {};
-    let file: { buffer: Buffer; filename: string } | null = null;
-    for await (const part of req.parts()) {
-      if (part.type === 'file') {
-        const buffer = await part.toBuffer();
-        if (part.file.truncated) throw new HttpError(400, 'File is too large (15MB limit)', 'file_too_large');
-        file = { buffer, filename: part.filename };
-      } else {
-        fields[part.fieldname] = String(part.value ?? '');
-      }
-    }
-    if (!file) throw new HttpError(400, 'No file was uploaded', 'no_file');
-    return { buffer: file.buffer, filename: file.filename, fields };
-  }
-
   app.post('/operate/invoices/import/inspect', async (req) => {
     req.requireRole('staff');
-    const { buffer, filename } = await readInvoiceImportUpload(req);
+    const { buffer, filename } = await readImportUpload(req);
     const { headers, records, note } = ingestFile(buffer, filename);
     if (headers.length === 0) throw new HttpError(400, 'No columns found in this file', 'empty_file');
 
@@ -1421,7 +1690,7 @@ export default async function operateRoutes(app: FastifyInstance) {
       headers,
       rowCount: records.length,
       sampleRows: records.slice(0, 5).map((r) => r.record),
-      suggestedMapping: guessInvoiceMapping(headers),
+      suggestedMapping: guessMapping(headers, INVOICE_IMPORT_ALIASES),
       note,
     };
   });
@@ -1437,7 +1706,7 @@ export default async function operateRoutes(app: FastifyInstance) {
 
   app.post('/operate/invoices/import/preview', async (req) => {
     req.requireRole('staff');
-    const { buffer, filename, fields } = await readInvoiceImportUpload(req);
+    const { buffer, filename, fields } = await readImportUpload(req);
     const { mapping } = importMappingField.parse(fields);
     const { records, note } = ingestFile(buffer, filename);
     const { accepted, rejections } = splitInvoiceImportRows(records, mapping);
@@ -1451,27 +1720,9 @@ export default async function operateRoutes(app: FastifyInstance) {
       const { newRows, alreadyImported } = dedupeImportedInvoices(accepted, existingNumbers);
 
       const uniqueKeys = [...new Set(newRows.map((r) => r.customerKey))];
-      const emails = newRows.filter((r) => r.customerEmail).map((r) => r.customerEmail!);
-      const names = newRows.filter((r) => !r.customerEmail && r.customerName).map((r) => r.customerName!);
-      const matchedKeys = new Set<string>();
-      if (emails.length > 0) {
-        const rows = await q.rows<{ value: string }>(
-          `SELECT lower(pc.value) AS value FROM party_contacts pc
-             JOIN parties p ON p.id = pc.party_id
-            WHERE pc.channel = 'email' AND lower(pc.value) = ANY($1::text[]) AND p.deleted_at IS NULL`,
-          [emails.map((e) => e.toLowerCase())],
-        );
-        for (const r of rows) matchedKeys.add(r.value);
-      }
-      if (names.length > 0) {
-        const rows = await q.rows<{ value: string }>(
-          `SELECT lower(display_name) AS value FROM parties
-            WHERE lower(display_name) = ANY($1::text[]) AND deleted_at IS NULL`,
-          [names.map((n) => n.toLowerCase())],
-        );
-        for (const r of rows) matchedKeys.add(r.value);
-      }
-      const customersLinked = uniqueKeys.filter((k) => matchedKeys.has(k)).length;
+      const refs = newRows.map((r) => ({ name: r.customerName, email: r.customerEmail }));
+      const matched = await findExistingCustomers(q, refs);
+      const customersLinked = uniqueKeys.filter((k) => matched.has(k)).length;
       const customersNew = uniqueKeys.length - customersLinked;
 
       const totalAmount = newRows.reduce((sum, r) => sum + r.total, 0);
@@ -1495,7 +1746,7 @@ export default async function operateRoutes(app: FastifyInstance) {
   app.post('/operate/invoices/import/commit', async (req) => {
     req.requireRole('staff');
     const sess = req.requireAuth();
-    const { buffer, filename, fields } = await readInvoiceImportUpload(req);
+    const { buffer, filename, fields } = await readImportUpload(req);
     const { mapping } = importMappingField.parse(fields);
     const { records } = ingestFile(buffer, filename);
     const { accepted, rejections } = splitInvoiceImportRows(records, mapping);
@@ -1510,56 +1761,12 @@ export default async function operateRoutes(app: FastifyInstance) {
 
       // Resolve every row's customer BEFORE creating any invoice — two rows
       // for the same customer (by email, else by name) must land on the
-      // same party, not create one each.
-      const keyToPartyId = new Map<string, string>();
-      const uniqueByKey = new Map<string, InvoiceImportRow>();
-      for (const r of newRows) if (!uniqueByKey.has(r.customerKey)) uniqueByKey.set(r.customerKey, r);
-
-      const emailRows = [...uniqueByKey.values()].filter((r) => r.customerEmail);
-      if (emailRows.length > 0) {
-        const found = await q.rows<{ id: string; email: string }>(
-          `SELECT p.id, lower(pc.value) AS email FROM party_contacts pc
-             JOIN parties p ON p.id = pc.party_id
-            WHERE pc.channel = 'email' AND lower(pc.value) = ANY($1::text[]) AND p.deleted_at IS NULL`,
-          [emailRows.map((r) => r.customerEmail!.toLowerCase())],
-        );
-        for (const f of found) keyToPartyId.set(f.email, f.id);
-      }
-      const nameRows = [...uniqueByKey.values()].filter((r) => !r.customerEmail && !keyToPartyId.has(r.customerKey));
-      if (nameRows.length > 0) {
-        const found = await q.rows<{ id: string; name: string }>(
-          `SELECT id, lower(display_name) AS name FROM parties
-            WHERE lower(display_name) = ANY($1::text[]) AND deleted_at IS NULL`,
-          [nameRows.map((r) => r.customerName!.toLowerCase())],
-        );
-        for (const f of found) keyToPartyId.set(f.name, f.id);
-      }
-
-      let partiesCreated = 0;
-      const partiesLinked = keyToPartyId.size;
-      for (const r of uniqueByKey.values()) {
-        if (keyToPartyId.has(r.customerKey)) continue;
-        const displayName = r.customerName ?? r.customerEmail!;
-        const party = await q.one<{ id: string }>(
-          `INSERT INTO parties (org_id, kind, display_name, is_lead, is_customer, lifecycle)
-           VALUES (app.current_org(), 'person', $1, false, true, 'customer')
-           RETURNING id`,
-          [displayName],
-        );
-        if (r.customerEmail) {
-          await q.exec(
-            `INSERT INTO party_contacts (org_id, party_id, channel, value, is_primary)
-             VALUES (app.current_org(), $1, 'email', $2, true)`,
-            [party!.id, r.customerEmail],
-          );
-        }
-        await logTimeline(q, {
-          orgId: req.ctx.orgId, partyId: party!.id, module: 'operate', eventType: 'party.created',
-          title: `Added ${displayName} (invoice import)`, actorUserId: sess.user_id, actorLabel: sess.full_name,
-        });
-        keyToPartyId.set(r.customerKey, party!.id);
-        partiesCreated++;
-      }
+      // same party, not create one each. Shared with the jobs importer —
+      // see lib/operateImport.ts.
+      const { keyToPartyId, created: partiesCreated, linked: partiesLinked } = await resolveOrCreateCustomers(
+        q, newRows.map((r) => ({ name: r.customerName, email: r.customerEmail })),
+        { orgId: req.ctx.orgId, actorUserId: sess.user_id, actorLabel: sess.full_name, sourceLabel: 'invoice import' },
+      );
 
       let created = 0;
       let paymentsRecorded = 0;

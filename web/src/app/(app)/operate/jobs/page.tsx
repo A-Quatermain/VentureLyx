@@ -80,9 +80,14 @@ export default function JobsPage() {
         title="Jobs"
         subtitle="Every scheduled, in-progress, and completed job."
         actions={canEdit && (
-          <Button onClick={() => setAdding(true)}>
-            <CalendarPlus size={14} weight="bold" className="mr-1.5 inline" /> New job
-          </Button>
+          <div className="flex items-center gap-2">
+            <Link href="/operate/jobs/import" className="text-sm font-medium text-primary hover:underline">
+              Import jobs
+            </Link>
+            <Button onClick={() => setAdding(true)}>
+              <CalendarPlus size={14} weight="bold" className="mr-1.5 inline" /> New job
+            </Button>
+          </div>
         )}
       />
 

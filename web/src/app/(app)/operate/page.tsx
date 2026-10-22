@@ -63,6 +63,9 @@ export default function OperatePage() {
             <Link href="/operate/catalog" className="text-sm font-medium text-primary hover:underline">
               Catalog →
             </Link>
+            <Link href="/operate/import" className="text-sm font-medium text-primary hover:underline">
+              Import your data →
+            </Link>
           </div>
         }
       />

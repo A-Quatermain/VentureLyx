@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { mutate } from 'swr';
 import {
-  Globe, Buildings, MapPin, Tag, MagnifyingGlass, Users, ClipboardText,
+  Globe, Buildings, MapPin, Tag, MagnifyingGlass, Users, ClipboardText, Receipt, Briefcase,
   CheckCircle, CircleDashed, ArrowRight,
 } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
@@ -21,6 +21,9 @@ interface StepMeta {
   icon: typeof Globe;
   cta: string;
   href: (primarySiteId: string | null) => string;
+  /** Can be marked "not doing this one" instead of completed — see
+   *  api/src/routes/setup.ts's SKIPPABLE_STEPS. */
+  skippable?: boolean;
 }
 
 // Wording matches what was asked for verbatim where given; the two steps
@@ -69,11 +72,30 @@ const STEP_META: StepMeta[] = [
   },
   {
     key: 'customers',
-    label: 'Add your customers',
-    reason: 'CSV import, manual, or bring your existing invoices — this makes revenue tracking work.',
+    label: 'Import customers',
+    reason: 'CSV import or manual — this makes revenue tracking work.',
     icon: Users,
-    cta: 'Add customers',
-    href: () => '/operate/customers',
+    cta: 'Import customers',
+    href: () => '/operate/customers/import',
+    skippable: true,
+  },
+  {
+    key: 'invoices',
+    label: 'Import invoices',
+    reason: 'Bring in your current-year invoices so revenue and outstanding balances show up right away.',
+    icon: Receipt,
+    cta: 'Import invoices',
+    href: () => '/operate/invoices/import',
+    skippable: true,
+  },
+  {
+    key: 'jobs',
+    label: 'Import open jobs',
+    reason: 'Bring in whatever you have scheduled so the Jobs board isn’t starting from zero.',
+    icon: Briefcase,
+    cta: 'Import jobs',
+    href: () => '/operate/jobs/import',
+    skippable: true,
   },
   {
     key: 'review',
@@ -124,6 +146,11 @@ export function SetupChecklist() {
     router.push(step.href(primarySite?.id ?? null));
   }
 
+  async function onStepSkip(key: SetupStepKey) {
+    await apiFetch('/setup/skip', { method: 'POST', body: JSON.stringify({ key }) });
+    await mutate(PROGRESS_KEY);
+  }
+
   return (
     <Card className="mb-4 overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
@@ -153,11 +180,13 @@ export function SetupChecklist() {
       </div>
       <ul className="divide-y divide-border">
         {STEP_META.map((step) => {
-          const done = progress.steps.find((s) => s.key === step.key)?.done ?? false;
+          const s = progress.steps.find((st) => st.key === step.key);
+          const done = s?.done ?? false;
+          const skipped = s?.skipped ?? false;
           return (
             <li key={step.key} className="flex items-center gap-3 px-6 py-3">
               {done ? (
-                <CheckCircle size={20} weight="fill" className="shrink-0 text-success" />
+                <CheckCircle size={20} weight="fill" className={`shrink-0 ${skipped ? 'text-muted-foreground/60' : 'text-success'}`} />
               ) : (
                 <CircleDashed size={20} className="shrink-0 text-muted-foreground/40" />
               )}
@@ -166,17 +195,27 @@ export function SetupChecklist() {
               </div>
               <div className="min-w-0 flex-1">
                 <p className={`text-sm font-medium ${done ? 'text-muted-foreground' : 'text-foreground'}`}>
-                  {step.label}
+                  {step.label}{skipped && ' — skipped'}
                 </p>
                 <p className="text-xs text-muted-foreground">{step.reason}</p>
               </div>
               {!done && (
-                <button
-                  onClick={() => onStepClick(step)}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
-                >
-                  {step.cta} <ArrowRight size={12} weight="bold" />
-                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    onClick={() => onStepClick(step)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
+                  >
+                    {step.cta} <ArrowRight size={12} weight="bold" />
+                  </button>
+                  {step.skippable && (
+                    <button
+                      onClick={() => onStepSkip(step.key)}
+                      className="text-xs font-medium text-muted-foreground hover:text-foreground"
+                    >
+                      Skip
+                    </button>
+                  )}
+                </div>
               )}
             </li>
           );

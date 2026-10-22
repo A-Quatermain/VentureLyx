@@ -11,7 +11,6 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { SkeletonCard } from '@/components/ui/Skeleton';
 import { CustomerDrawer } from '@/components/CustomerDrawer';
-import { CustomerImportDrawer } from '@/components/CustomerImportDrawer';
 import { toneSoft, type Tone } from '@/components/ui/tone';
 
 type ChipFilter = 'all' | 'lead' | 'customer' | 'dormant';
@@ -88,7 +87,6 @@ export default function CustomersPage() {
   const [sort, setSort] = useState<SortKey>('activity');
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
   const [adding, setAdding] = useState(false);
-  const [importing, setImporting] = useState(false);
 
   const params = new URLSearchParams();
   if (q.trim()) params.set('q', q.trim());
@@ -137,11 +135,11 @@ export default function CustomersPage() {
           <Link href="/operate" className="text-sm text-primary">
             ← Operate
           </Link>
-          {canEdit && !adding && !importing && (
+          {canEdit && !adding && (
             <>
-              <Button variant="ghost" onClick={() => setImporting(true)}>
-                Import CSV
-              </Button>
+              <Link href="/operate/customers/import" className="text-sm font-medium text-primary hover:underline">
+                Import customers
+              </Link>
               <Link href="/operate/invoices/import" className="text-sm font-medium text-primary hover:underline">
                 Import invoices
               </Link>
@@ -195,9 +193,9 @@ export default function CustomersPage() {
             </p>
             {canEdit && !isFiltered && (
               <div className="flex flex-wrap gap-2">
-                <Button variant="ghost" onClick={() => setImporting(true)}>
-                  Import CSV
-                </Button>
+                <Link href="/operate/customers/import">
+                  <Button variant="ghost">Import customers</Button>
+                </Link>
                 <Link href="/operate/invoices/import">
                   <Button variant="ghost">Import invoices</Button>
                 </Link>
@@ -272,7 +270,6 @@ export default function CustomersPage() {
         onOpenChange={setAdding}
         onSaved={(id) => router.push(`/operate/customers/${id}`)}
       />
-      <CustomerImportDrawer open={importing} onOpenChange={setImporting} />
     </div>
   );
 }

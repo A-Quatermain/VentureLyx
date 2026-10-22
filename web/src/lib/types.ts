@@ -1319,6 +1319,73 @@ export interface InvoiceImportCommitResponse {
   outstandingAmount: string;
 }
 
+// ---- Operate: import existing customers --------------------------------
+export type CustomerImportField = 'name' | 'email' | 'phone' | 'company' | 'address' | 'city' | 'lifecycle';
+export type CustomerImportMapping = Partial<Record<CustomerImportField, string>>;
+
+export interface GenericImportRejection {
+  line: number;
+  label: string;
+  reason: string;
+}
+
+export interface CustomerImportInspectResponse {
+  headers: string[];
+  rowCount: number;
+  sampleRows: Record<string, string>[];
+  suggestedMapping: CustomerImportMapping;
+  note: string | null;
+}
+
+export interface CustomerImportPreviewResponse {
+  totalRows: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  customersNew: number;
+  customersLinked: number;
+  rejections: GenericImportRejection[];
+  note: string | null;
+}
+
+export interface CustomerImportCommitResponse {
+  created: number;
+  linked: number;
+  rejectedCount: number;
+  rejections: GenericImportRejection[];
+}
+
+// ---- Operate: import existing jobs --------------------------------------
+export type JobImportField = 'title' | 'customer_name' | 'customer_email' | 'status' | 'scheduled_date' | 'notes';
+export type JobImportMapping = Partial<Record<JobImportField, string>>;
+
+export interface JobImportInspectResponse {
+  headers: string[];
+  rowCount: number;
+  sampleRows: Record<string, string>[];
+  suggestedMapping: JobImportMapping;
+  note: string | null;
+}
+
+export interface JobImportPreviewResponse {
+  totalRows: number;
+  acceptedCount: number;
+  rejectedCount: number;
+  alreadyImported: number;
+  customersNew: number;
+  customersLinked: number;
+  rejections: GenericImportRejection[];
+  note: string | null;
+}
+
+export interface JobImportCommitResponse {
+  created: number;
+  partiesCreated: number;
+  partiesLinked: number;
+  alreadyImported: number;
+  rejectedCount: number;
+  rejections: GenericImportRejection[];
+}
+
 // ---- Admin ---------------------------------------------------------------
 export interface AdminSummary {
   userCount: number;
@@ -1379,11 +1446,13 @@ export interface AdminOrganizationDetail {
 }
 
 // ---- Guided setup checklist ------------------------------------------------
-export type SetupStepKey = 'website' | 'business' | 'cities' | 'services' | 'gsc' | 'customers' | 'review';
+export type SetupStepKey =
+  | 'website' | 'business' | 'cities' | 'services' | 'gsc' | 'customers' | 'review' | 'invoices' | 'jobs';
 
 export interface SetupStep {
   key: SetupStepKey;
   done: boolean;
+  skipped: boolean;
 }
 
 export interface SetupProgress {
@@ -1391,11 +1460,6 @@ export interface SetupProgress {
   done: number;
   total: number;
   dismissed: boolean;
-}
-
-export interface CustomerImportResult {
-  imported: number;
-  skipped: Array<{ line: number; reason: string }>;
 }
 
 export type WaitlistStatus = 'new' | 'contacted' | 'converted';
