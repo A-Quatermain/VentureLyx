@@ -627,7 +627,8 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
       <AiAnswerChecksCard siteId={siteId} />
 
       <AIStreamPanel
-        path="/ai/growth-strategist/stream"
+        path="/ai/seo-recommendations/stream"
+        body={{ siteId }}
         title="AI Recommendation"
         triggerLabel="What should I fix first?"
       />

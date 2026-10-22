@@ -51,6 +51,9 @@ const aiSettingsInput = z.object({
   modelOverrides: z
     .record(z.string(), z.object({ provider: z.enum(['anthropic', 'openai']), model: z.string() }).nullable())
     .optional(),
+  // Per-agent cap, alongside the org-wide one above — null clears a feature's
+  // cap back to "no cap," same convention as spendCapMonthly itself.
+  featureSpendCaps: z.record(z.string(), z.number().positive().nullable()).optional(),
 });
 
 export default async function settingsRoutes(app: FastifyInstance) {
@@ -190,6 +193,7 @@ export default async function settingsRoutes(app: FastifyInstance) {
         providerPreference: pref === 'anthropic' || pref === 'openai' ? pref : 'auto',
         spendCapMonthly: typeof cap === 'number' ? cap : null,
         modelOverrides: s.ai_model_overrides ?? {},
+        featureSpendCaps: s.ai_feature_spend_caps ?? {},
         connectedProviders: connected.map((c) => c.provider),
         hasSharedAnthropic: !!process.env.ANTHROPIC_API_KEY,
         hasSharedOpenai: !!process.env.OPENAI_API_KEY,
@@ -208,11 +212,28 @@ export default async function settingsRoutes(app: FastifyInstance) {
       const current = await q.one<{ settings: Record<string, unknown> | null }>(
         `SELECT settings FROM organizations WHERE id = app.current_org()`,
       );
+      // featureSpendCaps merges per-key (a PATCH naming one feature's cap
+      // must not wipe out another feature's already-set cap) — same reason
+      // modelOverrides already gets the whole map replaced, not merged: the
+      // frontend always sends its full current map back, so a plain replace
+      // is correct there; featureSpendCaps' frontend instead sends one key
+      // at a time (see ai-team/page.tsx), so this one DOES need a merge.
+      const existingFeatureCaps = (current?.settings?.ai_feature_spend_caps as Record<string, number | null>) ?? {};
+      const mergedFeatureCaps = body.featureSpendCaps !== undefined
+        ? { ...existingFeatureCaps, ...body.featureSpendCaps }
+        : existingFeatureCaps;
+      // null entries clear a cap back to "no cap" — strip them rather than
+      // storing null forever, same as how an absent key already means that.
+      const cleanedFeatureCaps = Object.fromEntries(
+        Object.entries(mergedFeatureCaps).filter(([, v]) => v !== null && v !== undefined),
+      );
+
       const merged = {
         ...(current?.settings ?? {}),
         ...(body.providerPreference !== undefined ? { ai_provider: body.providerPreference } : {}),
         ...(body.spendCapMonthly !== undefined ? { ai_spend_cap_monthly: body.spendCapMonthly } : {}),
         ...(body.modelOverrides !== undefined ? { ai_model_overrides: body.modelOverrides } : {}),
+        ...(body.featureSpendCaps !== undefined ? { ai_feature_spend_caps: cleanedFeatureCaps } : {}),
       };
       await q.exec(`UPDATE organizations SET settings = $1 WHERE id = app.current_org()`, [JSON.stringify(merged)]);
       await audit(q, {

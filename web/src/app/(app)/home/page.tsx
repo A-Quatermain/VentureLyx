@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   TrendUp, Users, CurrencyDollar, MagnifyingGlass, Briefcase, Sparkle, ArrowUpRight,
-  Wallet, Star, Target, FunnelSimple,
+  Wallet, Star, Target, FunnelSimple, X,
 } from '@phosphor-icons/react';
 import { AreaChart, Area, ResponsiveContainer, Tooltip, XAxis } from 'recharts';
 import { useApi } from '@/lib/useApi';
@@ -20,6 +20,10 @@ import { Card } from '@/components/ui/Card';
 import { Skeleton, ShimmerBlock } from '@/components/ui/Skeleton';
 import { signalSeverityLabel } from '@/components/ui/tone';
 
+// The Insights Analyst's metric keys — exactly the set api/src/routes/ai.ts's
+// /ai/metric-explanation/stream accepts.
+export type InsightMetric = 'revenue' | 'leads' | 'customers' | 'jobs' | 'expenses' | 'reviews' | 'seo' | 'growth_score';
+
 function Metric({
   label,
   value,
@@ -27,6 +31,8 @@ function Metric({
   icon: Icon,
   href,
   emptyLabel,
+  insight,
+  onExplain,
 }: {
   label: string;
   value: string;
@@ -41,13 +47,33 @@ function Metric({
   // "run a scan" already did this; this is the same idea on the rest).
   href?: string;
   emptyLabel?: string;
+  // Also opt-in/additive: a tile with no `insight` renders with no "Explain"
+  // affordance at all, exactly as before.
+  insight?: InsightMetric;
+  onExplain?: (metric: InsightMetric) => void;
 }) {
   const body = (
     <Card className={href ? 'p-5 transition hover:border-primary/40 hover:shadow-sm' : 'p-5'}>
       <div className="mb-3 flex items-center justify-between">
         <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-          <Icon size={16} weight="duotone" className="text-primary" />
+        <div className="flex items-center gap-1">
+          {insight && onExplain && (
+            <button
+              type="button"
+              title="Ask the Insights Analyst"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onExplain(insight);
+              }}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/60 transition hover:bg-primary/10 hover:text-primary"
+            >
+              <Sparkle size={13} weight="fill" />
+            </button>
+          )}
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+            <Icon size={16} weight="duotone" className="text-primary" />
+          </div>
         </div>
       </div>
       <div className="font-mono text-3xl font-semibold tabular-nums tracking-tight">{value}</div>
@@ -68,7 +94,12 @@ function Metric({
 // The one tile that doesn't fit Metric: no single module to link into (it
 // blends three), and it needs a breakdown reveal Metric has no use for.
 // Same Card shell and sizing as Metric, so it sits in the grid identically.
-function GrowthScoreMetric({ growthScore }: { growthScore: GrowthScoreBreakdown }) {
+function GrowthScoreMetric({
+  growthScore, onExplain,
+}: {
+  growthScore: GrowthScoreBreakdown;
+  onExplain: (metric: InsightMetric) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const hasScore = growthScore.score != null;
   const breakdown = `Visibility ${growthScore.visibility ?? '—'} · Reputation ${growthScore.reputation ?? '—'} · Sales ${growthScore.sales ?? '—'}`;
@@ -82,8 +113,23 @@ function GrowthScoreMetric({ growthScore }: { growthScore: GrowthScoreBreakdown 
       >
         <div className="mb-3 flex items-center justify-between">
           <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Growth Score</span>
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <Sparkle size={16} weight="duotone" className="text-primary" />
+          <div className="flex items-center gap-1">
+            {hasScore && (
+              <button
+                type="button"
+                title="Ask the Insights Analyst"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onExplain('growth_score');
+                }}
+                className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/60 transition hover:bg-primary/10 hover:text-primary"
+              >
+                <Sparkle size={13} weight="fill" />
+              </button>
+            )}
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+              <Sparkle size={16} weight="duotone" className="text-primary" />
+            </div>
           </div>
         </div>
         <div className="font-mono text-3xl font-semibold tabular-nums tracking-tight">
@@ -130,8 +176,14 @@ function toActions(opportunities: Opportunity[], signals: Signal[]): Action[] {
   return [...fromOpportunities, ...fromSignals];
 }
 
+const INSIGHT_LABEL: Record<InsightMetric, string> = {
+  revenue: 'Revenue', leads: 'New Leads', customers: 'Customers', jobs: 'Jobs',
+  expenses: 'Expenses', reviews: 'Reviews', seo: 'SEO Score', growth_score: 'Growth Score',
+};
+
 export default function CommandCenter() {
   const router = useRouter();
+  const [explainMetric, setExplainMetric] = useState<InsightMetric | null>(null);
   const { data: summary, error, isLoading } = useApi<SummaryResponse>('/command/summary');
   const { data: signals, isLoading: signalsLoading } = useApi<Signal[]>('/command/signals');
   const { data: leads } = useApi<Lead[]>('/operate/leads');
@@ -191,6 +243,8 @@ export default function CommandCenter() {
             emptyLabel={Number(summary.money.collected) === 0 ? 'No revenue yet' : undefined}
             icon={CurrencyDollar}
             href="/operate"
+            insight="revenue"
+            onExplain={setExplainMetric}
           />
         )}
         {showOperateTiles && (
@@ -200,6 +254,8 @@ export default function CommandCenter() {
             sub={`${summary.leads.stale} stale`}
             icon={TrendUp}
             href="/operate/leads"
+            insight="leads"
+            onExplain={setExplainMetric}
           />
         )}
         {showOperateTiles && (
@@ -210,6 +266,8 @@ export default function CommandCenter() {
             emptyLabel={customers === 0 ? 'No customers yet — add customers' : undefined}
             icon={Users}
             href="/operate/customers"
+            insight="customers"
+            onExplain={setExplainMetric}
           />
         )}
         {showOperateTiles && (
@@ -220,6 +278,8 @@ export default function CommandCenter() {
             emptyLabel={summary.work.today_total === 0 ? 'No jobs scheduled today' : undefined}
             icon={Briefcase}
             href="/operate"
+            insight="jobs"
+            onExplain={setExplainMetric}
           />
         )}
         {showScaleSeo && (
@@ -229,6 +289,8 @@ export default function CommandCenter() {
             sub={summary.seo?.health ? 'of 100' : 'run a scan'}
             icon={MagnifyingGlass}
             href="/scaleseo"
+            insight="seo"
+            onExplain={setExplainMetric}
           />
         )}
         {showReviews && (
@@ -239,6 +301,8 @@ export default function CommandCenter() {
             emptyLabel={summary.reputation.review_count === 0 ? 'No reviews yet' : undefined}
             icon={Star}
             href="/reviews"
+            insight="reviews"
+            onExplain={setExplainMetric}
           />
         )}
         {showOperateTiles && (
@@ -249,10 +313,32 @@ export default function CommandCenter() {
             emptyLabel={Number(summary.expenses.this_month) === 0 ? 'No expenses logged yet' : undefined}
             icon={Wallet}
             href="/operate"
+            insight="expenses"
+            onExplain={setExplainMetric}
           />
         )}
-        <GrowthScoreMetric growthScore={summary.growthScore} />
+        <GrowthScoreMetric growthScore={summary.growthScore} onExplain={setExplainMetric} />
       </Stagger>
+
+      {explainMetric && (
+        <div className="mt-4">
+          <AIStreamPanel
+            key={explainMetric}
+            path="/ai/metric-explanation/stream"
+            body={{ metric: explainMetric }}
+            title={`Insights Analyst · ${INSIGHT_LABEL[explainMetric]}`}
+            triggerLabel="Explain this"
+            autoStart
+          />
+          <button
+            type="button"
+            onClick={() => setExplainMetric(null)}
+            className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            <X size={12} weight="bold" /> Close
+          </button>
+        </div>
+      )}
 
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="overflow-hidden bg-gradient-to-br from-primary to-accent-deep text-white">

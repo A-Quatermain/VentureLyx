@@ -20,7 +20,7 @@ export interface OrgProfile {
 export type AIFeature =
   | 'seo_recommendations' | 'page_generation' | 'review_response'
   | 'next_best_action' | 'metric_explanation' | 'business_blueprint' | 'sequence_writing'
-  | 'ai_visibility_check' | 'reply_classification';
+  | 'ai_visibility_check' | 'reply_classification' | 'followup_assistant';
 
 export type AIProvider = 'anthropic' | 'openai';
 export type AIProviderPreference = 'auto' | AIProvider;
@@ -46,6 +46,7 @@ export interface AISettingsResponse {
   providerPreference: AIProviderPreference;
   spendCapMonthly: number | null;
   modelOverrides: Partial<Record<AIFeature, AIModelOverride | null>>;
+  featureSpendCaps: Partial<Record<AIFeature, number>>;
   connectedProviders: AIProvider[];
   hasSharedAnthropic: boolean;
   hasSharedOpenai: boolean;

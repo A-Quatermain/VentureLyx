@@ -22,12 +22,13 @@ export type Feature =
   | 'business_blueprint'
   | 'sequence_writing'
   | 'ai_visibility_check'
-  | 'reply_classification';
+  | 'reply_classification'
+  | 'followup_assistant';
 
 export const FEATURES: Feature[] = [
   'seo_recommendations', 'page_generation', 'review_response',
   'next_best_action', 'metric_explanation', 'business_blueprint', 'sequence_writing',
-  'ai_visibility_check', 'reply_classification',
+  'ai_visibility_check', 'reply_classification', 'followup_assistant',
 ];
 
 export type Provider = 'anthropic' | 'openai';
@@ -51,6 +52,9 @@ export const FEATURE_TIER: Record<Feature, Tier> = {
   // (every poll, not weekly) so cost per call matters more here than on the
   // sampling features above.
   reply_classification: 'cheap',
+  // Drafting one follow-up message for one specific lead/job — same shape
+  // of task as review_response, same tier.
+  followup_assistant: 'primary',
 };
 
 // claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5-20251001 are the current
@@ -169,14 +173,14 @@ function resolveProviderOrder(pref: ProviderPreference, clients: AIClients): Pro
 }
 
 export type ModelOverrides = Partial<Record<Feature, { provider: Provider; model: string }>>;
+export type FeatureSpendCaps = Partial<Record<Feature, number>>;
 
 export interface AISettings {
   providerPreference: ProviderPreference;
   spendCapMonthly: number | null;
   modelOverrides: ModelOverrides;
+  featureSpendCaps: FeatureSpendCaps;
 }
-
-const DEFAULT_AI_SETTINGS: AISettings = { providerPreference: 'auto', spendCapMonthly: null, modelOverrides: {} };
 
 // organizations.settings, not .modules — modules is genuinely "which
 // modules are enabled" (operate/scaleseo booleans are already live there);
@@ -190,10 +194,16 @@ export async function getAISettings(db: Querier, orgId: string): Promise<AISetti
   const s = row?.settings ?? {};
   const pref = s.ai_provider;
   const cap = s.ai_spend_cap_monthly;
+  const featureCaps = (s.ai_feature_spend_caps as Record<string, unknown>) ?? {};
+  const cleanFeatureCaps: FeatureSpendCaps = {};
+  for (const [feature, value] of Object.entries(featureCaps)) {
+    if (typeof value === 'number' && value > 0) cleanFeatureCaps[feature as Feature] = value;
+  }
   return {
     providerPreference: pref === 'anthropic' || pref === 'openai' ? pref : 'auto',
     spendCapMonthly: typeof cap === 'number' && cap > 0 ? cap : null,
     modelOverrides: (s.ai_model_overrides as ModelOverrides) ?? {},
+    featureSpendCaps: cleanFeatureCaps,
   };
 }
 
@@ -202,6 +212,16 @@ export async function getMonthlySpend(db: Querier, orgId: string): Promise<numbe
     `SELECT model, approx_tokens FROM ai_usage
       WHERE org_id = $1 AND created_at >= date_trunc('month', now())`,
     [orgId],
+  );
+  return rows.reduce((sum, r) => sum + estimateCost(r.model, r.approx_tokens), 0);
+}
+
+/** Same as getMonthlySpend, scoped to one feature — the per-agent cap check. */
+export async function getMonthlySpendByFeature(db: Querier, orgId: string, feature: Feature): Promise<number> {
+  const rows = await db.rows<{ model: string; approx_tokens: number }>(
+    `SELECT model, approx_tokens FROM ai_usage
+      WHERE org_id = $1 AND feature = $2 AND created_at >= date_trunc('month', now())`,
+    [orgId, feature],
   );
   return rows.reduce((sum, r) => sum + estimateCost(r.model, r.approx_tokens), 0);
 }
@@ -407,9 +427,10 @@ export interface AIContext {
 }
 
 /** Every AI-backed route's setup boilerplate: settings, clients (shared or
- *  BYO), and whether this org's monthly spend cap is already hit. Shared
- *  by routes/ai.ts and routes/grow.ts's sequence-writing endpoints rather
- *  than each re-deriving it. */
+ *  BYO), and whether this org's monthly spend cap — the org-wide one, OR
+ *  this specific feature's own cap, whichever is set and lower in practice —
+ *  is already hit. Shared by routes/ai.ts and routes/grow.ts's
+ *  sequence-writing endpoints rather than each re-deriving it. */
 export async function resolveAIContext(db: Querier, orgId: string, feature: Feature): Promise<AIContext> {
   const settings = await getAISettings(db, orgId);
   const clients = await getAIClients(db, orgId);
@@ -417,6 +438,11 @@ export async function resolveAIContext(db: Querier, orgId: string, feature: Feat
   if (settings.spendCapMonthly !== null) {
     const spent = await getMonthlySpend(db, orgId);
     capExceeded = spent >= settings.spendCapMonthly;
+  }
+  const featureCap = settings.featureSpendCaps[feature];
+  if (!capExceeded && featureCap !== undefined) {
+    const spentOnFeature = await getMonthlySpendByFeature(db, orgId, feature);
+    capExceeded = spentOnFeature >= featureCap;
   }
   return {
     providerPreference: settings.providerPreference,

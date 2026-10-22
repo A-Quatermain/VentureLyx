@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { mutate } from 'swr';
-import { ChatCircleText, Robot, User } from '@phosphor-icons/react';
+import { ChatCircleText, Robot, Sparkle, User } from '@phosphor-icons/react';
 import { useApi } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import type { Lead, ReplyTag } from '@/lib/types';
@@ -11,6 +11,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { PageHeader } from '@/components/Primitives';
+import { AIStreamPanel } from '@/components/AIStreamPanel';
 
 const TAG_FILTERS: Array<{ key: ReplyTag | 'all'; label: string }> = [
   { key: 'all', label: 'All' },
@@ -90,53 +91,88 @@ export default function LeadsPage() {
       ) : (
         <div className="flex flex-col gap-3">
           {leads.map((lead) => (
-            <Card key={lead.id} className="p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Link href={`/operate/customers/${lead.id}`} className="text-sm font-semibold hover:underline">
-                      {lead.display_name}
-                    </Link>
-                    {lead.reply_tag && (
-                      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${TAG_TONE[lead.reply_tag]}`}>
-                        {lead.reply_tag_source === 'ai' ? <Robot size={11} weight="bold" /> : <User size={11} weight="bold" />}
-                        {lead.reply_tag.replace(/_/g, ' ')}
-                      </span>
-                    )}
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
-                      {lead.lifecycle}
-                    </span>
-                  </div>
-                  {lead.last_reply_body ? (
-                    <div className="mt-2 flex items-start gap-1.5 rounded-lg bg-muted/50 p-2.5">
-                      <ChatCircleText size={14} className="mt-0.5 shrink-0 text-muted-foreground" />
-                      <p className="line-clamp-2 text-sm text-foreground">{lead.last_reply_body}</p>
-                    </div>
-                  ) : (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {lead.source ? `From ${lead.source}` : 'No reply on file'}
-                    </p>
-                  )}
-                  <p className="mt-1.5 text-xs text-muted-foreground">
-                    {lead.owner_name ? `Working: ${lead.owner_name} · ` : ''}
-                    {relativeTime(lead.last_reply_at ?? lead.last_activity_at)}
-                  </p>
-                </div>
-                {!lead.owner_user_id && (
-                  <Button
-                    variant="ghost"
-                    disabled={workingId === lead.id}
-                    onClick={() => startWorking(lead.id)}
-                    className="shrink-0"
-                  >
-                    {workingId === lead.id ? 'Starting…' : 'Start working this'}
-                  </Button>
-                )}
-              </div>
-            </Card>
+            <LeadCard
+              key={lead.id}
+              lead={lead}
+              working={workingId === lead.id}
+              onStartWorking={() => startWorking(lead.id)}
+            />
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+function LeadCard({
+  lead, working, onStartWorking,
+}: {
+  lead: Lead;
+  working: boolean;
+  onStartWorking: () => void;
+}) {
+  const [drafting, setDrafting] = useState(false);
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href={`/operate/customers/${lead.id}`} className="text-sm font-semibold hover:underline">
+              {lead.display_name}
+            </Link>
+            {lead.reply_tag && (
+              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${TAG_TONE[lead.reply_tag]}`}>
+                {lead.reply_tag_source === 'ai' ? <Robot size={11} weight="bold" /> : <User size={11} weight="bold" />}
+                {lead.reply_tag.replace(/_/g, ' ')}
+              </span>
+            )}
+            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
+              {lead.lifecycle}
+            </span>
+          </div>
+          {lead.last_reply_body ? (
+            <div className="mt-2 flex items-start gap-1.5 rounded-lg bg-muted/50 p-2.5">
+              <ChatCircleText size={14} className="mt-0.5 shrink-0 text-muted-foreground" />
+              <p className="line-clamp-2 text-sm text-foreground">{lead.last_reply_body}</p>
+            </div>
+          ) : (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {lead.source ? `From ${lead.source}` : 'No reply on file'}
+            </p>
+          )}
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            {lead.owner_name ? `Working: ${lead.owner_name} · ` : ''}
+            {relativeTime(lead.last_reply_at ?? lead.last_activity_at)}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="ghost" onClick={() => setDrafting((v) => !v)}>
+            <Sparkle size={14} weight="fill" className="mr-1.5 text-primary" />
+            {drafting ? 'Hide draft' : 'Draft follow-up'}
+          </Button>
+          {!lead.owner_user_id && (
+            <Button variant="ghost" disabled={working} onClick={onStartWorking}>
+              {working ? 'Starting…' : 'Start working this'}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {drafting && (
+        <div className="mt-4">
+          <AIStreamPanel
+            path="/ai/followup-assistant/stream"
+            body={{ partyId: lead.id }}
+            title="AI-drafted follow-up"
+            triggerLabel="Draft this"
+            autoStart
+          />
+          <p className="mt-2 text-xs text-muted-foreground/70">
+            This never sends on its own — copy it into however you already reach this person.
+          </p>
+        </div>
+      )}
+    </Card>
   );
 }

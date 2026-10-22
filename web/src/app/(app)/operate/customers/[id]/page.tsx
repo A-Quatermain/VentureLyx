@@ -6,18 +6,29 @@ import { useRouter } from 'next/navigation';
 import { mutate } from 'swr';
 import {
   CaretLeft, Phone, EnvelopeSimple, Globe, ChatCircle, MapPin, Tag, Note,
-  PencilSimple, Trash, ClockCounterClockwise, Megaphone, Briefcase, FileText, Receipt,
+  PencilSimple, Trash, ClockCounterClockwise, Megaphone, Briefcase, FileText, Receipt, Sparkle,
 } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
-import type { ContactChannel, PartyDetail, TimelineEvent } from '@/lib/types';
+import type { ContactChannel, PartyDetail, PartyInvoice, TimelineEvent } from '@/lib/types';
 import { formatMoney } from '@/lib/format';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Skeleton, SkeletonCard } from '@/components/ui/Skeleton';
 import { CustomerDrawer } from '@/components/CustomerDrawer';
+import { AIStreamPanel } from '@/components/AIStreamPanel';
 import { toneSoft, type Tone } from '@/components/ui/tone';
 import type { Lifecycle as LifecycleT } from '@/lib/types';
+
+// Overdue by STATUS (the backend's own 'overdue' state) OR by date — a
+// 'sent'/'partial' invoice past its due date with a real balance left is
+// overdue in substance even before whatever job flips the status column.
+function isOverdue(inv: PartyInvoice): boolean {
+  if (inv.status === 'overdue') return true;
+  if (inv.status !== 'sent' && inv.status !== 'partial') return false;
+  if (!inv.due_on) return false;
+  return new Date(inv.due_on) < new Date() && Number(inv.total) > Number(inv.amount_paid);
+}
 
 const LIFECYCLE_TONE: Record<LifecycleT, Tone> = {
   new: 'primary',
@@ -262,14 +273,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
                     <span className="shrink-0 text-xs text-muted-foreground">{q.status}</span>
                   </div>
                 ))}
-                {invoices.map((inv) => (
-                  <div key={inv.id} className="flex items-center gap-2 text-sm">
-                    <Receipt size={14} className="shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate">{inv.number ?? 'Invoice'}</span>
-                    <span className="shrink-0 font-mono text-xs tabular-nums">{formatMoney(inv.total)}</span>
-                    <span className="shrink-0 text-xs text-muted-foreground">{inv.status}</span>
-                  </div>
-                ))}
+                {invoices.map((inv) => <InvoiceRow key={inv.id} invoice={inv} />)}
               </div>
             </Card>
           )}
@@ -308,6 +312,48 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
         contacts={contacts}
         onSaved={() => mutate(`/operate/parties/${id}`)}
       />
+    </div>
+  );
+}
+
+function InvoiceRow({ invoice }: { invoice: PartyInvoice }) {
+  const [drafting, setDrafting] = useState(false);
+  const overdue = isOverdue(invoice);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2 text-sm">
+        <Receipt size={14} className="shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate">{invoice.number ?? 'Invoice'}</span>
+        <span className="shrink-0 font-mono text-xs tabular-nums">{formatMoney(invoice.total)}</span>
+        <span className={`shrink-0 text-xs ${overdue ? 'font-medium text-destructive' : 'text-muted-foreground'}`}>
+          {overdue ? 'overdue' : invoice.status}
+        </span>
+        {overdue && (
+          <button
+            type="button"
+            title="Ask the Follow-up Assistant to draft a reminder"
+            onClick={() => setDrafting((v) => !v)}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition hover:bg-primary/10 hover:text-primary"
+          >
+            <Sparkle size={13} weight="fill" />
+          </button>
+        )}
+      </div>
+      {drafting && (
+        <div className="pl-5">
+          <AIStreamPanel
+            path="/ai/followup-assistant/stream"
+            body={{ invoiceId: invoice.id }}
+            title="AI-drafted payment reminder"
+            triggerLabel="Draft this"
+            autoStart
+          />
+          <p className="mt-2 text-xs text-muted-foreground/70">
+            This never sends or charges on its own — copy it into however you already reach this customer.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
