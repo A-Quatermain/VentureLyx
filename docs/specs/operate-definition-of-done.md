@@ -66,12 +66,3 @@ numbers, not $0. Two additive pieces, specced separately:
   docs/specs/operate-data-migration.md
 Both reuse one shared CSV import framework (mapping, preview, dedupe, error report)
 and must flow correctly into Command Center and the Growth Score.
-
-## Onboarding / Data import (added scope)
-A new client must be able to bring their existing data in and start day one with real
-numbers, not $0. Two additive pieces, specced separately:
-- Import existing invoices -> docs/specs/operate-invoice-import.md
-- Unified "Import your data" (customers, invoices, open jobs) ->
-  docs/specs/operate-data-migration.md
-Both reuse one shared CSV import framework (mapping, preview, dedupe, error report)
-and must flow correctly into Command Center and the Growth Score.
