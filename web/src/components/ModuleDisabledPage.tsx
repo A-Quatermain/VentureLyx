@@ -1,22 +1,30 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Lock } from '@phosphor-icons/react';
 import type { Icon } from '@phosphor-icons/react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { apiFetch, ApiError } from '@/lib/api';
 
-// à la carte monthly lookup_key per module (scripts/stripeCatalog.ts) — the
-// one thing an "Upgrade" button here needs, never a Stripe price id.
-// ai_team has no standalone price (bundle-only, see
-// lib/billingEntitlements.ts's own comment on that), hence no entry: that
-// module's prompt names the plan instead of an add-on.
-const MODULE_PRICE_KEY: Record<string, string> = {
-  scaleseo: 'module_scaleseo_monthly',
-  operate: 'module_operate_monthly',
-  grow: 'module_grow_monthly',
-  reviews: 'module_reviews_monthly',
+// v2 catalog (lib/billingEntitlements.ts's LOOKUP_KEY_MODULES): modules
+// unlock by TIER, not individually — there is no per-module add-on price
+// anymore. Each module here maps to the LOWEST tier that includes it.
+// Platform is self-serve (checkout fires directly, same as an existing org
+// adding a module always has); Growth Partner and Launch & Growth are
+// sales-assisted — their "upgrade" is routing into the Growth Scan funnel,
+// not an instant checkout call, so there's no lookup key to send here at all.
+type TierFlow =
+  | { kind: 'checkout'; lookupKey: string }
+  | { kind: 'growth-scan' };
+
+const MODULE_TIER: Record<string, { tier: string; price: string; flow: TierFlow }> = {
+  operate: { tier: 'Platform', price: '$129/mo', flow: { kind: 'checkout', lookupKey: 'platform_monthly' } },
+  scaleseo: { tier: 'Growth Partner', price: '$349/mo', flow: { kind: 'growth-scan' } },
+  reviews: { tier: 'Growth Partner', price: '$349/mo', flow: { kind: 'growth-scan' } },
+  grow: { tier: 'Launch & Growth', price: '$499/mo', flow: { kind: 'growth-scan' } },
+  ai_team: { tier: 'Launch & Growth', price: '$499/mo', flow: { kind: 'growth-scan' } },
 };
 
 // Deep-link landing for a module that isn't on this org's current plan —
@@ -25,17 +33,27 @@ const MODULE_PRICE_KEY: Record<string, string> = {
 // lib/billingEntitlements.ts), so the prompt is "upgrade," not "ask your
 // account team" the way it read before billing existed.
 export function ModuleDisabledPage({ icon: ModuleIcon, label, moduleKey }: { icon: Icon; label: string; moduleKey: string }) {
+  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const priceKey = MODULE_PRICE_KEY[moduleKey];
+  // Every live module maps to a real tier — an unmapped key would mean a
+  // module was added to a layout without being priced anywhere, which is a
+  // programming error upstream, not something this page should silently
+  // paper over with a fallback price that doesn't exist.
+  const entry = MODULE_TIER[moduleKey];
 
-  async function onUpgrade(lookupKeys: string[]) {
+  async function onUpgrade() {
+    if (!entry) return;
+    if (entry.flow.kind === 'growth-scan') {
+      router.push('/growth-scan');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const { url } = await apiFetch<{ url: string }>('/billing/checkout', {
         method: 'POST',
-        body: JSON.stringify({ lookupKeys }),
+        body: JSON.stringify({ lookupKeys: [entry.flow.lookupKey] }),
       });
       window.location.href = url;
     } catch (err) {
@@ -56,29 +74,18 @@ export function ModuleDisabledPage({ icon: ModuleIcon, label, moduleKey }: { ico
             <Lock size={11} weight="bold" /> Not on your plan
           </span>
         </div>
-        {priceKey ? (
+        {entry && (
           <>
             <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
-              {label} isn&rsquo;t included in your current plan. Add it on its own, or get every module with the
-              Single Business Plan.
-            </p>
-            <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
-              <Button onClick={() => onUpgrade([priceKey])} disabled={loading}>
-                {loading ? 'Starting checkout…' : `Add ${label}`}
-              </Button>
-              <Button variant="ghost" onClick={() => onUpgrade(['plan_single_monthly'])} disabled={loading}>
-                See the full plan
-              </Button>
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
-              {label} is included in the Single Business Plan — it isn&rsquo;t sold on its own.
+              Included in <span className="font-medium text-foreground">{entry.tier}</span> — {entry.price}
             </p>
             <div className="mt-5">
-              <Button onClick={() => onUpgrade(['plan_single_monthly'])} disabled={loading}>
-                {loading ? 'Starting checkout…' : 'Upgrade to the Single Business Plan'}
+              <Button onClick={onUpgrade} disabled={loading}>
+                {loading
+                  ? 'Starting checkout…'
+                  : entry.flow.kind === 'checkout'
+                    ? `Upgrade to ${entry.tier}`
+                    : `Talk to sales about ${entry.tier}`}
               </Button>
             </div>
           </>

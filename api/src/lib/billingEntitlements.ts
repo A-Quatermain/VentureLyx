@@ -60,11 +60,29 @@ const ACCESS_GRANTING_STATUSES = new Set(['active', 'trialing', 'past_due']);
  * true or false, never left to the "missing key = enabled" default once an
  * org has a subscription at all. Idempotent: safe to call on every webhook
  * event for this subscription, not just transitions.
+ *
+ * Safety guard: an access-granting subscription whose lookup key(s) don't
+ * match anything in LOOKUP_KEY_MODULES is refused, not treated as "zero
+ * modules." A real downgrade always lands on a RECOGNIZED lower tier (even
+ * platform_monthly, the smallest, still resolves to ['operate']) — the only
+ * way to see zero matches here is a stale or unknown key (e.g. a retired v1
+ * module_* price, or a catalog edit this mapping hasn't been updated for),
+ * and that must never be read as "this customer gets nothing." No write
+ * happens; organizations.modules is left exactly as it was.
  */
 export async function syncEntitlements(
   q: Querier, orgId: string, status: string, lookupKeys: string[],
 ): Promise<void> {
-  const unlocked = ACCESS_GRANTING_STATUSES.has(status) ? modulesForLookupKeys(lookupKeys) : new Set<BillableModule>();
+  const accessGranting = ACCESS_GRANTING_STATUSES.has(status);
+  const unlocked = accessGranting ? modulesForLookupKeys(lookupKeys) : new Set<BillableModule>();
+
+  if (accessGranting && unlocked.size === 0) {
+    console.error(
+      { orgId, status, lookupKeys },
+      'syncEntitlements: no recognized lookup key for an access-granting subscription — refusing to touch modules',
+    );
+    return;
+  }
 
   const row = await q.one<{ modules: Record<string, boolean> | null }>(
     `SELECT modules FROM organizations WHERE id = $1`, [orgId],
