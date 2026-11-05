@@ -280,12 +280,21 @@ export default async function dataRoutes(app: FastifyInstance) {
                   WHERE c.site_id = s.id) AS page_count,
                 (SELECT count(*)::int FROM seo_issues i
                    JOIN seo_crawls c ON c.id = i.crawl_id
-                  WHERE c.site_id = s.id) AS issue_count
+                  WHERE c.site_id = s.id) AS issue_count,
+                j.state AS crawl_job_state, j.last_error AS crawl_job_error
            FROM seo_sites s
       LEFT JOIN LATERAL (
              SELECT * FROM seo_scores WHERE site_id = s.id
               ORDER BY computed_at DESC LIMIT 1
            ) sc ON true
+      -- The crawler only writes seo_crawls once a crawl FINISHES, so
+      -- queued / running / failed live on job_queue alone. Every enqueue
+      -- site (data.ts, auth.ts, growthScans.ts) uses this same dedupe_key.
+      LEFT JOIN LATERAL (
+             SELECT state, last_error FROM job_queue
+              WHERE kind = 'seo.crawl' AND dedupe_key = 'seo.crawl:' || s.id::text
+              ORDER BY created_at DESC LIMIT 1
+           ) j ON true
           ORDER BY s.is_primary DESC, s.name`,
       ),
     );

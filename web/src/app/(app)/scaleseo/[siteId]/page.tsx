@@ -7,7 +7,7 @@ import { mutate } from 'swr';
 import {
   ChartBar, UsersThree, FilePlus, ClockCounterClockwise, MapPin, Target, Plug,
   PencilSimple, Trash, Plus, CaretDown, Storefront, Megaphone, Star, Wrench, ArrowSquareOut,
-  Code, Buildings, Robot,
+  Code, Buildings, Robot, Lock,
 } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -203,6 +203,10 @@ function GetFoundTab({ siteId, onGoToTab }: { siteId: string; onGoToTab: (tab: T
     whoCounts[who] += 1;
   }
   const reviewCount = summary?.reputation.review_count ?? 0;
+  const reviewsOn = moduleOn(summary, 'reviews');
+  // Before the first crawl scores there are no findings to count — "0
+  // findings, this step is done" would be a false all-clear.
+  const scanned = health?.score?.health != null;
   const gapCount = gaps?.length ?? 0;
   // Already ranked by how many other services are missing in the same area
   // (api/src/routes/data.ts's /seo/coverage-gaps query) — highest-value
@@ -247,9 +251,16 @@ function GetFoundTab({ siteId, onGoToTab }: { siteId: string; onGoToTab: (tab: T
         icon={Wrench}
         title="Fix what’s broken"
         who={null}
-        impact={`${issues.length} finding${issues.length === 1 ? '' : 's'} from your last crawl.`}
+        impact={scanned ? `${issues.length} finding${issues.length === 1 ? '' : 's'} from your last crawl.` : 'Available after your first scan.'}
       >
-        {issues.length === 0 ? (
+        {!scanned ? (
+          <>
+            <p>Findings will be listed here once the first scan finishes — Scanner shows its progress.</p>
+            <Button variant="ghost" className="mt-3" onClick={() => onGoToTab('Scanner')}>
+              Open Scanner
+            </Button>
+          </>
+        ) : issues.length === 0 ? (
           <p>No open findings right now — this step is done.</p>
         ) : (
           <p>
@@ -261,9 +272,11 @@ function GetFoundTab({ siteId, onGoToTab }: { siteId: string; onGoToTab: (tab: T
             {'. Each one in Priority Actions explains what it means and how to fix it.'}
           </p>
         )}
-        <Button variant="ghost" className="mt-3" onClick={() => onGoToTab('Scanner')}>
-          Open Priority Actions
-        </Button>
+        {scanned && (
+          <Button variant="ghost" className="mt-3" onClick={() => onGoToTab('Scanner')}>
+            Open Priority Actions
+          </Button>
+        )}
       </GetFoundStep>
 
       <GetFoundStep
@@ -285,12 +298,16 @@ function GetFoundTab({ siteId, onGoToTab }: { siteId: string; onGoToTab: (tab: T
         title="Add LocalBusiness and FAQ structured data"
         who="ai"
         impact={
-          schemaIssues.length === 0
+          !scanned
+            ? 'Available after your first scan.'
+            : schemaIssues.length === 0
             ? 'In place on your last crawl.'
             : `${schemaIssues.length} finding${schemaIssues.length === 1 ? '' : 's'} — this is how search engines and AI answers read your name, address, phone, and services.`
         }
       >
-        {schemaIssues.length === 0 ? (
+        {!scanned ? (
+          <p>We&apos;ll check your structured data on the first scan.</p>
+        ) : schemaIssues.length === 0 ? (
           <p>No open findings here — this step is done.</p>
         ) : (
           <>
@@ -330,8 +347,31 @@ function GetFoundTab({ siteId, onGoToTab }: { siteId: string; onGoToTab: (tab: T
         icon={Star}
         title="Reviews"
         who={null}
-        impact={`${reviewCount} review${reviewCount === 1 ? '' : 's'} on file.`}
+        impact={
+          !reviewsOn
+            ? 'Not on your plan.'
+            : reviewCount === 0
+              ? 'No reviews yet.'
+              : `${reviewCount} review${reviewCount === 1 ? '' : 's'} on file.`
+        }
       >
+        {!reviewsOn ? (
+          // Locked, not empty: Reviews is its own module (lib/billingEntitlements.ts).
+          // /reviews renders ModuleDisabledPage with the real upgrade options.
+          <>
+            <p className="inline-flex items-center gap-1.5 text-muted-foreground">
+              <Lock size={13} weight="bold" /> Reviews isn&rsquo;t included in your current plan.
+            </p>
+            <p className="mt-2">
+              Reviews that mention a real service and a real place still carry weight for local search —
+              ask happy customers for one on your Google Business Profile.
+            </p>
+            <Link href="/reviews" className="mt-3 inline-block text-sm font-medium text-primary hover:underline">
+              See plan options →
+            </Link>
+          </>
+        ) : (
+        <>
         <p>
           Asking is on you — every happy customer you ask for a review is worth more than one you
           don’t. Replying is where Venturelyx helps: AI can draft a reply to any review for you to
@@ -341,6 +381,8 @@ function GetFoundTab({ siteId, onGoToTab }: { siteId: string; onGoToTab: (tab: T
         <Link href="/reviews" className="mt-3 inline-block text-sm font-medium text-primary hover:underline">
           Open Reviews →
         </Link>
+        </>
+        )}
       </GetFoundStep>
 
       <GoogleAdsStep topGaps={topGaps} />
@@ -443,6 +485,12 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
   });
   const { data: rankings } = useApi<SeoRanking[]>('/seo/rankings');
   const { data: summary } = useApi<SummaryResponse>('/command/summary');
+  // Polled alongside health while unscored, so queued -> running -> failed
+  // shows up without a reload.
+  const { data: sites } = useApi<SeoSite[]>(SITES_KEY, {
+    refreshInterval: data && data.score?.health == null ? 3000 : 0,
+  });
+  const site = sites?.find((s) => s.id === siteId);
 
   // Surfaces the first real finding the moment a crawl we were watching
   // finishes — "undefined" (never observed) vs "null" (observed, still
@@ -473,13 +521,18 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
   const avgRating = summary?.reputation.avg_rating != null ? Number(summary.reputation.avg_rating) : null;
   const reviewCount = summary?.reputation.review_count ?? 0;
   const reviewsScore = reviewCount > 0 && avgRating != null ? Math.round((avgRating / 5) * 100) : null;
+  const reviewsOn = moduleOn(summary, 'reviews');
+  const scored = score != null && score.health !== null;
 
   const subscores: Array<{ key: keyof typeof SUBSCORE_LABELS; value: number | null; sub?: string }> = [
     { key: 'technical', value: score?.technical ?? null },
     { key: 'content', value: score?.content ?? null },
     { key: 'local_seo', value: score?.local_seo ?? null },
-    { key: 'ai_visibility', value: score?.ai_visibility ?? null },
-    { key: 'reviews', value: reviewsScore, sub: reviewCount > 0 ? `${avgRating}★ · ${reviewCount} reviews` : 'no reviews yet' },
+    { key: 'ai_visibility', value: score?.ai_visibility ?? null, sub: score?.ai_visibility == null ? 'first check runs weekly' : undefined },
+    // Hidden, not shown empty, when Reviews isn't on this org's plan.
+    ...(reviewsOn
+      ? [{ key: 'reviews' as const, value: reviewsScore, sub: reviewCount > 0 ? `${avgRating}★ · ${reviewCount} reviews` : 'no reviews yet' }]
+      : []),
     { key: 'performance', value: score?.performance ?? null },
   ];
 
@@ -527,22 +580,7 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
             </div>
           </div>
         ) : (
-          <div className="flex flex-col items-center py-8">
-            <div className="flex gap-1.5" aria-hidden>
-              {[0, 1, 2].map((i) => (
-                <span
-                  key={i}
-                  className="h-2 w-2 animate-pulse rounded-full bg-primary"
-                  style={{ animationDelay: `${i * 150}ms` }}
-                />
-              ))}
-            </div>
-            <p className="mt-4 text-sm text-muted-foreground">Scanning your site…</p>
-            <p className="mt-1 max-w-xs text-center text-xs text-muted-foreground/70">
-              This usually takes a minute or two. The score and first findings will appear here as soon as
-              it's done.
-            </p>
-          </div>
+          <CrawlPending siteId={siteId} site={site} />
         )}
         {score?.computed_at && (
           <p className="mt-6 text-center text-xs text-muted-foreground">
@@ -551,35 +589,42 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
         )}
       </Card>
 
-      <StatStrip
-        stats={[
-          { label: 'Pages checked', value: String(score?.pages_crawled ?? score?.pages ?? 0) },
-          { label: 'Broken links', value: String(score?.broken_links ?? 0) },
-          { label: 'Things to fix', value: String(issues.length) },
-        ]}
-      />
+      {/* Stats, trend and findings only mean something once a crawl has
+          scored — before that they'd be a row of zeros and a false "No open
+          issues". The gauge card above already says what's happening. */}
+      {scored && (
+        <>
+          <StatStrip
+            stats={[
+              { label: 'Pages checked', value: String(score?.pages_crawled ?? score?.pages ?? 0) },
+              { label: 'Broken links', value: String(score?.broken_links ?? 0) },
+              { label: 'Things to fix', value: String(issues.length) },
+            ]}
+          />
 
-      <Card className="p-4">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Health trend</p>
-        <div className="mt-2">
-          <Sparkline points={trend} />
-        </div>
-      </Card>
+          <Card className="p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Health trend</p>
+            <div className="mt-2">
+              <Sparkline points={trend} />
+            </div>
+          </Card>
 
-      <Card className="p-0">
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <p className="text-sm font-semibold">Priority Actions</p>
-        </div>
-        {issues.length === 0 ? (
-          <p className="p-4 text-sm text-muted-foreground">No open issues.</p>
-        ) : (
-          <ul className="divide-y divide-border">
-            {issues.map((issue) => (
-              <IssueRow key={issue.code} issue={issue} siteId={siteId} onFixIssue={onFixIssue} />
-            ))}
-          </ul>
-        )}
-      </Card>
+          <Card className="p-0">
+            <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+              <p className="text-sm font-semibold">Priority Actions</p>
+            </div>
+            {issues.length === 0 ? (
+              <p className="p-4 text-sm text-muted-foreground">No open issues.</p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {issues.map((issue) => (
+                  <IssueRow key={issue.code} issue={issue} siteId={siteId} onFixIssue={onFixIssue} />
+                ))}
+              </ul>
+            )}
+          </Card>
+        </>
+      )}
 
       <Card className="overflow-x-auto p-0">
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
@@ -588,7 +633,7 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
         </div>
         {!rankings || rankings.length === 0 ? (
           <p className="p-4 text-sm text-muted-foreground">
-            No ranking data yet — this needs a rank-tracking source connected.
+            No local rankings yet — this needs a rank-tracking source connected.
           </p>
         ) : (
           <table className="w-full min-w-[520px] text-left text-sm">
@@ -626,12 +671,82 @@ function ScannerTab({ siteId, onFixIssue }: { siteId: string; onFixIssue: (code:
 
       <AiAnswerChecksCard siteId={siteId} />
 
-      <AIStreamPanel
-        path="/ai/seo-recommendations/stream"
-        body={{ siteId }}
-        title="AI Recommendation"
-        triggerLabel="What should I fix first?"
-      />
+      {/* Grounded in crawl findings — with no crawl there's nothing to rank. */}
+      {scored && (
+        <AIStreamPanel
+          path="/ai/seo-recommendations/stream"
+          body={{ siteId }}
+          title="AI Recommendation"
+          triggerLabel="What should I fix first?"
+        />
+      )}
+    </div>
+  );
+}
+
+// organizations.modules: an absent key means enabled — only an explicit
+// false is off (api/src/lib/moduleAccess.ts), same rule Command Center uses.
+function moduleOn(summary: SummaryResponse | undefined, key: string): boolean {
+  return summary?.org.modules?.[key] !== false;
+}
+
+// Gauge-card body before a site's first score. Reads the site's latest
+// seo.crawl job (job_queue) — seo_crawls only gets a row once a crawl
+// finishes, so it can't tell queued from running from failed.
+function CrawlPending({ siteId, site }: { siteId: string; site: SeoSite | undefined }) {
+  const state = site?.crawl_job_state ?? null;
+
+  if (state === 'failed' || state === 'dead' || state === 'cancelled') {
+    return (
+      <div className="flex flex-col items-center py-8 text-center">
+        <p className="text-sm font-medium text-foreground">The last scan didn&apos;t finish</p>
+        <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+          {state === 'failed'
+            ? 'It will retry automatically shortly.'
+            : 'Check the site address is reachable, then run a check.'}
+          {site?.crawl_job_error && <span className="mt-1 block font-mono text-muted-foreground/70">{site.crawl_job_error.slice(0, 160)}</span>}
+        </p>
+        <div className="mt-4"><CrawlButton siteId={siteId} /></div>
+      </div>
+    );
+  }
+
+  if (state === null && site) {
+    return (
+      <div className="flex flex-col items-center py-8 text-center">
+        <p className="text-sm font-medium text-foreground">Not scanned yet</p>
+        <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+          This site hasn&apos;t been scanned yet. Run a check and the score and first findings will appear here.
+        </p>
+        <div className="mt-4"><CrawlButton siteId={siteId} /></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-center py-8">
+      <div className="flex gap-1.5" aria-hidden>
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="h-2 w-2 animate-pulse rounded-full bg-primary"
+            style={{ animationDelay: `${i * 150}ms` }}
+          />
+        ))}
+      </div>
+      <p className="mt-4 text-sm text-muted-foreground">
+        {state === 'queued'
+          ? 'Crawl queued — starting shortly…'
+          : state === 'succeeded'
+            // The worker writes the score as it finishes; this is just the gap
+            // between the sites poll and the health poll catching up.
+            ? 'Finishing up…'
+            : 'Crawling your site…'}
+      </p>
+      <p className="mt-1 max-w-xs text-center text-xs text-muted-foreground/70">
+        This usually takes a minute or two. The score and first findings will appear here as soon as
+        it&apos;s done.
+      </p>
     </div>
   );
 }

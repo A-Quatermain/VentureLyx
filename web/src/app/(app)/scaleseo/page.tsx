@@ -76,7 +76,7 @@ export default function ScaleSeoSitesPage() {
                 {(site.critical_issues ?? 0) > 0 ? (
                   <p className="text-xs text-destructive">{site.critical_issues} critical</p>
                 ) : site.health == null ? (
-                  <p className="text-xs text-muted-foreground">scanning…</p>
+                  <p className="text-xs text-muted-foreground">{pendingLabel(site)}</p>
                 ) : null}
               </div>
             </div>
@@ -104,4 +104,18 @@ export default function ScaleSeoSitesPage() {
       />
     </div>
   );
+}
+
+// Unscored site's status line, from its latest seo.crawl job (job_queue) —
+// never "scanning…" for a site nothing is actually scanning.
+function pendingLabel(site: SeoSite): string {
+  switch (site.crawl_job_state) {
+    case 'queued': return 'queued…';
+    case 'running':
+    case 'succeeded': return 'scanning…';
+    case 'failed': return 'retrying…';
+    case 'dead':
+    case 'cancelled': return 'scan failed';
+    default: return 'not scanned yet';
+  }
 }

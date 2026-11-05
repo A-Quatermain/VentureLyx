@@ -195,6 +195,11 @@ export interface SeoSite {
   crawl_count: number;
   page_count: number;
   issue_count: number;
+  // Latest seo.crawl job for this site (job_queue) — null when none was
+  // ever queued. The only source of queued/running/failed: seo_crawls rows
+  // are written only once a crawl finishes.
+  crawl_job_state: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'dead' | null;
+  crawl_job_error: string | null;
 }
 
 // ---- GET/PATCH /seo/sites/:siteId — crawler config, not health ------------
