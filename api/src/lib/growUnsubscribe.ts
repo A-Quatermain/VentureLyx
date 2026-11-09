@@ -14,6 +14,11 @@
  * the only thing identifying which org's suppression list to write to.
  * Once the owning org is known, the actual writes run through withTenant
  * for that org so RLS still applies to them like everything else.
+ *
+ * Second source as of 036_grow_alternate_channel.sql: an alternate-channel
+ * draft's own grow_fallback_drafts.unsubscribe_token — reusing this one
+ * handler for both rather than standing up a second unsubscribe route, per
+ * that migration's own header.
  */
 import { withPlatform, withTenant } from './db.js';
 import { promoteOnUnsubscribe } from './growPromote.js';
@@ -24,16 +29,38 @@ export interface UnsubscribeResult {
   email: string | null;
 }
 
-export async function processUnsubscribe(token: string): Promise<UnsubscribeResult> {
-  const hit = await withPlatform((q) =>
-    q.one<{ org_id: string; contact_id: string; email: string }>(
-      `SELECT m.org_id, m.contact_id, c.email
+interface UnsubscribeTarget {
+  org_id: string;
+  contact_id: string;
+  email: string;
+  message_id: string | null;
+}
+
+async function findUnsubscribeTarget(token: string): Promise<UnsubscribeTarget | null> {
+  const fromMessage = await withPlatform((q) =>
+    q.one<{ org_id: string; contact_id: string; email: string; message_id: string }>(
+      `SELECT m.org_id, m.contact_id, c.email, m.id AS message_id
          FROM grow_messages m
          JOIN grow_contacts c ON c.id = m.contact_id
         WHERE m.unsubscribe_token = $1`,
       [token],
     ),
   );
+  if (fromMessage) return fromMessage;
+
+  return withPlatform((q) =>
+    q.one<{ org_id: string; contact_id: string; email: string; message_id: string | null }>(
+      `SELECT d.org_id, d.contact_id, c.email, d.original_message_id AS message_id
+         FROM grow_fallback_drafts d
+         JOIN grow_contacts c ON c.id = d.contact_id
+        WHERE d.unsubscribe_token = $1`,
+      [token],
+    ),
+  );
+}
+
+export async function processUnsubscribe(token: string): Promise<UnsubscribeResult> {
+  const hit = await findUnsubscribeTarget(token);
   if (!hit) return { found: false, alreadyUnsubscribed: false, email: null };
 
   const alreadyUnsubscribed = await withTenant(
@@ -62,9 +89,8 @@ export async function processUnsubscribe(token: string): Promise<UnsubscribeResu
       if (!existing) {
         await q.exec(
           `INSERT INTO grow_events (org_id, message_id, contact_id, type, payload)
-           VALUES (app.current_org(),
-                   (SELECT id FROM grow_messages WHERE unsubscribe_token = $2), $1, 'unsubscribe', '{}'::jsonb)`,
-          [hit.contact_id, token],
+           VALUES (app.current_org(), $2, $1, 'unsubscribe', '{}'::jsonb)`,
+          [hit.contact_id, hit.message_id],
         );
         await promoteOnUnsubscribe(q, { orgId: hit.org_id, email: hit.email });
       }

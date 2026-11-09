@@ -41,6 +41,7 @@ import { pollMailbox, matchGrowMessage, type MailboxCreds } from '../lib/growPol
 import { promoteOnReply } from '../lib/growPromote.js';
 import { classifyReply } from '../lib/growClassify.js';
 import { classifyBounce, extractBounceCode } from '../lib/growBounceClassify.js';
+import { maybeAutoDraftFallback } from '../lib/growFallbackDraft.js';
 import { wrapClickableLinks } from '../lib/growClickTracking.js';
 import type { Querier } from '../lib/db.js';
 
@@ -353,12 +354,16 @@ async function sendOne(q: Querier, message: ClaimedMessage): Promise<void> {
       // says nothing about whether the address itself is real) triggers
       // auto-remove — same rule the async DSN path now follows below.
       if (classified.type === 'hard') {
-        const msgRow = await q.one<{ contact_id: string; campaign_id: string }>(
-          `SELECT contact_id, campaign_id FROM grow_messages WHERE id = $1`, [message.id],
-        );
-        if (msgRow) {
-          await autoRemoveHardBounce(q, msgRow.campaign_id, msgRow.contact_id, contact.email);
-        }
+        await autoRemoveHardBounce(q, message.campaign_id, message.contact_id, contact.email);
+      } else if (classified.type === 'block' || classified.type === 'soft') {
+        // Automatic up to the send (docs/specs/grow-recoverable-bucket.md
+        // Part C) — no-ops instantly unless this org has opted in and this
+        // bounce_type is one it chose to trigger on.
+        await maybeAutoDraftFallback(q, {
+          orgId: message.org_id, originalMessageId: message.id,
+          contactId: message.contact_id, campaignId: message.campaign_id,
+          bounceType: classified.type,
+        });
       }
       log.warn({ messageId: message.id, err: errMessage, bounceType: classified.type }, 'bounced (synchronous)');
     } else if (attempts >= MAX_ATTEMPTS) {
@@ -492,14 +497,26 @@ async function handleClassifiedMessage(
     );
     if (classified.type === 'hard') {
       await autoRemoveHardBounce(q, match.campaign_id, match.contact_id, match.email);
-    } else if (match.enrollment_id) {
-      // A soft/block bounce still marks this enrollment 'bounced' so the
-      // scheduler doesn't offer it the next step on a run that's clearly
-      // in trouble right now — but per the brief, it's deliberately NOT
-      // suppressed and NOT auto-removed: these are temporary or
-      // deliverability-reputation signals, not proof the address is dead.
-      await q.exec(`UPDATE grow_enrollments SET state = 'bounced' WHERE id = $1 AND state = 'active'`,
-        [match.enrollment_id]);
+    } else {
+      if (match.enrollment_id) {
+        // A soft/block bounce still marks this enrollment 'bounced' so the
+        // scheduler doesn't offer it the next step on a run that's clearly
+        // in trouble right now — but per the brief, it's deliberately NOT
+        // suppressed and NOT auto-removed: these are temporary or
+        // deliverability-reputation signals, not proof the address is dead.
+        await q.exec(`UPDATE grow_enrollments SET state = 'bounced' WHERE id = $1 AND state = 'active'`,
+          [match.enrollment_id]);
+      }
+      if (classified.type === 'block' || classified.type === 'soft') {
+        // Automatic up to the send (docs/specs/grow-recoverable-bucket.md
+        // Part C) — no-ops instantly unless this org opted in and chose
+        // this bounce_type as a trigger.
+        await maybeAutoDraftFallback(q, {
+          orgId, originalMessageId: match.message_id,
+          contactId: match.contact_id, campaignId: match.campaign_id,
+          bounceType: classified.type,
+        });
+      }
     }
     return;
   }

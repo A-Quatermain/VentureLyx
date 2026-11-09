@@ -52,6 +52,11 @@ import { isWeekend, todayInTimezone } from './growSchedule.js';
 export const BOUNCE_PAUSE_RATE = 0.03;    // 3% hard bounces
 export const COMPLAINT_PAUSE_RATE = 0.003; // 0.3% — Gmail/Microsoft draw the line here
 export const MIN_SAMPLE = 50;              // don't judge a campaign on its first few sends
+// Rolling, not lifetime — a campaign with months of healthy sending and one
+// bad week used to read as "1% lifetime," never crossing the trip rate no
+// matter how bad the bad week got. 7 days is long enough to not be noisy
+// day-to-day, short enough that a real cluster isn't diluted away by history.
+export const BREAKER_WINDOW_DAYS = 7;
 
 export interface GrowCampaign {
   id: string;
@@ -191,51 +196,69 @@ async function domainCapacity(
  *  could trip a completely different campaign's breaker. Caught while
  *  adding the rearm behavior below, fixed in the same pass.
  *
- *  campaign.breaker_armed_at (set by a manual resume, routes/grow.ts's
- *  POST /grow/campaigns/:id/resume) restricts both the MIN_SAMPLE count
- *  and the rates themselves to activity created after that moment —
- *  "re-check the rate over the next batch," not "immediately re-trip on
- *  the exact same whole-history numbers that just caused the pause." A
- *  campaign that's never been manually resumed has no watermark, so this
- *  is simply the campaign's whole lifetime, same as before. */
+ *  Two holes fixed together, found live on a real campaign (2026-11):
+ *
+ *  1. Lifetime averaging. The window used to be "since breaker_armed_at,
+ *     or the campaign's whole lifetime if never armed" — a campaign with
+ *     months of healthy sending read as ~1% lifetime no matter how bad a
+ *     recent week got, because months of history diluted it. Now it's a
+ *     rolling BREAKER_WINDOW_DAYS window, floored at breaker_armed_at —
+ *     GREATEST(now() - window, armed_at) — so a manual resume still gets
+ *     "re-check the rate over the next batch, don't immediately re-trip
+ *     on the exact numbers that just caused the pause" (armed_at can only
+ *     push the window start LATER, never earlier, i.e. never widen it
+ *     back out past the rolling window).
+ *
+ *  2. Synchronous hard rejections invisible. A 5xx rejected at SEND time
+ *     (worker/growWorker.ts's isPermanentSmtpError() path) goes straight
+ *     from 'queued' to 'bounced' — it never passes through 'sent'. The old
+ *     denominator (COUNT WHERE status='sent') excluded these outright:
+ *     they inflated the bounce numerator while never counting as an
+ *     attempt, AND if enough of a mailbox's traffic was outright refused,
+ *     the 'sent' count could stay under MIN_SAMPLE forever — "not enough
+ *     data" instead of "100% of attempts are failing." attempts is now
+ *     sent + bounced (both are completed attempts with a known outcome;
+ *     'queued'/'sending'/'failed'-retrying are not), and MIN_SAMPLE now
+ *     gates on attempts, not sent alone — a mailbox being refused outright
+ *     must still show up as data, not get treated as if nothing happened. */
 export async function circuitBreaker(q: Querier, campaign: GrowCampaign): Promise<string | null> {
   // Two queries, not one JOIN — a LEFT JOIN from grow_messages to
   // grow_events would fan out and inflate the sent/bounced counts if a
   // single message ever has more than one matching event row (an ARF
   // report duplicated by a forwarding rule, say). Correctness over one
   // fewer round trip.
-  const s = await q.one<{ sent: string | number; bounced: string | number }>(
+  const s = await q.one<{ attempts: string | number; bounced: string | number }>(
     `SELECT
-       COUNT(*) FILTER (WHERE status = 'sent')    AS sent,
-       COUNT(*) FILTER (WHERE status = 'bounced') AS bounced
+       COUNT(*) FILTER (WHERE status IN ('sent', 'bounced')) AS attempts,
+       COUNT(*) FILTER (WHERE status = 'bounced')            AS bounced
      FROM grow_messages
     WHERE campaign_id = $1
-      AND ($2::timestamptz IS NULL OR created_at > $2)`,
-    [campaign.id, campaign.breaker_armed_at],
+      AND created_at > GREATEST(now() - ($2 || ' days')::interval, COALESCE($3::timestamptz, '-infinity'::timestamptz))`,
+    [campaign.id, BREAKER_WINDOW_DAYS, campaign.breaker_armed_at],
   );
   if (!s) return null;
 
-  const sent = Number(s.sent);
-  if (sent < MIN_SAMPLE) return null;
+  const attempts = Number(s.attempts);
+  if (attempts < MIN_SAMPLE) return null;
 
   const complaintsRow = await q.one<{ n: string | number }>(
     `SELECT COUNT(*) AS n FROM grow_events e
        JOIN grow_messages m ON m.id = e.message_id
       WHERE e.type = 'complaint' AND m.campaign_id = $1
-        AND ($2::timestamptz IS NULL OR m.created_at > $2)`,
-    [campaign.id, campaign.breaker_armed_at],
+        AND m.created_at > GREATEST(now() - ($2 || ' days')::interval, COALESCE($3::timestamptz, '-infinity'::timestamptz))`,
+    [campaign.id, BREAKER_WINDOW_DAYS, campaign.breaker_armed_at],
   );
 
-  const bounceRate = Number(s.bounced) / sent;
-  const complaintRate = Number(complaintsRow?.n ?? 0) / sent;
+  const bounceRate = Number(s.bounced) / attempts;
+  const complaintRate = Number(complaintsRow?.n ?? 0) / attempts;
 
   if (bounceRate > BOUNCE_PAUSE_RATE) {
     return `bounce rate ${(bounceRate * 100).toFixed(1)}% exceeds ` +
-           `${BOUNCE_PAUSE_RATE * 100}% — the list needs cleaning before more sends`;
+           `${BOUNCE_PAUSE_RATE * 100}% over the last ${BREAKER_WINDOW_DAYS} days — the list needs cleaning before more sends`;
   }
   if (complaintRate > COMPLAINT_PAUSE_RATE) {
     return `complaint rate ${(complaintRate * 100).toFixed(2)}% exceeds ` +
-           `${COMPLAINT_PAUSE_RATE * 100}% — recipients are marking this as spam`;
+           `${COMPLAINT_PAUSE_RATE * 100}% over the last ${BREAKER_WINDOW_DAYS} days — recipients are marking this as spam`;
   }
   return null;
 }

@@ -1071,6 +1071,9 @@ export interface GrowMessage {
   campaign_id: string;
   contact_id: string;
   mailbox_id: string;
+  // Which of the org's mailboxes actually sent this — join, not stored
+  // redundantly. Null only if the mailbox row itself was since deleted.
+  mailbox_address: string | null;
   step_no: number;
   recipient_domain: string;
   subject: string;
@@ -1096,6 +1099,81 @@ export interface GrowBounceSummary {
   soft: number;
   block: number;
   unknown: number;
+  // Permanent = hard only; Recoverable = soft + block + unknown — see
+  // docs/specs/grow-recoverable-bucket.md.
+  permanent: number;
+  recoverable: number;
+  // Ready alternate-channel drafts awaiting the one required human click.
+  drafts_ready: number;
+}
+
+export type GrowFallbackDraftStatus = 'draft' | 'sent' | 'failed' | 'skipped_adhoc' | 'discarded';
+
+export interface GrowRecoverableMessage {
+  id: string;
+  campaign_id: string;
+  campaign_name: string;
+  step_no: number;
+  subject: string;
+  mailbox_address: string;
+  bounce_code: string | null;
+  bounce_type: 'soft' | 'block' | 'unknown';
+  bounce_reason_raw: string | null;
+  // Null on a handful of historically-backfilled rows that never captured
+  // a real bounce timestamp (see docs — a fixed capture-path gap from
+  // 2026-10). created_at is always present as a fallback for those.
+  bounced_at: string | null;
+  created_at: string;
+  attempts: number;
+  category: string;
+  explanation: string;
+  action: string;
+  contact: { id: string; email: string; contact_name: string | null; entity_name: string | null };
+  suppressed: boolean;
+  needs_manual: boolean;
+  // Cheap guards only (suppressed / already-resent / 2-attempt cap) — the
+  // live domain-auth and circuit-breaker checks only run on the actual
+  // resend attempt, so this can still come back refused even when true.
+  resendable: boolean;
+  // null = no alternate-channel draft exists for this contact+campaign yet
+  // (org may have the feature off, or this bounce_type isn't a trigger).
+  draft_status: GrowFallbackDraftStatus | null;
+}
+
+export interface GrowResendResult {
+  results: Array<{ id: string; ok: boolean; reason: string | null }>;
+}
+
+export interface GrowAlternateChannelSettings {
+  enabled: boolean;
+  sender_mailbox_id: string | null;
+  sender_adhoc_address: string | null;
+  trigger_bounce_types: Array<'block' | 'soft'>;
+  business_context: string | null;
+}
+
+export interface GrowFallbackDraft {
+  id: string;
+  contact_id: string;
+  email: string;
+  contact_name: string | null;
+  entity_name: string | null;
+  campaign_id: string;
+  campaign_name: string;
+  original_message_id: string;
+  sender_address: string;
+  subject: string;
+  intro_body: string;
+  status: GrowFallbackDraftStatus;
+  generated_at: string;
+}
+
+export interface GrowFallbackDraftSendResult {
+  results: Array<{ draft_id: string; status: 'sent' | 'failed' | 'skipped_adhoc'; reason?: string }>;
+}
+
+export interface GrowGenerateDraftsResult {
+  results: Array<{ message_id: string; ok: boolean; reason?: string; draft_id?: string }>;
 }
 
 export interface GrowMailboxCapacity {
@@ -1456,6 +1534,62 @@ export interface AdminOrganizationDetail {
   created_at: string;
   members: AdminOrgMember[];
   sites: AdminOrgSite[];
+}
+
+// ---- Admin :: Billing / Stripe --------------------------------------------
+export interface AdminBillingKeyStatus {
+  configured: boolean;
+  mode: 'live' | 'test' | null;
+  masked: string | null;
+}
+
+export interface AdminBillingCatalogPrice {
+  lookupKey: string;
+  expectedCents: number;
+  interval: 'month' | null;
+  stripePriceId: string | null;
+  stripeCents: number | null;
+  requiresModuleMapping: boolean;
+  modulesMatch: boolean;
+  ok: boolean;
+}
+
+export interface AdminBillingCatalogProduct {
+  productKey: string;
+  productName: string;
+  prices: AdminBillingCatalogPrice[];
+}
+
+export interface AdminBillingEntitlement {
+  orgId: string;
+  orgName: string;
+  status: string;
+  modules: string[];
+  updatedAt: string;
+}
+
+export interface AdminBillingStatus {
+  mode: 'live' | 'test';
+  modeConfirmedViaStripe: boolean;
+  keys: {
+    secretKey: AdminBillingKeyStatus;
+    publishableKey: AdminBillingKeyStatus;
+    webhookSecretConfigured: boolean;
+    modeMismatch: boolean;
+    hintMismatch: boolean;
+  };
+  webhook: {
+    expectedUrl: string;
+    lastEvent: { type: string; processedAt: string } | null;
+    note: string;
+  };
+  catalog: AdminBillingCatalogProduct[];
+  recentEntitlements: AdminBillingEntitlement[];
+}
+
+export interface AdminBillingSyncResult {
+  ok: boolean;
+  log: string;
 }
 
 // ---- Guided setup checklist ------------------------------------------------

@@ -9,7 +9,7 @@ import { apiFetch, ApiError } from '@/lib/api';
 import { API_BASE } from '@/lib/config';
 import type {
   OrgProfile, AISettingsResponse, AIProviderPreference, AIFeature, AIModelOverride, AIProvider,
-  ServiceArea, GscStatus, GrowSenderProfile, BillingStatus,
+  ServiceArea, GscStatus, GrowSenderProfile, BillingStatus, GrowAlternateChannelSettings, GrowMailbox,
 } from '@/lib/types';
 import type { MeResponse } from '@/lib/types';
 import { PageHeader } from '@/components/Primitives';
@@ -57,6 +57,7 @@ export default function SettingsPage() {
         <ImportDataCard />
         <ServiceAreaCard canEdit={canEdit} />
         <GrowSenderProfileCard canEdit={canEdit} />
+        <AlternateChannelSettingsCard canEdit={canEdit} />
         <GscCard canEdit={canEdit} />
         <AICard canEdit={canEdit} />
       </div>
@@ -445,6 +446,188 @@ function GrowSenderProfileCard({ canEdit }: { canEdit: boolean }) {
             </div>
           )}
         </>
+      )}
+    </Card>
+  );
+}
+
+const ALTERNATE_CHANNEL_KEY = '/grow/alternate-channel/settings';
+
+// docs/specs/grow-recoverable-bucket.md Part C's config surface. Drafting
+// itself runs automatically once this is enabled (worker/growWorker.ts via
+// lib/growFallbackDraft.ts) — sending is still always one human click,
+// reviewed on Grow > Queue's Recoverable bucket, never from here.
+function AlternateChannelSettingsCard({ canEdit }: { canEdit: boolean }) {
+  const { data, isLoading } = useApi<GrowAlternateChannelSettings>(ALTERNATE_CHANNEL_KEY);
+  const { data: mailboxes } = useApi<GrowMailbox[]>('/grow/mailboxes');
+  const [draft, setDraft] = useState<GrowAlternateChannelSettings | null>(null);
+  const [senderMode, setSenderMode] = useState<'mailbox' | 'adhoc'>('mailbox');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!data) return;
+    setDraft(data);
+    setSenderMode(data.sender_adhoc_address ? 'adhoc' : 'mailbox');
+  }, [data]);
+
+  function toggleTrigger(type: 'block' | 'soft') {
+    if (!draft) return;
+    const has = draft.trigger_bounce_types.includes(type);
+    setDraft({
+      ...draft,
+      trigger_bounce_types: has
+        ? draft.trigger_bounce_types.filter((t) => t !== type)
+        : [...draft.trigger_bounce_types, type],
+    });
+  }
+
+  async function onSave() {
+    if (!draft) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const body = {
+        enabled: draft.enabled,
+        sender_mailbox_id: senderMode === 'mailbox' ? (draft.sender_mailbox_id || null) : null,
+        sender_adhoc_address: senderMode === 'adhoc' ? (draft.sender_adhoc_address?.trim() || null) : null,
+        trigger_bounce_types: draft.trigger_bounce_types,
+        business_context: draft.business_context?.trim() || null,
+      };
+      await apiFetch(ALTERNATE_CHANNEL_KEY, { method: 'PATCH', body: JSON.stringify(body) });
+      await mutate(ALTERNATE_CHANNEL_KEY);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not save alternate-channel settings.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card className="p-6">
+      <div className="mb-1 flex items-center gap-2">
+        <ArrowRight size={18} className="text-primary" />
+        <p className="font-display text-lg font-bold tracking-tight">Alternate-channel follow-up</p>
+      </div>
+      <p className="mb-4 text-xs text-muted-foreground">
+        When a bounce looks recoverable (blocked or temporarily rejected — never a dead address, never one
+        the classifier couldn&rsquo;t read), Venturelyx can automatically draft a follow-up through a warmer
+        channel. This is for reaching a known contact another way — <strong>not</strong> a way around a block,
+        and never a retry-until-it-lands tool. Drafting is automatic; sending is always one human click, reviewed
+        on Grow &rsquo;s Queue page.
+      </p>
+      {isLoading || !draft ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : (
+        <fieldset disabled={!canEdit} className="contents">
+          <label className="flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
+            <span className="text-sm font-medium">Enable alternate-channel follow-up</span>
+            <input
+              type="checkbox"
+              checked={draft.enabled}
+              onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
+              className="h-5 w-5 rounded border-border accent-[hsl(var(--primary))]"
+            />
+          </label>
+
+          <div className="mt-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Alternate sender</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              A typed address is drafted for but never sent by Venturelyx — you&rsquo;d copy and send it yourself.
+            </p>
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setSenderMode('mailbox')}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium ${senderMode === 'mailbox' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
+              >
+                Configured mailbox
+              </button>
+              <button
+                type="button"
+                onClick={() => setSenderMode('adhoc')}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium ${senderMode === 'adhoc' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
+              >
+                Type an address
+              </button>
+            </div>
+            {senderMode === 'mailbox' ? (
+              <select
+                value={draft.sender_mailbox_id ?? ''}
+                onChange={(e) => setDraft({ ...draft, sender_mailbox_id: e.target.value || null })}
+                className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+              >
+                <option value="">Select a mailbox…</option>
+                {mailboxes?.map((m) => <option key={m.id} value={m.id}>{m.address}</option>)}
+              </select>
+            ) : (
+              <>
+                <input
+                  value={draft.sender_adhoc_address ?? ''}
+                  onChange={(e) => setDraft({ ...draft, sender_adhoc_address: e.target.value })}
+                  placeholder="you@personaladdress.com"
+                  className="mt-2 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  A personal Gmail caps around 500/day, Workspace around 2,000/day — bulk sending from it can
+                  damage that address&rsquo;s own reputation too.
+                </p>
+              </>
+            )}
+          </div>
+
+          <div className="mt-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Draft on</p>
+            <div className="mt-2 flex flex-col gap-2">
+              <label className="flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
+                <span className="text-sm">Blocked / auth-failure bounces</span>
+                <input
+                  type="checkbox"
+                  checked={draft.trigger_bounce_types.includes('block')}
+                  onChange={() => toggleTrigger('block')}
+                  className="h-5 w-5 rounded border-border accent-[hsl(var(--primary))]"
+                />
+              </label>
+              <label className="flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
+                <span className="text-sm">Temporary (soft) bounces</span>
+                <input
+                  type="checkbox"
+                  checked={draft.trigger_bounce_types.includes('soft')}
+                  onChange={() => toggleTrigger('soft')}
+                  className="h-5 w-5 rounded border-border accent-[hsl(var(--primary))]"
+                />
+              </label>
+              <div className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2.5 opacity-60">
+                <span className="text-sm">Unrecognized (unknown) bounces</span>
+                <span className="text-xs text-muted-foreground">Always review-only, never auto-drafted</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Business context for the AI draft</p>
+            <textarea
+              value={draft.business_context ?? ''}
+              onChange={(e) => setDraft({ ...draft, business_context: e.target.value })}
+              rows={2}
+              placeholder="e.g. CampusPath — K-12 school operations"
+              className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+            />
+          </div>
+
+          {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+          {canEdit && (
+            <div className="mt-4 flex items-center gap-3">
+              <Button onClick={onSave} disabled={saving}>
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+              {saved && <span className="text-sm text-success">Saved.</span>}
+            </div>
+          )}
+        </fieldset>
       )}
     </Card>
   );

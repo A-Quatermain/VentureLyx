@@ -106,6 +106,16 @@ const GREYLIST_ENTRY: Entry = {
   explanation: 'The server deferred us for now (greylisting or rate limiting).',
   action: 'Auto-retry later — usually clears itself.',
 };
+const RELAY_ENTRY: Entry = {
+  type: 'soft', category: 'Relay/connectivity',
+  explanation: "Couldn't reach the recipient's mail server right now — a network/connectivity issue, not a rejection.",
+  action: "Transient — this says nothing about the address itself. Only investigate if the same domain keeps failing this way.",
+};
+const NO_MX_ENTRY: Entry = {
+  type: 'hard', category: 'Bad domain',
+  explanation: "This domain has no mail server configured at all — it can't receive email, full stop.",
+  action: 'Remove — not recoverable by retrying. Worth checking for a typo in the domain.',
+};
 const UNKNOWN_ENTRY: Entry = {
   type: 'unknown', category: 'Other',
   explanation: 'Unrecognized server response.',
@@ -121,9 +131,32 @@ const BLOCKLIST_KEYWORDS = ['spamhaus', 'blocklist', 'spam'];
 const COMPLAINT_KEYWORDS = ['complaint'];
 const POLICY_KEYWORDS = ['not authorized', 'access denied', 'policy', 'blocked', 'reputation'];
 const GREYLIST_KEYWORDS = ['greylist', 'greylisting', 'rate limit'];
+// "No MX" is checked before the generic relay keywords — a domain with
+// literally no mail server is a structural dead end (hard), not the same
+// transient "couldn't connect right now" signal a timeout is.
+const NO_MX_KEYWORDS = ['no mx server found', 'no mx record'];
+const RELAY_KEYWORDS = ['connection timed out', 'connection refused', 'network error', 'temporarily unreachable'];
 
 function matchesAny(text: string, keywords: string[]): boolean {
   return keywords.some((k) => text.includes(k));
+}
+
+/** Isolates the DSN's OWN report — the human-readable "technical details"
+ *  prose and/or the structured RFC 3464 fields (Diagnostic-Code, Status,
+ *  Reporting-MTA, Action) that describe what the RECEIVING/relaying side
+ *  actually said — cutting off before the quoted original message every
+ *  DSN echoes back underneath that. That quoted copy always reintroduces
+ *  itself with a `Received:` header (added at every hop, RFC 5322), and
+ *  goes on to include OUR OWN outgoing message's own headers — including
+ *  a DKIM-Signature: header on literally every message we send, since we
+ *  sign all outgoing mail. Keyword-matching the combined text therefore
+ *  always found "dkim" regardless of what actually happened — confirmed
+ *  live: a Barracuda policy block and an Outlook "Access denied" were
+ *  both mislabeled "Auth failure" purely because of their OWN echoed-back
+ *  signature header, not anything about our domain's authentication. */
+function dsnOwnText(rawText: string): string {
+  const match = /^Received:/m.exec(rawText);
+  return match ? rawText.slice(0, match.index) : rawText;
 }
 
 /** The one function every bounce capture/display point calls. `rawText`
@@ -131,10 +164,13 @@ function matchesAny(text: string, keywords: string[]): boolean {
  *  body excerpt, ARF report) — the more complete, the better the keyword
  *  pass does. `explicitCode`, if the caller already has one (e.g. a
  *  structured responseCode from the SMTP library), is used as-is;
- *  otherwise this extracts one from rawText itself. */
+ *  otherwise this extracts one from rawText itself. Both the code
+ *  extraction and every keyword check below run against dsnOwnText(),
+ *  never the full rawText — see that function's own header. */
 export function classifyBounce(rawText: string, explicitCode?: string | null): BounceClassification {
-  const text = (rawText ?? '').toLowerCase();
-  const code = explicitCode ?? extractBounceCode(rawText ?? '');
+  const ownText = dsnOwnText(rawText ?? '');
+  const text = ownText.toLowerCase();
+  const code = explicitCode ?? extractBounceCode(ownText);
 
   const explicit = code ? EXPLICIT_CODES[code] : undefined;
   if (explicit) return { code, ...explicit };
@@ -149,6 +185,8 @@ export function classifyBounce(rawText: string, explicitCode?: string | null): B
   if (matchesAny(text, BLOCKLIST_KEYWORDS)) return { code, ...BLOCKLIST_ENTRY };
   if (code === '5.7.1' || matchesAny(text, POLICY_KEYWORDS)) return { code, ...POLICY_BLOCK_ENTRY };
   if ((code && /^4\.7\./.test(code)) || matchesAny(text, GREYLIST_KEYWORDS)) return { code, ...GREYLIST_ENTRY };
+  if (matchesAny(text, NO_MX_KEYWORDS)) return { code, ...NO_MX_ENTRY };
+  if (matchesAny(text, RELAY_KEYWORDS)) return { code, ...RELAY_ENTRY };
 
   // Generic class fallback — only once every specific signal above has
   // had a chance to apply.
