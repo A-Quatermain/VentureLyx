@@ -111,14 +111,22 @@ interface ProviderVerdict {
   reason: string;
 }
 
+// verdict: null = excluded (reject + suppress, routed to rejections —
+// applyEmailVerification() below never inserts these). 'catch-all' is
+// deliberately 'unknown', not a verdict of its own: many school domains
+// accept everything at SMTP, so catch-all is neither proof of good nor
+// bad and must still import, flagged, same as a genuine unknown — never
+// silently dropped. 'toxic' has no ZeroBounce-side definition agreed yet
+// (not in the reject list the brief gave); falls through to the
+// `!mapped` branch below (imported, flagged unknown) until that's decided.
 const ZEROBOUNCE_STATUS_MAP: Record<string, ProviderVerdict> = {
   valid: { verdict: 'valid', reason: 'provider:valid' },
   invalid: { verdict: null, reason: 'provider:invalid' },
   spamtrap: { verdict: null, reason: 'provider:spamtrap' },
+  abuse: { verdict: null, reason: 'provider:abuse' },
+  do_not_mail: { verdict: null, reason: 'provider:do_not_mail' },
   'catch-all': { verdict: 'unknown', reason: 'provider:catch_all' },
   unknown: { verdict: 'unknown', reason: 'provider:unknown' },
-  abuse: { verdict: 'risky', reason: 'provider:abuse' },
-  do_not_mail: { verdict: 'risky', reason: 'provider:do_not_mail' },
 };
 
 async function verifyWithZeroBounce(email: string, apiKey: string): Promise<ProviderVerdict | null> {
