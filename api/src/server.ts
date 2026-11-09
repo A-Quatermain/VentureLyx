@@ -23,6 +23,7 @@ import waitlistRoutes from './routes/waitlist.js';
 import growthScanRoutes from './routes/growthScans.js';
 import setupRoutes from './routes/setup.js';
 import billingRoutes from './routes/billing.js';
+import adminBillingRoutes from './routes/adminBilling.js';
 import { healthy, shutdown } from './lib/db.js';
 import { processUnsubscribe } from './lib/growUnsubscribe.js';
 import { processClick } from './lib/growClickTracking.js';
@@ -146,6 +147,7 @@ await app.register(integrationsRoutes, { prefix: '/v1' });
 await app.register(growRoutes, { prefix: '/v1' });
 await app.register(billingRoutes, { prefix: '/v1' });
 await app.register(adminRoutes, { prefix: '/v1' });
+await app.register(adminBillingRoutes, { prefix: '/v1' });
 await app.register(waitlistRoutes, { prefix: '/v1' });
 // Public, no auth — exposes one non-sensitive boolean so the marketing
 // site (web/'s (marketing)/page.tsx) can decide whether to show real

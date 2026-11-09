@@ -32,67 +32,32 @@
  * until the person running this explicitly passes --allow-live.
  */
 import Stripe from 'stripe';
+import { CATALOG, type ProductSpec, type PriceSpec } from '../lib/stripeCatalogSpec.js';
+import { stripeKeyMode } from '../lib/stripeKeyMode.js';
 
 const secretKey = process.env.STRIPE_SECRET_KEY;
 if (!secretKey) {
   console.error('FATAL: STRIPE_SECRET_KEY is not set');
   process.exit(1);
 }
-if (secretKey.startsWith('sk_live_') && !process.argv.includes('--allow-live')) {
-  console.error(
-    'FATAL: STRIPE_SECRET_KEY looks like a LIVE key. This script is test-mode only until ' +
-    'explicitly told otherwise — re-run with --allow-live if that is really intended.',
-  );
-  process.exit(1);
-}
 
 const stripe = new Stripe(secretKey);
 
-interface PriceSpec {
-  lookupKey: string;
-  unitAmountCents: number;
-  interval?: 'month';   // omitted => one-time price (used for setup fees)
-}
+// Prefix (sk_live_/rk_live_ vs sk_test_/rk_test_) is only a hint, logged for
+// a fast heads-up — the real gate below asks Stripe itself via
+// balance.retrieve().livemode. A string prefix is not something that gets
+// to decide whether this script is allowed to write to a real Stripe
+// account; only Stripe's own answer does.
+const prefixHint = stripeKeyMode(secretKey);
 
-interface ProductSpec {
-  productKey: string;
-  productName: string;
-  description: string;
-  prices: PriceSpec[];
+/** Authoritative — see lib/stripe.ts's fetchAuthoritativeLiveMode() for why
+ *  this doesn't just reuse that export: this script intentionally keeps its
+ *  own Stripe client (this file's own header explains why) rather than
+ *  importing lib/stripe.ts, which has its own top-level side effects. */
+async function isLiveAccount(): Promise<boolean> {
+  const balance = await stripe.balance.retrieve();
+  return balance.livemode;
 }
-
-export const CATALOG: ProductSpec[] = [
-  {
-    productKey: 'platform',
-    productName: 'Venturelyx — Platform',
-    description: 'The Venturelyx Command Center for one business.',
-    prices: [{ lookupKey: 'platform_monthly', unitAmountCents: 12_900, interval: 'month' }],
-  },
-  {
-    productKey: 'growth_partner',
-    productName: 'Venturelyx — Growth Partner',
-    description: 'Platform plus ScaleSEO and Reviews, managed growth support.',
-    prices: [{ lookupKey: 'growth_partner_monthly', unitAmountCents: 34_900, interval: 'month' }],
-  },
-  {
-    productKey: 'launch_growth',
-    productName: 'Venturelyx — Launch & Growth',
-    description: 'The full white-glove build-and-grow engagement, every module.',
-    prices: [
-      { lookupKey: 'launch_growth_setup', unitAmountCents: 75_000 },
-      { lookupKey: 'launch_growth_monthly', unitAmountCents: 49_900, interval: 'month' },
-    ],
-  },
-  {
-    productKey: 'founding',
-    productName: 'Venturelyx — Founding Business',
-    description: 'Launch & Growth at the limited-time founding rate for the first 12 months.',
-    prices: [
-      { lookupKey: 'founding_setup', unitAmountCents: 75_000 },
-      { lookupKey: 'founding_monthly', unitAmountCents: 39_900, interval: 'month' },
-    ],
-  },
-];
 
 // Every product/lookup_key from the v2 catalog this one replaces. Deactivated,
 // not deleted — Stripe doesn't allow deleting a Price or a Product that has
@@ -173,7 +138,22 @@ async function deactivateOldCatalog(): Promise<void> {
 }
 
 async function main() {
-  console.log(`Stripe catalog setup — ${secretKey!.startsWith('sk_live_') ? 'LIVE MODE' : 'test mode'}\n`);
+  const live = await isLiveAccount();
+  if ((prefixHint === 'live') !== live) {
+    console.warn(
+      `WARN  key prefix looked like "${prefixHint ?? 'unrecognized'}" but Stripe's own ` +
+      `balance.retrieve().livemode says ${live} — trusting Stripe, not the prefix.`,
+    );
+  }
+  if (live && !process.argv.includes('--allow-live')) {
+    console.error(
+      'FATAL: Stripe reports this key is LIVE (balance.retrieve().livemode === true). This ' +
+      'script is test-mode only until explicitly told otherwise — re-run with --allow-live if that is really intended.',
+    );
+    process.exit(1);
+  }
+
+  console.log(`Stripe catalog setup — ${live ? 'LIVE MODE' : 'test mode'} (confirmed via Stripe's own livemode field)\n`);
 
   if (!process.argv.includes('--skip-deactivate')) {
     await deactivateOldCatalog();
