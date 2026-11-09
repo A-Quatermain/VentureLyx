@@ -852,6 +852,8 @@ export interface GrowExpectedDnsRecord {
   instructions: string;
 }
 
+export type GrowDmarcPolicy = 'none' | 'quarantine' | 'reject';
+
 export interface GrowSendingDomain {
   id: string;
   domain: string;
@@ -861,6 +863,12 @@ export interface GrowSendingDomain {
   dmarc_ok: boolean;
   verified_at: string | null;
   enabled: boolean;
+  // null rua = never customized; the record shown is still the old fixed
+  // placeholder (lib/growSendingDomain.ts's buildExpectedRecords()).
+  dmarc_rua: string | null;
+  dmarc_ruf: string | null;
+  dmarc_policy: GrowDmarcPolicy;
+  dmarc_pct: number;
   expected_records: GrowExpectedDnsRecord[];
 }
 

@@ -64,7 +64,27 @@ function normalizeDomain(domain: string): string {
   return domain.trim().toLowerCase().replace(/\.$/, '');
 }
 
-export function buildExpectedRecords(domain: string, provider: SendingDomainProvider): ExpectedRecord[] {
+export interface DmarcSettings {
+  rua: string | null;
+  ruf: string | null;
+  policy: 'none' | 'quarantine' | 'reject';
+  pct: number;
+}
+
+/** Builds the exact `v=DMARC1; ...` string from the org's own settings.
+ *  rua null means "never customized" — callers show the old fixed
+ *  placeholder address in that case (buildExpectedRecords below), never a
+ *  guessed real one, since nobody has confirmed that mailbox exists. */
+export function buildDmarcValue(domain: string, settings: DmarcSettings): string {
+  const parts = [`v=DMARC1`, `p=${settings.policy}`, `pct=${settings.pct}`];
+  if (settings.rua) parts.push(`rua=mailto:${settings.rua}`);
+  if (settings.ruf) parts.push(`ruf=mailto:${settings.ruf}`);
+  return parts.join('; ');
+}
+
+export function buildExpectedRecords(
+  domain: string, provider: SendingDomainProvider, dmarcSettings?: DmarcSettings,
+): ExpectedRecord[] {
   const d = normalizeDomain(domain);
   const spfInclude = SPF_INCLUDE[provider];
   const dkimSelector = DKIM_SELECTOR[provider];
@@ -87,12 +107,25 @@ export function buildExpectedRecords(domain: string, provider: SendingDomainProv
         value: null, instructions: DKIM_INSTRUCTIONS[provider],
       };
 
-  const dmarc: ExpectedRecord = {
-    type: 'DMARC', kind: 'TXT', name: `_dmarc.${d}`,
-    value: `v=DMARC1; p=quarantine; pct=100; rua=mailto:dmarc@${d}`,
-    instructions: 'Tells receiving mail servers what to do with mail that fails SPF/DKIM, and where to send ' +
-      'aggregate reports. Starting at p=quarantine (not p=reject) is the safer default while warming up.',
-  };
+  // Customized (dmarc_rua set) uses the org's own real settings; otherwise
+  // the same fixed placeholder this always showed — never a guessed real
+  // mailbox address.
+  const dmarc: ExpectedRecord = dmarcSettings?.rua
+    ? {
+        type: 'DMARC', kind: 'TXT', name: `_dmarc.${d}`,
+        value: buildDmarcValue(d, dmarcSettings),
+        instructions: 'Tells receiving mail servers what to do with mail that fails SPF/DKIM, and where to send ' +
+          'aggregate reports.' + (dmarcSettings.policy === 'reject'
+            ? ' p=reject bounces ALL mail that fails DMARC — only safe once SPF and DKIM both pass alignment.'
+            : ' Starting at p=quarantine (not p=reject) is the safer default while warming up.'),
+      }
+    : {
+        type: 'DMARC', kind: 'TXT', name: `_dmarc.${d}`,
+        value: `v=DMARC1; p=quarantine; pct=100; rua=mailto:dmarc@${d}`,
+        instructions: 'Tells receiving mail servers what to do with mail that fails SPF/DKIM, and where to send ' +
+          'aggregate reports. Starting at p=quarantine (not p=reject) is the safer default while warming up. ' +
+          'Click Edit to point reports at a real mailbox you monitor.',
+      };
 
   return [spf, dkim, dmarc];
 }
@@ -173,18 +206,45 @@ async function checkDkim(domain: string, provider: SendingDomainProvider): Promi
   };
 }
 
-async function checkDmarc(domain: string): Promise<RecordCheckResult> {
-  const expected = buildExpectedRecords(domain, 'other').find((r) => r.type === 'DMARC')!;
+const DMARC_RUA_RE = /rua=mailto:([^;\s]+)/i;
+
+async function checkDmarc(domain: string, dmarcSettings?: DmarcSettings): Promise<RecordCheckResult> {
+  const expected = buildExpectedRecords(domain, 'other', dmarcSettings).find((r) => r.type === 'DMARC')!;
   const found = await lookupTxt(`_dmarc.${domain}`);
   const record = found.find((r) => /v=dmarc1/i.test(r));
-  const ok = !!record && DMARC_POLICY_RE.test(record);
-  return {
-    type: 'DMARC', ok, expected: expected.value, found,
-    note: ok
-      ? `DMARC record found (${record!.match(DMARC_POLICY_RE)![0]}).`
-      : found.length > 0
+
+  if (!record) {
+    return {
+      type: 'DMARC', ok: false, expected: expected.value, found,
+      note: found.length > 0
         ? 'A record exists at _dmarc but is not a valid DMARC record.'
         : `No DMARC record found at _dmarc.${domain}.`,
+    };
+  }
+  const publishedPolicy = record.match(DMARC_POLICY_RE)?.[1]?.toLowerCase();
+  if (!publishedPolicy) {
+    return { type: 'DMARC', ok: false, expected: expected.value, found, note: 'A DMARC record exists but has no p= policy — not valid.' };
+  }
+
+  // No customized settings on file: the old loose check — any syntactically
+  // valid DMARC record counts. Once a real rua is set, Verify means
+  // something stronger: the live record must actually reflect that choice.
+  if (!dmarcSettings?.rua) {
+    return { type: 'DMARC', ok: true, expected: expected.value, found, note: `DMARC record found (p=${publishedPolicy}).` };
+  }
+
+  const publishedRua = record.match(DMARC_RUA_RE)?.[1]?.toLowerCase();
+  const mismatches: string[] = [];
+  if (publishedPolicy !== dmarcSettings.policy) mismatches.push(`policy is p=${publishedPolicy}, expected p=${dmarcSettings.policy}`);
+  if (publishedRua !== dmarcSettings.rua.toLowerCase()) {
+    mismatches.push(publishedRua ? `rua is ${publishedRua}, expected ${dmarcSettings.rua}` : `no rua= found, expected ${dmarcSettings.rua}`);
+  }
+
+  return {
+    type: 'DMARC', ok: mismatches.length === 0, expected: expected.value, found,
+    note: mismatches.length === 0
+      ? `DMARC record matches your saved settings (p=${publishedPolicy}).`
+      : `Published record doesn't match what you saved yet: ${mismatches.join('; ')}. Copy the record above and update DNS.`,
   };
 }
 
@@ -217,9 +277,11 @@ export interface VerifyResult {
   subdomainWarning: string | null;
 }
 
-export async function verifyDomain(domain: string, provider: SendingDomainProvider): Promise<VerifyResult> {
+export async function verifyDomain(
+  domain: string, provider: SendingDomainProvider, dmarcSettings?: DmarcSettings,
+): Promise<VerifyResult> {
   const d = normalizeDomain(domain);
-  const [spf, dkim, dmarc] = await Promise.all([checkSpf(d, provider), checkDkim(d, provider), checkDmarc(d)]);
+  const [spf, dkim, dmarc] = await Promise.all([checkSpf(d, provider), checkDkim(d, provider), checkDmarc(d, dmarcSettings)]);
   const subdomainWarning = await checkSubdomainInheritance(d, dmarc.found);
   return { spf, dkim, dmarc, subdomainWarning };
 }
