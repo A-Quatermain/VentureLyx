@@ -20,7 +20,8 @@ export interface OrgProfile {
 export type AIFeature =
   | 'seo_recommendations' | 'page_generation' | 'review_response'
   | 'next_best_action' | 'metric_explanation' | 'business_blueprint' | 'sequence_writing'
-  | 'ai_visibility_check' | 'reply_classification' | 'followup_assistant' | 'seo_issue_fix';
+  | 'ai_visibility_check' | 'reply_classification' | 'followup_assistant' | 'seo_issue_fix'
+  | 'competitor_critique';
 
 export type AIProvider = 'anthropic' | 'openai';
 export type AIProviderPreference = 'auto' | AIProvider;
@@ -325,6 +326,61 @@ export interface SeoCompetitor {
   discovered: boolean;
   avg_position: string | null;
   tracked_keywords: number;
+}
+
+// ---- ScaleSEO: Competitor Analysis (crawl-based, docs/specs/scaleseo-competitors.md) ----
+export type CompetitorCrawlStatus = 'none' | 'queued' | 'running' | 'ok' | 'error' | 'robots_blocked';
+
+export interface CompetitorScores {
+  technical: number | null;
+  content: number | null;
+  local: number | null;
+  performance: number | null;
+}
+
+export interface CompetitorTopicRef {
+  url: string;
+  title: string | null;
+}
+
+export interface CompetitorComparisonEntry {
+  id: string;
+  name: string;
+  domain: string;
+  status: CompetitorCrawlStatus;
+  crawled_at: string | null;
+  error: string | null;
+  pages_crawled: number;
+  scores: CompetitorScores | null;
+  // competitor - client; positive = competitor ahead, negative = we're ahead, null = no comparison yet.
+  gaps: CompetitorScores | null;
+  schema_gap: string[];
+  schema_ahead: string[];
+  content_gap: CompetitorTopicRef[];
+  content_ahead: CompetitorTopicRef[];
+  avg_response_ms: number | null;
+  mobile_viewport: { pages_with: number; pages_checked: number } | null;
+  sitemap_page_count: number | null;
+  sitemap_is_index: boolean | null;
+}
+
+export interface CompetitorComparisonClient {
+  scanned: boolean;
+  scores: CompetitorScores | null;
+  schema_types: string[];
+  avg_response_ms: number | null;
+  avg_internal_links: number | null;
+  pages: Array<{ url: string; title: string | null; h1: string | null }>;
+}
+
+export interface CompetitorComparisonResponse {
+  client: CompetitorComparisonClient;
+  competitors: CompetitorComparisonEntry[];
+}
+
+export interface AddCompetitorResult {
+  id: string;
+  crawlQueued: boolean;
 }
 
 export interface SeoCrawlHistoryEntry {

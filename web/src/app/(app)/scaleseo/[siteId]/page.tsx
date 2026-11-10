@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useEffect, useRef, useState } from 'react';
+import { use, useEffect, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { mutate } from 'swr';
@@ -13,8 +13,9 @@ import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import { API_BASE } from '@/lib/config';
 import type {
-  SeoHealthDetail, SeoRanking, SeoCompetitor, SeoCrawlHistoryEntry, ContentPage, SummaryResponse,
+  SeoHealthDetail, SeoRanking, SeoCrawlHistoryEntry, ContentPage, SummaryResponse,
   CoverageGap, GscQueriesResponse, SeoSite, SeoIssueGroup, AiVisibilityResponse,
+  CompetitorComparisonResponse, CompetitorComparisonEntry, AddCompetitorResult,
 } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -23,6 +24,7 @@ import { Bar } from '@/components/ui/Bar';
 import { Sparkline } from '@/components/ui/Sparkline';
 import { SeverityBadge } from '@/components/ui/Badge';
 import { StatStrip } from '@/components/ui/StatStrip';
+import { toneSoft, healthTone } from '@/components/ui/tone';
 import { CrawlButton } from '@/components/CrawlButton';
 import { AIStreamPanel } from '@/components/AIStreamPanel';
 import { SitePicker } from '@/components/SitePicker';
@@ -1079,54 +1081,293 @@ function CoverageTab({ onBuildGap }: { onBuildGap: (serviceName: string, locatio
   );
 }
 
+const COMPETITOR_SCORE_LABELS: Record<keyof NonNullable<CompetitorComparisonEntry['scores']>, string> = {
+  technical: 'Technical', content: 'Content', local: 'Local / AI visibility', performance: 'Performance',
+};
+
 function CompetitorsTab({ siteId }: { siteId: string }) {
-  const { data, isLoading, error } = useApi<SeoCompetitor[]>(`/seo/competitors/${siteId}`);
+  const key = `/seo/competitors/${siteId}/comparison`;
+  const { data, isLoading, error } = useApi<CompetitorComparisonResponse>(key, {
+    refreshInterval: (latest) =>
+      latest?.competitors.some((c) => c.status === 'queued' || c.status === 'running') ? 4000 : 0,
+  });
+  const role = useRole();
+  const canEdit = atLeast(role, 'manager');
+
+  const [adding, setAdding] = useState(false);
+  const [addName, setAddName] = useState('');
+  const [addDomain, setAddDomain] = useState('');
+  const [addError, setAddError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const competitors = data?.competitors ?? [];
+  const atLimit = competitors.length >= 3;
+
+  async function onAdd(e: FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setAddError(null);
+    try {
+      await apiFetch<AddCompetitorResult>(`/seo/competitors/${siteId}`, {
+        method: 'POST',
+        body: JSON.stringify({ name: addName, domain: addDomain }),
+      });
+      setAddName('');
+      setAddDomain('');
+      setAdding(false);
+      await mutate(key);
+    } catch (err) {
+      setAddError(err instanceof ApiError ? err.message : 'Could not add this competitor.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function onRemove(id: string, name: string) {
+    if (!confirm(`Stop tracking "${name}"? This removes its crawl history too.`)) return;
+    setBusyId(id);
+    try {
+      await apiFetch(`/seo/competitors/${id}`, { method: 'DELETE' });
+      await mutate(key);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function onRescan(id: string) {
+    setBusyId(id);
+    try {
+      await apiFetch(`/seo/competitors/${id}/rescan`, { method: 'POST' });
+      await mutate(key);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const anyScanned = competitors.some((c) => c.status === 'ok');
 
   return (
-    <Card className="overflow-x-auto p-0">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <UsersThree size={16} className="text-muted-foreground" />
-        <p className="text-sm font-semibold">Competitors</p>
-      </div>
+    <div className="flex flex-col gap-4">
+      <Card className="p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-start gap-2">
+            <UsersThree size={16} className="mt-0.5 text-muted-foreground" />
+            <div>
+              <p className="text-sm font-semibold">Competitors</p>
+              <p className="mt-1 max-w-xl text-xs text-muted-foreground">
+                Compares on-page and technical factors from a public crawl of up to 25 pages. It does not
+                measure a competitor&rsquo;s rankings, traffic, conversions, or backlinks.
+              </p>
+            </div>
+          </div>
+          {canEdit && !atLimit && (
+            <Button variant="ghost" onClick={() => setAdding((v) => !v)} className="inline-flex shrink-0 items-center gap-1.5">
+              <Plus size={14} weight="bold" /> Add competitor
+            </Button>
+          )}
+        </div>
+
+        {adding && (
+          <form onSubmit={onAdd} className="mt-4 flex flex-wrap items-start gap-2 border-t border-border pt-4">
+            <input
+              value={addName}
+              onChange={(e) => setAddName(e.target.value)}
+              placeholder="Competitor name"
+              required
+              className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+            />
+            <input
+              value={addDomain}
+              onChange={(e) => setAddDomain(e.target.value)}
+              placeholder="competitor.com"
+              required
+              className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+            />
+            <Button type="submit" disabled={submitting} className="shrink-0">
+              {submitting ? 'Adding…' : 'Add'}
+            </Button>
+            {addError && <p className="w-full text-sm text-destructive">{addError}</p>}
+          </form>
+        )}
+        {atLimit && canEdit && (
+          <p className="mt-3 text-xs text-muted-foreground">Up to 3 competitors per site — remove one to add another.</p>
+        )}
+      </Card>
+
       {isLoading ? (
-        <p className="p-4 text-sm text-muted-foreground">Loading…</p>
+        <Card className="p-4"><p className="text-sm text-muted-foreground">Loading…</p></Card>
       ) : error ? (
-        <p className="p-4 text-sm text-destructive">Could not load competitors.</p>
-      ) : !data || data.length === 0 ? (
-        <p className="p-4 text-sm text-muted-foreground">
-          Venturelyx doesn't have a data source for competitor rankings connected yet, so this tab
-          intentionally shows nothing rather than a guess. It'll populate once one is.
-        </p>
+        <Card className="p-4"><p className="text-sm text-destructive">Could not load competitor data.</p></Card>
+      ) : competitors.length === 0 ? (
+        <Card className="flex flex-col items-center gap-2 p-8 text-center">
+          <UsersThree size={24} className="text-muted-foreground" />
+          <p className="max-w-sm text-sm text-muted-foreground">
+            No competitors tracked yet. Add one by domain to see how your site compares — technical health,
+            content coverage, and what they do that you don&rsquo;t.
+          </p>
+        </Card>
       ) : (
-        <table className="w-full min-w-[520px] text-left text-sm">
-          <thead>
-            <tr className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              <th className="px-4 py-2 font-medium">Name</th>
-              <th className="px-4 py-2 font-medium">Domain</th>
-              <th className="px-4 py-2 text-right font-medium">Avg. position</th>
-              <th className="px-4 py-2 text-right font-medium">Keywords tracked</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {data.map((c) => (
-              <tr key={c.id}>
-                <td className="px-4 py-3">
-                  {c.name}
-                  {c.discovered && <span className="ml-1.5 text-xs text-muted-foreground">(auto-discovered)</span>}
-                </td>
-                <td className="px-4 py-3 text-muted-foreground">{c.domain}</td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums" data-numeric>
-                  {c.avg_position ?? '—'}
-                </td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums text-muted-foreground" data-numeric>
-                  {c.tracked_keywords}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        competitors.map((c) => <CompetitorCard key={c.id} c={c} canEdit={canEdit} busy={busyId === c.id} onRemove={onRemove} onRescan={onRescan} />)
       )}
+
+      {anyScanned && (
+        <AIStreamPanel
+          path="/ai/competitor-critique/stream"
+          body={{ siteId }}
+          title="Competitor Critique"
+          triggerLabel="What should we do about this?"
+        />
+      )}
+    </div>
+  );
+}
+
+function CompetitorCard({
+  c, canEdit, busy, onRemove, onRescan,
+}: {
+  c: CompetitorComparisonEntry;
+  canEdit: boolean;
+  busy: boolean;
+  onRemove: (id: string, name: string) => void;
+  onRescan: (id: string) => void;
+}) {
+  return (
+    <Card className="p-0">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+        <div>
+          <p className="text-sm font-semibold">{c.name}</p>
+          <p className="text-xs text-muted-foreground">{c.domain}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <CompetitorStatusBadge c={c} />
+          {canEdit && (
+            <>
+              <Button
+                variant="ghost"
+                onClick={() => onRescan(c.id)}
+                disabled={busy || c.status === 'queued' || c.status === 'running'}
+                className="inline-flex min-h-0 items-center gap-1.5 px-2.5 py-1.5 text-xs"
+              >
+                <ClockCounterClockwise size={13} weight="bold" /> Re-scan
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => onRemove(c.id, c.name)}
+                disabled={busy}
+                className="inline-flex min-h-0 items-center gap-1.5 px-2.5 py-1.5 text-xs text-destructive"
+              >
+                <Trash size={13} weight="bold" /> Remove
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="p-4">
+        {c.status === 'none' || c.status === 'queued' || c.status === 'running' ? (
+          <p className="text-sm text-muted-foreground">
+            {c.status === 'running' ? 'Crawl running…' : 'Crawl queued — this can take a minute.'}
+          </p>
+        ) : c.status === 'robots_blocked' ? (
+          <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <Lock size={14} /> This domain&rsquo;s robots.txt blocks our crawler. We don&rsquo;t work around
+            that, so there&rsquo;s nothing to show.
+          </p>
+        ) : c.status === 'error' ? (
+          <p className="text-sm text-destructive">Crawl failed{c.error ? `: ${c.error}` : ''}.</p>
+        ) : (
+          <div className="flex flex-col gap-4">
+            {c.scores && (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {(Object.keys(COMPETITOR_SCORE_LABELS) as Array<keyof typeof COMPETITOR_SCORE_LABELS>).map((k) => {
+                  const value = c.scores![k];
+                  const gap = c.gaps?.[k] ?? null;
+                  return (
+                    <Bar
+                      key={k}
+                      label={COMPETITOR_SCORE_LABELS[k]}
+                      valueText={value ?? '—'}
+                      percent={value ?? 0}
+                      tone={value != null ? healthTone(value) : 'muted'}
+                      sub={
+                        gap == null ? undefined
+                          : gap > 0 ? `${gap} ahead of you`
+                          : gap < 0 ? `${Math.abs(gap)} behind you`
+                          : 'tied with you'
+                      }
+                    />
+                  );
+                })}
+              </div>
+            )}
+
+            {(c.content_gap.length > 0 || c.content_ahead.length > 0) && (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {c.content_gap.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Topics they cover that you don&rsquo;t
+                    </p>
+                    <ul className="mt-1 space-y-0.5">
+                      {c.content_gap.map((p) => (
+                        <li key={p.url} className="truncate text-sm text-destructive" title={p.url}>{p.title ?? p.url}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {c.content_ahead.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Topics you cover that they don&rsquo;t
+                    </p>
+                    <ul className="mt-1 space-y-0.5">
+                      {c.content_ahead.map((p) => (
+                        <li key={p.url} className="truncate text-sm text-success" title={p.url}>{p.title ?? p.url}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-x-6 gap-y-2 border-t border-border pt-3 text-xs text-muted-foreground">
+              {c.schema_gap.length > 0 && (
+                <span>Schema they have, you don&rsquo;t: <span className="text-destructive">{c.schema_gap.join(', ')}</span></span>
+              )}
+              {c.schema_ahead.length > 0 && (
+                <span>Schema you have, they don&rsquo;t: <span className="text-success">{c.schema_ahead.join(', ')}</span></span>
+              )}
+              {c.avg_response_ms != null && <span>Avg. response: {c.avg_response_ms}ms</span>}
+              {c.mobile_viewport && (
+                <span>Mobile viewport tag: {c.mobile_viewport.pages_with}/{c.mobile_viewport.pages_checked} pages</span>
+              )}
+              {c.sitemap_page_count != null && (
+                <span>Sitemap: {c.sitemap_page_count} {c.sitemap_is_index ? 'sub-sitemap(s)' : 'page(s)'} listed</span>
+              )}
+              <span>{c.pages_crawled} page(s) crawled{c.crawled_at ? ` · ${new Date(c.crawled_at).toLocaleDateString()}` : ''}</span>
+            </div>
+          </div>
+        )}
+      </div>
     </Card>
+  );
+}
+
+function CompetitorStatusBadge({ c }: { c: CompetitorComparisonEntry }) {
+  const label: Record<CompetitorComparisonEntry['status'], string> = {
+    none: 'Not yet scanned', queued: 'Queued', running: 'Running',
+    ok: 'Scanned', error: 'Failed', robots_blocked: 'Blocked by robots.txt',
+  };
+  const tone =
+    c.status === 'ok' ? 'success'
+    : c.status === 'error' ? 'destructive'
+    : c.status === 'robots_blocked' ? 'warning'
+    : 'muted';
+  return (
+    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${toneSoft[tone]}`}>
+      {label[c.status]}
+    </span>
   );
 }
 

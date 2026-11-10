@@ -19,6 +19,7 @@ import traceback
 
 import psycopg
 
+import competitors
 import coverage
 import db
 import gsc
@@ -31,7 +32,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("vx.worker")
 
-KINDS = ["seo.crawl", "seo.gsc_sync"]
+KINDS = ["seo.crawl", "seo.gsc_sync", "seo.competitor_crawl"]
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "10"))
 _stop = False
 
@@ -173,6 +174,9 @@ def persist(conn, org_id: str, site: dict, out, issues, scores, job_id: int, tri
 def run_job(conn, job: dict) -> None:
     if job["kind"] == "seo.gsc_sync":
         gsc.run(conn, job)
+        return
+    if job["kind"] == "seo.competitor_crawl":
+        competitors.run_competitor_crawl_job(conn, job)
         return
     run_crawl_job(conn, job)
 

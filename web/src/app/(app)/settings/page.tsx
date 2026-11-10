@@ -37,6 +37,7 @@ const FEATURE_LABEL: Record<AIFeature, string> = {
   reply_classification: 'Grow reply classification',
   followup_assistant: 'Operate follow-up drafting',
   seo_issue_fix: 'ScaleSEO issue fixes',
+  competitor_critique: 'ScaleSEO competitor critique',
 };
 
 export default function SettingsPage() {

@@ -293,6 +293,91 @@ export default async function aiRoutes(app: FastifyInstance) {
     await streamEventsToSSE(reply, gen);
   });
 
+  // ---- ScaleSEO: Competitor Analysis critique -------------------------------
+  // Extends the same SEO Assistant persona/guardrails as seo-recommendations
+  // above — no new agent, no new cost tier, same cap-exceeded behavior.
+  // Grounded strictly in the client's own latest crawl (seo_pages/seo_scores,
+  // the same source /seo/competitors/:siteId/comparison reads) and each
+  // tracked competitor's latest seo_competitor_crawls row — never anything
+  // about rankings, traffic or backlinks, since the crawl itself never
+  // measured those either.
+  app.post('/ai/competitor-critique/stream', { preHandler: moduleWriteGate('scaleseo') }, async (req, reply) => {
+    req.requireRole('viewer');
+    const orgId = req.ctx.orgId!;
+    const feature = 'competitor_critique' as const;
+    const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.body);
+
+    const { prompt, ctx } = await req.db(async (q) => {
+      const context = await resolveAIContext(q, orgId, feature);
+      const org = await q.one<{ name: string; vertical: string | null }>(
+        `SELECT name, vertical FROM organizations WHERE id = app.current_org()`,
+      );
+
+      const latest = await q.one<{ crawl_id: number }>(
+        `SELECT crawl_id FROM seo_scores WHERE site_id = $1 ORDER BY computed_at DESC LIMIT 1`,
+        [siteId],
+      );
+      if (!latest) return { prompt: null, ctx: context };
+
+      const clientScore = await q.one<{
+        technical: number | null; content: number | null; ai_visibility: number | null; performance: number | null;
+      }>(
+        `SELECT technical, content, ai_visibility, performance FROM seo_scores WHERE crawl_id = $1`,
+        [latest.crawl_id],
+      );
+      const clientPages = await q.rows<{ url: string; title: string | null; h1: string | null; schema_types: string[] | null }>(
+        `SELECT url, title, h1, schema_types FROM seo_pages WHERE crawl_id = $1 AND status_code = 200 LIMIT 25`,
+        [latest.crawl_id],
+      );
+
+      const competitors = await q.rows<{
+        id: string; name: string; domain: string;
+        status: string | null; technical: number | null; content: number | null;
+        local: number | null; performance: number | null;
+        summary: { pages?: Array<{ url: string; title: string | null; h1: string | null }>; schema_types?: string[] } | null;
+      }>(
+        `SELECT c.id, c.name, c.domain, cr.status, cr.technical, cr.content, cr.local, cr.performance, cr.summary
+           FROM seo_competitors c
+      LEFT JOIN LATERAL (
+                  SELECT * FROM seo_competitor_crawls
+                   WHERE competitor_id = c.id ORDER BY crawled_at DESC LIMIT 1
+                ) cr ON true
+          WHERE c.site_id = $1 AND c.is_tracked`,
+        [siteId],
+      );
+      const scanned = competitors.filter((c) => c.status === 'ok');
+      if (scanned.length === 0) return { prompt: null, ctx: context };
+
+      return { prompt: buildCompetitorCritiquePrompt(org, clientScore, clientPages, scanned), ctx: context };
+    });
+
+    if (!prompt) {
+      await streamEventsToSSE(reply, staticEvents(
+        'Add at least one competitor and wait for its first crawl to finish — I need your own latest ' +
+        'scan and a completed competitor crawl to compare them.',
+      ));
+      return;
+    }
+    if (ctx.capExceeded) {
+      await streamEventsToSSE(reply, staticEvents(CAP_MESSAGE));
+      return;
+    }
+
+    const gen = streamAI({
+      orgId,
+      feature,
+      system: prompt.system,
+      messages: [{ role: 'user', content: prompt.user }],
+      maxTokens: 800,
+      providerPreference: ctx.providerPreference,
+      clients: ctx.clients,
+      modelOverride: ctx.modelOverride,
+      onUsage: (usage) => req.db((q) => logAiUsage(q, { orgId, feature, ...usage })),
+    });
+
+    await streamEventsToSSE(reply, gen);
+  });
+
   // ---- ScaleSEO: AI Page Builder --------------------------------------------
   // Drafts body copy only — title/meta/H1/slug stay real form fields the
   // person fills in, not AI-generated, since a small business owner reading
@@ -870,6 +955,54 @@ function buildSeoRecommendationsPrompt(
   const user = issueLines.length > 0 || pageLines.length > 0
     ? `${sections.join('\n\n')}\n\nWhat should I fix first?`
     : `${scoreLine}\n\nNo specific issues were flagged in the latest crawl. Briefly say what's working and what to watch.`;
+
+  return { system, user };
+}
+
+function buildCompetitorCritiquePrompt(
+  org: { name: string; vertical: string | null } | null,
+  clientScore: { technical: number | null; content: number | null; ai_visibility: number | null; performance: number | null } | null,
+  clientPages: Array<{ url: string; title: string | null; h1: string | null; schema_types: string[] | null }>,
+  competitors: Array<{
+    name: string; domain: string;
+    technical: number | null; content: number | null; local: number | null; performance: number | null;
+    summary: { pages?: Array<{ url: string; title: string | null; h1: string | null }>; schema_types?: string[] } | null;
+  }>,
+): { system: string; user: string } {
+  const system =
+    `You are the SEO Assistant inside ${org?.name ?? 'this business'}'s Venturelyx ScaleSEO module` +
+    `${org?.vertical ? ` (a ${org.vertical} business)` : ''}. ` +
+    `You're writing for the owner, not an SEO specialist — plain language, no jargon. ` +
+    `Ground every claim strictly in the crawl data given; never invent pages, scores, rankings, traffic, ` +
+    `or backlink claims — none of that was measured, this is a same-page crawl comparison only. ` +
+    `Turn it into a ranked action list: 3-6 items, most impactful first, each one line in the form ` +
+    `"they do X, you don't — here's what to do", citing a real competitor by name and a real score, ` +
+    `schema type, or page title from the data. Note severity (high/medium/low) for each. ` +
+    `No preamble, no sign-off, just the list.`;
+
+  const clientSchema = new Set<string>();
+  for (const p of clientPages) for (const t of p.schema_types ?? []) clientSchema.add(t);
+  const clientLine = clientScore
+    ? `Our scores (0-100): technical ${clientScore.technical ?? '—'}, content ${clientScore.content ?? '—'}, ` +
+      `local/AI visibility ${clientScore.ai_visibility ?? '—'}, performance ${clientScore.performance ?? '—'}. ` +
+      `Schema types present: ${clientSchema.size ? [...clientSchema].join(', ') : 'none'}.`
+    : 'No crawl of our own site yet.';
+  const clientPageLines = clientPages.slice(0, 15).map((p) => `- ${p.title ?? p.url}`);
+
+  const competitorLines = competitors.map((c) => {
+    const schema = c.summary?.schema_types ?? [];
+    const pages = (c.summary?.pages ?? []).slice(0, 15).map((p) => `  - ${p.title ?? p.url}`);
+    return (
+      `${c.name} (${c.domain}): scores technical ${c.technical ?? '—'}, content ${c.content ?? '—'}, ` +
+      `local/AI visibility ${c.local ?? '—'}, performance ${c.performance ?? '—'}. ` +
+      `Schema types: ${schema.length ? schema.join(', ') : 'none'}.\nTheir pages:\n${pages.join('\n')}`
+    );
+  });
+
+  const user =
+    `${clientLine}\nOur pages:\n${clientPageLines.join('\n')}\n\n` +
+    `Competitors:\n\n${competitorLines.join('\n\n')}\n\n` +
+    `What should we do to close the gap with these competitors?`;
 
   return { system, user };
 }

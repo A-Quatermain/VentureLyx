@@ -55,6 +55,11 @@ class PageResult:
     response_ms: int | None = None
     depth: int = 0
     error: str | None = None
+    # Additive, read by workers/seo/competitors.py's summary only — nothing
+    # in detect_issues/compute_scores or persist() (owned-site path) reads
+    # either field, so owned-site crawling and scoring are unchanged.
+    html_bytes: int | None = None
+    has_viewport_meta: bool = False
     # AI/local visibility signals (workers/seo/scoring.py's compute_ai_visibility) —
     # kept on PageResult rather than persisted to seo_pages: these feed a
     # site-wide score and a handful of site-wide issue codes, not a per-page
@@ -290,6 +295,8 @@ def parse_page(url: str, html: str, base_url: str, depth: int) -> tuple[PageResu
     p.meta_robots = (mr.attributes.get("content") or "").strip().lower() if mr else None
     p.indexable = not (p.meta_robots and "noindex" in p.meta_robots)
 
+    p.has_viewport_meta = tree.css_first('meta[name="viewport"]') is not None
+
     body = tree.css_first("body")
     text = _text_of(body)
     p.word_count = len(text.split())
@@ -376,6 +383,7 @@ async def _fetch_httpx(
     page, links = parse_page(str(r.url), r.text, base, depth)
     page.status_code = r.status_code
     page.response_ms = elapsed
+    page.html_bytes = len(r.content)
     page.redirect_hops = len(r.history)
     if r.history:
         page.redirect_to = str(r.url)

@@ -24,12 +24,14 @@ export type Feature =
   | 'ai_visibility_check'
   | 'reply_classification'
   | 'followup_assistant'
-  | 'seo_issue_fix';
+  | 'seo_issue_fix'
+  | 'competitor_critique';
 
 export const FEATURES: Feature[] = [
   'seo_recommendations', 'page_generation', 'review_response',
   'next_best_action', 'metric_explanation', 'business_blueprint', 'sequence_writing',
   'ai_visibility_check', 'reply_classification', 'followup_assistant', 'seo_issue_fix',
+  'competitor_critique',
 ];
 
 export type Provider = 'anthropic' | 'openai';
@@ -59,6 +61,9 @@ export const FEATURE_TIER: Record<Feature, Tier> = {
   // A title/meta description or a page's structured data — same short,
   // well-defined shape as review_response.
   seo_issue_fix: 'primary',
+  // Same shape as seo_recommendations (a ranked to-do list from crawl
+  // data) — just fed two crawls (ours + a competitor's) instead of one.
+  competitor_critique: 'primary',
 };
 
 // claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5-20251001 are the current

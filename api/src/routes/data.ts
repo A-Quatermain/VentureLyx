@@ -22,6 +22,102 @@ import { computeGrowthScore } from '../lib/growthScore.js';
 // there's nothing currently to gate on them even if they were Operate's.
 const SCALESEO_WRITE = { preHandler: moduleWriteGate('scaleseo') };
 
+// ---- ScaleSEO: competitor domain validation ------------------------------
+// docs/specs/scaleseo-competitors.md §1 — manual entry only, v1. Strips a
+// pasted scheme/path/www so "https://www.rival.com/" and "rival.com" land
+// as the same tracked domain (and collide on the real UNIQUE constraint
+// instead of silently duplicating).
+function normalizeCompetitorDomain(input: string): string {
+  let d = input.trim().toLowerCase();
+  d = d.replace(/^https?:\/\//, '').split(/[/?#]/)[0] ?? d;
+  d = d.replace(/^www\./, '').replace(/\.$/, '');
+  return d;
+}
+const DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/;
+
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return url.toLowerCase();
+  }
+}
+
+interface CompetitorCrawlSummary {
+  pages?: Array<{ url: string; title: string | null; h1: string | null; word_count: number }>;
+  schema_types?: string[];
+  avg_response_ms?: number | null;
+  avg_page_weight_bytes?: number | null;
+  viewport_pages?: number;
+  pages_checked?: number;
+  sitemap_page_count?: number | null;
+  sitemap_is_index?: boolean | null;
+  robots_blocked_links?: number;
+}
+
+interface ClientComparisonSide {
+  scanned: boolean;
+  scores: { technical: number | null; content: number | null; local: number | null; performance: number | null } | null;
+  schema_types: string[];
+  avg_response_ms: number | null;
+  avg_internal_links: number | null;
+  pages: Array<{ url: string; title: string | null; h1: string | null }>;
+}
+
+// competitor - client: positive means the competitor is ahead on that
+// sub-score, negative means the client is. null whenever either side has
+// no crawl to compare, rather than treating a missing score as a zero.
+function diff(competitor: number | null, client: number | null): number | null {
+  return competitor != null && client != null ? competitor - client : null;
+}
+
+// A rough but honest topic-overlap heuristic over title+h1 only (never the
+// full body — this is a quick scannable signal, not the analysis; the AI
+// critique below reads the raw page lists directly and does the real
+// qualitative comparison). A handful of pure function words is filtered so
+// two unrelated pages don't "match" purely on "the"/"with"/"your".
+const TOPIC_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'this', 'that', 'your', 'our', 'are',
+  'was', 'were', 'have', 'has', 'will', 'can', 'get', 'all', 'more', 'best',
+  'about', 'into', 'what', 'when', 'where', 'which', 'their', 'there',
+]);
+
+function tokenize(text: string): Set<string> {
+  const words = text.toLowerCase().match(/[a-z0-9]{4,}/g) ?? [];
+  return new Set(words.filter((w) => !TOPIC_STOPWORDS.has(w)));
+}
+
+function hasOverlap(a: Set<string>, b: Set<string>): boolean {
+  for (const x of a) if (b.has(x)) return true;
+  return false;
+}
+
+function topicGaps(
+  clientPages: Array<{ url: string; title: string | null; h1: string | null }>,
+  competitorPages: Array<{ url: string; title: string | null; h1: string | null }>,
+): { gap: Array<{ url: string; title: string | null }>; ahead: Array<{ url: string; title: string | null }> } {
+  const clientTokens = clientPages.map((p) => tokenize(`${p.title ?? ''} ${p.h1 ?? ''}`));
+  const compTokens = competitorPages.map((p) => tokenize(`${p.title ?? ''} ${p.h1 ?? ''}`));
+
+  const gap = competitorPages
+    .filter((_p, i) => {
+      const tokens = compTokens[i];
+      return !!tokens && tokens.size > 0 && !clientTokens.some((s) => hasOverlap(s, tokens));
+    })
+    .slice(0, 8)
+    .map((p) => ({ url: p.url, title: p.title }));
+
+  const ahead = clientPages
+    .filter((_p, i) => {
+      const tokens = clientTokens[i];
+      return !!tokens && tokens.size > 0 && !compTokens.some((s) => hasOverlap(s, tokens));
+    })
+    .slice(0, 8)
+    .map((p) => ({ url: p.url, title: p.title }));
+
+  return { gap, ahead };
+}
+
 export default async function dataRoutes(app: FastifyInstance) {
   // Command Center lives here and was never module-gated (lib/moduleAccess.ts's
   // own header says so explicitly) — this is why a pre-payment org needs its
@@ -748,6 +844,251 @@ export default async function dataRoutes(app: FastifyInstance) {
         [siteId],
       ),
     );
+  });
+
+  // ---- ScaleSEO: add a tracked competitor (manual entry, max 3/site) -------
+  app.post('/seo/competitors/:siteId', SCALESEO_WRITE, async (req, reply) => {
+    req.requireRole('manager');
+    const sess = req.requireAuth();
+    const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
+    const body = z.object({
+      name: z.string().trim().min(1).max(200),
+      domain: z.string().trim().min(1).max(253),
+    }).parse(req.body);
+
+    const domain = normalizeCompetitorDomain(body.domain);
+    if (!DOMAIN_RE.test(domain)) {
+      throw new HttpError(400, "That doesn't look like a real domain, e.g. competitor.com", 'invalid_domain');
+    }
+
+    return req.db(async (q) => {
+      const site = await q.one<{ id: string; url: string }>(`SELECT id, url FROM seo_sites WHERE id = $1`, [siteId]);
+      if (!site) throw new HttpError(404, 'Site not found', 'not_found');
+      if (domain === hostnameOf(site.url)) {
+        throw new HttpError(400, "That's this site's own domain, not a competitor's", 'own_domain');
+      }
+
+      const limit = await q.one<{ count: number }>(
+        `SELECT count(*)::int AS count FROM seo_competitors WHERE site_id = $1 AND is_tracked`, [siteId],
+      );
+      if ((limit?.count ?? 0) >= 3) {
+        throw new HttpError(400, 'Up to 3 competitors per site — remove one before adding another', 'limit_reached');
+      }
+
+      let competitor: { id: string } | null;
+      try {
+        competitor = await q.one<{ id: string }>(
+          `INSERT INTO seo_competitors (org_id, site_id, name, domain, is_tracked, discovered)
+           VALUES (app.current_org(), $1, $2, $3, true, false)
+           RETURNING id`,
+          [siteId, body.name, domain],
+        );
+      } catch (err) {
+        if ((err as { constraint?: string }).constraint === 'seo_competitors_org_id_site_id_domain_key') {
+          throw new HttpError(409, 'Already tracking this domain for this site', 'duplicate');
+        }
+        throw err;
+      }
+      if (!competitor) throw new HttpError(500, 'Could not add this competitor', 'internal_error');
+
+      // Same job_queue + dedupe_key pattern as /seo/crawl/:siteId — the
+      // worker-side cap/dedupe behavior (SKIP LOCKED, ON CONFLICT DO
+      // NOTHING) is identical, just a different job kind and a different
+      // table on the other end of the FK.
+      const job = await q.one<{ id: number }>(
+        `INSERT INTO job_queue (org_id, kind, payload, dedupe_key, priority)
+         VALUES (app.current_org(), 'seo.competitor_crawl',
+                 jsonb_build_object('competitor_id', $1::text, 'trigger', 'add'),
+                 'seo.competitor_crawl:' || $1::text, 60)
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+        [competitor.id],
+      );
+
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'seo.competitor.create',
+        entityType: 'seo_competitors', entityId: competitor.id, ip: req.ip, diff: { name: body.name, domain },
+      });
+
+      reply.status(201);
+      return { id: competitor.id, crawlQueued: !!job };
+    });
+  });
+
+  // ---- ScaleSEO: remove a tracked competitor --------------------------------
+  app.delete('/seo/competitors/:competitorId', SCALESEO_WRITE, async (req, reply) => {
+    req.requireRole('manager');
+    const sess = req.requireAuth();
+    const { competitorId } = z.object({ competitorId: z.string().uuid() }).parse(req.params);
+
+    await req.db(async (q) => {
+      const competitor = await q.one<{ id: string; name: string }>(
+        `SELECT id, name FROM seo_competitors WHERE id = $1`, [competitorId],
+      );
+      if (!competitor) throw new HttpError(404, 'Competitor not found', 'not_found');
+      // Cascades seo_competitor_crawls and seo_competitor_rankings — both
+      // FK ON DELETE CASCADE to seo_competitors (037/003).
+      await q.exec(`DELETE FROM seo_competitors WHERE id = $1`, [competitorId]);
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'seo.competitor.delete',
+        entityType: 'seo_competitors', entityId: competitorId, ip: req.ip, diff: { name: competitor.name },
+      });
+    });
+    reply.status(204);
+  });
+
+  // ---- ScaleSEO: manual "Re-scan" ------------------------------------------
+  app.post('/seo/competitors/:competitorId/rescan', SCALESEO_WRITE, async (req) => {
+    req.requireRole('manager');
+    const { competitorId } = z.object({ competitorId: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const competitor = await q.one<{ id: string }>(
+        `SELECT id FROM seo_competitors WHERE id = $1 AND is_tracked`, [competitorId],
+      );
+      if (!competitor) return { queued: false, reason: 'Competitor not found or not tracked' };
+
+      const job = await q.one<{ id: number }>(
+        `INSERT INTO job_queue (org_id, kind, payload, dedupe_key, priority)
+         VALUES (app.current_org(), 'seo.competitor_crawl',
+                 jsonb_build_object('competitor_id', $1::text, 'trigger', 'manual'),
+                 'seo.competitor_crawl:' || $1::text, 60)
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+        [competitorId],
+      );
+      return job
+        ? { queued: true, jobId: job.id }
+        : { queued: false, reason: 'A check is already running for this competitor' };
+    });
+  });
+
+  // ---- ScaleSEO: competitor comparison view --------------------------------
+  // Everything needed to render the side-by-side comparison in one call:
+  // the client's own latest crawl (re-derived from seo_pages/seo_scores —
+  // no new column on either, so owned-site persist() stays untouched),
+  // each tracked competitor's latest seo_competitor_crawls row, and the
+  // gap computation itself (diff() for sub-scores, topicGaps()/schema sets
+  // for content/technical — both directions, per the spec).
+  app.get('/seo/competitors/:siteId/comparison', async (req) => {
+    req.requireRole('viewer');
+    const { siteId } = z.object({ siteId: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const latest = await q.one<{ crawl_id: number }>(
+        `SELECT crawl_id FROM seo_scores WHERE site_id = $1 ORDER BY computed_at DESC LIMIT 1`,
+        [siteId],
+      );
+
+      let client: ClientComparisonSide = {
+        scanned: false, scores: null, schema_types: [],
+        avg_response_ms: null, avg_internal_links: null, pages: [],
+      };
+
+      if (latest) {
+        const score = await q.one<{
+          technical: number | null; content: number | null;
+          ai_visibility: number | null; performance: number | null;
+        }>(
+          `SELECT technical, content, ai_visibility, performance FROM seo_scores WHERE crawl_id = $1`,
+          [latest.crawl_id],
+        );
+        const pages = await q.rows<{
+          url: string; title: string | null; h1: string | null;
+          response_ms: number | null; links_out_int: number | null; schema_types: string[] | null;
+        }>(
+          `SELECT url, title, h1, response_ms, links_out_int, schema_types
+             FROM seo_pages WHERE crawl_id = $1 AND status_code = 200`,
+          [latest.crawl_id],
+        );
+
+        const schemaSet = new Set<string>();
+        let respSum = 0, respN = 0, linkSum = 0, linkN = 0;
+        for (const p of pages) {
+          for (const t of p.schema_types ?? []) schemaSet.add(t);
+          if (p.response_ms != null) { respSum += p.response_ms; respN++; }
+          if (p.links_out_int != null) { linkSum += p.links_out_int; linkN++; }
+        }
+
+        client = {
+          scanned: true,
+          scores: {
+            technical: score?.technical ?? null, content: score?.content ?? null,
+            local: score?.ai_visibility ?? null, performance: score?.performance ?? null,
+          },
+          schema_types: [...schemaSet].sort(),
+          avg_response_ms: respN ? Math.round(respSum / respN) : null,
+          avg_internal_links: linkN ? Math.round((linkSum / linkN) * 10) / 10 : null,
+          pages: pages.slice(0, 25).map((p) => ({ url: p.url, title: p.title, h1: p.h1 })),
+        };
+      }
+
+      const tracked = await q.rows<{ id: string; name: string; domain: string }>(
+        `SELECT id, name, domain FROM seo_competitors WHERE site_id = $1 AND is_tracked ORDER BY name`,
+        [siteId],
+      );
+
+      const competitors = [];
+      for (const c of tracked) {
+        const pending = await q.one<{ state: string }>(
+          `SELECT state FROM job_queue WHERE dedupe_key = $1 AND state IN ('queued','running')
+            ORDER BY id DESC LIMIT 1`,
+          [`seo.competitor_crawl:${c.id}`],
+        );
+        const crawl = await q.one<{
+          status: string; error: string | null; crawled_at: string; pages_crawled: number;
+          technical: number | null; content: number | null; local: number | null; performance: number | null;
+          summary: CompetitorCrawlSummary | null;
+        }>(
+          `SELECT status, error, crawled_at, pages_crawled, technical, content, local, performance, summary
+             FROM seo_competitor_crawls WHERE competitor_id = $1 ORDER BY crawled_at DESC LIMIT 1`,
+          [c.id],
+        );
+
+        const status = pending ? pending.state : (crawl ? crawl.status : 'none');
+        const isOk = crawl?.status === 'ok';
+
+        let gaps: Record<'technical' | 'content' | 'local' | 'performance', number | null> | null = null;
+        let schemaGap: string[] = [], schemaAhead: string[] = [];
+        let contentGap: Array<{ url: string; title: string | null }> = [];
+        let contentAhead: Array<{ url: string; title: string | null }> = [];
+
+        if (isOk && client.scanned && client.scores) {
+          gaps = {
+            technical: diff(crawl!.technical, client.scores.technical),
+            content: diff(crawl!.content, client.scores.content),
+            local: diff(crawl!.local, client.scores.local),
+            performance: diff(crawl!.performance, client.scores.performance),
+          };
+          const compSchema = new Set(crawl!.summary?.schema_types ?? []);
+          const clientSchema = new Set(client.schema_types);
+          schemaGap = [...compSchema].filter((t) => !clientSchema.has(t)).sort();
+          schemaAhead = [...clientSchema].filter((t) => !compSchema.has(t)).sort();
+
+          const topics = topicGaps(client.pages, crawl!.summary?.pages ?? []);
+          contentGap = topics.gap;
+          contentAhead = topics.ahead;
+        }
+
+        competitors.push({
+          id: c.id, name: c.name, domain: c.domain, status,
+          crawled_at: crawl?.crawled_at ?? null, error: crawl?.error ?? null,
+          pages_crawled: crawl?.pages_crawled ?? 0,
+          scores: isOk ? { technical: crawl!.technical, content: crawl!.content, local: crawl!.local, performance: crawl!.performance } : null,
+          gaps,
+          schema_gap: schemaGap, schema_ahead: schemaAhead,
+          content_gap: contentGap, content_ahead: contentAhead,
+          avg_response_ms: crawl?.summary?.avg_response_ms ?? null,
+          mobile_viewport: crawl?.summary
+            ? { pages_with: crawl.summary.viewport_pages ?? 0, pages_checked: crawl.summary.pages_checked ?? 0 }
+            : null,
+          sitemap_page_count: crawl?.summary?.sitemap_page_count ?? null,
+          sitemap_is_index: crawl?.summary?.sitemap_is_index ?? null,
+        });
+      }
+
+      return { client, competitors };
+    });
   });
 
   // ---- ScaleSEO: crawl history ----------------------------------------------
