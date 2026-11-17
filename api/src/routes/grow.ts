@@ -3561,13 +3561,15 @@ export default async function growRoutes(app: FastifyInstance) {
       const mailboxes = await q.rows<{
         id: string; address: string; status: string; steady_cap: number;
         cap: number; sent_today: number;
+        health_steps_down: number; health_reason: string | null; health_evaluated_at: string | null;
       }>(
         `SELECT m.id, m.address, m.status, m.steady_cap,
                 grow_mailbox_daily_cap(m.*, (now() AT TIME ZONE $1)::date) AS cap,
                 count(msg.id) FILTER (
                   WHERE msg.status = 'sent'
                     AND (msg.sent_at AT TIME ZONE $1)::date = (now() AT TIME ZONE $1)::date
-                ) AS sent_today
+                ) AS sent_today,
+                m.health_steps_down, m.health_reason, m.health_evaluated_at
            FROM grow_mailboxes m
            LEFT JOIN grow_messages msg ON msg.mailbox_id = m.id
           WHERE m.status IN ('warming','active')
@@ -3576,21 +3578,38 @@ export default async function growRoutes(app: FastifyInstance) {
         [tz],
       );
 
-      // '*' is the fallback rule (see grow_domain_policies), listed as-is,
-      // not resolved against actual recipient domains — that resolution is
-      // scheduler.js's domainCapacity() job at plan time, not a stats read.
+      // Real per-domain usage, same fix as growScheduler.ts's domainCapacity()
+      // (same bug, found in the same pass: a LEFT JOIN on s.recipient_domain =
+      // p.domain can never match the '*' row, since no real recipient_domain
+      // is literally the string "*" — that row's own sent_today always read
+      // 0 no matter how much traffic fell through to it). Explicit policy
+      // rows are always shown (even at 0 used, so a configured-but-idle cap
+      // is still visible); domains with no explicit row show the top actual
+      // recipient domains by committed-today volume against the fallback cap.
       const domains = await q.rows<{ domain: string; daily_cap: number; sent_today: number }>(
-        `WITH sent AS (
+        `WITH committed AS (
            SELECT recipient_domain, count(*) AS n
              FROM grow_messages
-            WHERE status = 'sent'
-              AND (sent_at AT TIME ZONE $1)::date = (now() AT TIME ZONE $1)::date
+            WHERE status IN ('sent', 'sending', 'queued')
+              AND (COALESCE(sent_at, scheduled_at) AT TIME ZONE $1)::date = (now() AT TIME ZONE $1)::date
             GROUP BY recipient_domain
+         ), fallback_cap AS (
+           SELECT daily_cap FROM grow_domain_policies WHERE domain = '*'
          )
-         SELECT p.domain, p.daily_cap, COALESCE(s.n, 0) AS sent_today
-           FROM grow_domain_policies p
-           LEFT JOIN sent s ON s.recipient_domain = p.domain
-          ORDER BY p.domain`,
+         SELECT domain, daily_cap, sent_today FROM (
+           SELECT p.domain, p.daily_cap, COALESCE(c.n, 0) AS sent_today, 1 AS rank_group
+             FROM grow_domain_policies p
+        LEFT JOIN committed c ON c.recipient_domain = p.domain
+            WHERE p.domain <> '*'
+            UNION ALL
+           SELECT c.recipient_domain AS domain,
+                  COALESCE((SELECT daily_cap FROM fallback_cap), 25) AS daily_cap,
+                  c.n AS sent_today, 2 AS rank_group
+             FROM committed c
+            WHERE NOT EXISTS (SELECT 1 FROM grow_domain_policies p WHERE p.domain = c.recipient_domain)
+         ) combined
+         ORDER BY rank_group, sent_today DESC
+         LIMIT 15`,
         [tz],
       );
 
@@ -3606,6 +3625,9 @@ export default async function growRoutes(app: FastifyInstance) {
           id: m.id, address: m.address, status: m.status,
           cap: m.cap, sent_today: m.sent_today,
           remaining: Math.max(0, m.cap - m.sent_today),
+          health_steps_down: m.health_steps_down,
+          health_reason: m.health_reason,
+          health_evaluated_at: m.health_evaluated_at,
         })),
         domain_capacity: domains.map((d) => ({
           domain: d.domain, daily_cap: d.daily_cap, sent_today: d.sent_today,

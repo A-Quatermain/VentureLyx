@@ -1239,6 +1239,13 @@ export interface GrowMailboxCapacity {
   cap: number;
   sent_today: number;
   remaining: number;
+  // Warmup health gate (docs/specs/grow-warmup-coach-spec.md section 3) —
+  // 0 = healthy, cap is the full warmup-ramp value above. >0 = the ramp's
+  // own cap is being held this many 5/day steps lower; health_reason says
+  // why (a live violation, or how far through the recovery week it is).
+  health_steps_down: number;
+  health_reason: string | null;
+  health_evaluated_at: string | null;
 }
 
 export interface GrowDomainCapacity {

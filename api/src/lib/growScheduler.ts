@@ -159,32 +159,60 @@ async function mailboxCapacity(q: Querier, timezone: string): Promise<MailboxCap
     .filter((r) => r.remaining > 0);
 }
 
-/** Remaining sends per recipient domain today. '*' is the fallback rule
- *  (db/migrations/009_grow.sql grow_domain_policies). */
-async function domainCapacity(
-  q: Querier, campaign: GrowCampaign,
-): Promise<{ caps: Map<string, number>; fallback: number }> {
-  const rows = await q.rows<{ domain: string; daily_cap: number; sent_today: string | number }>(
-    `WITH sent AS (
-       SELECT recipient_domain, COUNT(*) AS n
-         FROM grow_messages
-        WHERE status = 'sent'
-          AND (sent_at AT TIME ZONE $1)::date = (now() AT TIME ZONE $1)::date
-        GROUP BY recipient_domain
-     )
-     SELECT p.domain, p.daily_cap, COALESCE(s.n, 0) AS sent_today
-       FROM grow_domain_policies p
-       LEFT JOIN sent s ON s.recipient_domain = p.domain`,
+export interface DomainCapacity {
+  /** Explicit per-domain daily_cap overrides (never includes the '*' row itself). */
+  explicitCaps: Map<string, number>;
+  /** The '*' row's daily_cap — grow_domain_policies' own row is expected;
+   *  25 only covers an org with none configured yet. */
+  fallbackCap: number;
+  /** recipient_domain -> count already committed TODAY (sent/sending/queued,
+   *  across every campaign and every planning tick so far) — real daily
+   *  usage, keyed dynamically by whatever domains actually have traffic,
+   *  not by which domains happen to have their own grow_domain_policies row.
+   *  This is what makes the '*' fallback cap a real per-domain ceiling: a
+   *  domain with no explicit row still gets its own live count checked
+   *  against fallbackCap, instead of every unlisted domain being compared
+   *  against a literal row whose domain column is the string "*" (which
+   *  can never equal a real recipient_domain and always joined to nothing).
+   *  Bug found live: the old query's LEFT JOIN ... ON s.recipient_domain =
+   *  p.domain could never match the '*' row, so its own sent_today always
+   *  read 0 — both here and in the near-identical stats query
+   *  (routes/grow.ts's /grow/stats), fixed the same way in the same pass. */
+  committedToday: Map<string, number>;
+}
+
+/** Real per-recipient-domain usage for today, org-wide (not scoped to this
+ *  one campaign — a domain's cap is a shared ceiling across every campaign
+ *  sending to it, same as a mailbox). commitCampaignPlan() combines
+ *  committedToday (this function, the DB's view as of the start of this
+ *  tick) with its own in-memory domainUsed counter (this tick's own picks
+ *  so far) to get the true running total without re-querying per pick. */
+async function domainCapacity(q: Querier, campaign: GrowCampaign): Promise<DomainCapacity> {
+  const policyRows = await q.rows<{ domain: string; daily_cap: number }>(
+    `SELECT domain, daily_cap FROM grow_domain_policies`,
+  );
+  const explicitCaps = new Map<string, number>();
+  let fallbackCap = 25;
+  for (const r of policyRows) {
+    if (r.domain === '*') fallbackCap = r.daily_cap;
+    else explicitCaps.set(r.domain, r.daily_cap);
+  }
+
+  // sent/sending/queued — same "committed today" definition mailboxCapacity()
+  // already uses for the mailbox side of this same ceiling, so a message
+  // that's queued but not yet sent consumes its recipient domain's cap the
+  // same moment it consumes its mailbox's.
+  const committedRows = await q.rows<{ recipient_domain: string; n: string | number }>(
+    `SELECT recipient_domain, COUNT(*) AS n
+       FROM grow_messages
+      WHERE status IN ('sent', 'sending', 'queued')
+        AND (COALESCE(sent_at, scheduled_at) AT TIME ZONE $1)::date = (now() AT TIME ZONE $1)::date
+      GROUP BY recipient_domain`,
     [campaign.timezone],
   );
+  const committedToday = new Map(committedRows.map((r) => [r.recipient_domain, Number(r.n)]));
 
-  const caps = new Map<string, number>();
-  let fallback = 25; // grow_domain_policies' own '*' row is expected; this only covers an org with none configured yet.
-  for (const r of rows) {
-    if (r.domain === '*') fallback = r.daily_cap;
-    else caps.set(r.domain, Math.max(0, r.daily_cap - Number(r.sent_today)));
-  }
-  return { caps, fallback };
+  return { explicitCaps, fallbackCap, committedToday };
 }
 
 /** Live bounce and complaint rates for this campaign. Returns a reason
@@ -383,68 +411,66 @@ export interface CampaignDemand {
   demand: number;
 }
 
-/** Splits each mailbox's remaining capacity across every campaign still
- *  competing for it. This decides nothing about the hard ceiling — that's
- *  entirely mailboxCapacity()'s committed_today count and claimDue()'s
- *  send-time backstop, both unchanged and untouched by this function. All
- *  this does is divide whatever is already under that ceiling.
+/** Splits the whole mailbox pool's remaining capacity across every
+ *  campaign still competing for it. This decides nothing about the hard
+ *  ceiling — that's entirely mailboxCapacity()'s committed_today count and
+ *  claimDue()'s send-time backstop, both unchanged and untouched by this
+ *  function. All this does is divide whatever is already under that
+ *  ceiling.
  *
- *  equal_share_redistribute (the only policy today): walks the mailboxes
- *  in a fixed order, carrying one running "remaining demand" per campaign
- *  across all of them — so a campaign's total allocation across the
- *  WHOLE pool is capped by its total demand, not just re-capped
- *  independently at every single mailbox. For each mailbox: split its
- *  capacity evenly across whichever campaigns still have demand left,
- *  then hand out whatever's left over — because a campaign's demand fell
- *  under its equal share, or just from the floor division's remainder —
- *  one at a time, round-robin, to campaigns that still want more, until
- *  either the mailbox runs out or every campaign's demand does. No
- *  capacity sits idle while a campaign still wants it; no campaign sits
- *  at zero while the pool still has room for it. */
+ *  equal_share_redistribute (the only policy today): a DOUBLE round-robin,
+ *  one slot at a time — which mailbox gets the next slot, and which
+ *  campaign that slot goes to — both rotating, both dropping out once
+ *  exhausted (capacity for a mailbox, demand for a campaign), without
+ *  resetting the other's position. No capacity sits idle while a
+ *  campaign still wants it; no campaign sits at zero while the pool still
+ *  has room for it; and critically, no mailbox sits at zero while an
+ *  EARLIER-sorting mailbox absorbs a whole campaign's demand by itself.
+ *
+ *  Previously this walked mailboxes in a fixed (id) order and filled each
+ *  one to its own full remaining capacity before moving to the next —
+ *  correct for splitting ONE mailbox across competing campaigns, but it
+ *  meant that whenever total demand was under the pool's total capacity
+ *  (the common case, not the exception), the first few mailboxes in that
+ *  fixed order absorbed all of it and every later mailbox got nothing,
+ *  however much capacity it had free. Confirmed live on a real org: five
+ *  50/day mailboxes, ~167 total attempts one day, landed 51/52/50/19/0 —
+ *  the last mailbox in id-sort order never touched. Round-robining one
+ *  slot at a time instead spreads the same 167 to roughly 33-34 each. */
 export function allocateMailboxCapacity(
   mailboxes: MailboxCapacity[], demands: CampaignDemand[],
 ): Map<string, Map<string, number>> {
   const allocations = new Map<string, Map<string, number>>();
-  const remainingDemand = new Map(demands.map((d) => [d.campaignId, d.demand]));
   const orderedMailboxes = [...mailboxes].sort((a, b) => a.id.localeCompare(b.id));
+  for (const mailbox of orderedMailboxes) allocations.set(mailbox.id, new Map());
 
-  for (const mailbox of orderedMailboxes) {
-    let capacity = mailbox.remaining;
-    const perCampaign = new Map<string, number>();
-    allocations.set(mailbox.id, perCampaign);
-    if (capacity <= 0) continue;
+  const remainingCapacity = new Map(orderedMailboxes.map((m) => [m.id, m.remaining]));
+  const remainingDemand = new Map(demands.map((d) => [d.campaignId, d.demand]));
 
-    const eligible = demands
-      .map((d) => d.campaignId)
-      .filter((id) => (remainingDemand.get(id) ?? 0) > 0);
-    if (eligible.length === 0) continue;
+  let mailboxQueue = orderedMailboxes.map((m) => m.id).filter((id) => (remainingCapacity.get(id) ?? 0) > 0);
+  let campaignQueue = demands.map((d) => d.campaignId).filter((id) => (remainingDemand.get(id) ?? 0) > 0);
+  let mi = 0;
+  let ci = 0;
 
-    const equalShare = Math.floor(capacity / eligible.length);
-    if (equalShare > 0) {
-      for (const id of eligible) {
-        const give = Math.min(equalShare, remainingDemand.get(id)!);
-        perCampaign.set(id, (perCampaign.get(id) ?? 0) + give);
-        remainingDemand.set(id, remainingDemand.get(id)! - give);
-        capacity -= give;
-      }
+  while (mailboxQueue.length > 0 && campaignQueue.length > 0) {
+    const mailboxId = mailboxQueue[mi % mailboxQueue.length]!;
+    const campaignId = campaignQueue[ci % campaignQueue.length]!;
+
+    const perCampaign = allocations.get(mailboxId)!;
+    perCampaign.set(campaignId, (perCampaign.get(campaignId) ?? 0) + 1);
+    remainingCapacity.set(mailboxId, remainingCapacity.get(mailboxId)! - 1);
+    remainingDemand.set(campaignId, remainingDemand.get(campaignId)! - 1);
+
+    mi += 1;
+    ci += 1;
+
+    if ((remainingCapacity.get(mailboxId) ?? 0) <= 0) {
+      mailboxQueue = mailboxQueue.filter((id) => id !== mailboxId);
+      if (mailboxQueue.length > 0) mi %= mailboxQueue.length;
     }
-
-    // Round-robin the leftover (under-share campaigns, or just the floor
-    // division's remainder) to whoever still has demand. Removing an
-    // exhausted campaign from the queue in place, without advancing the
-    // pointer, keeps the rotation fair as campaigns drop out.
-    let queue = eligible.filter((id) => (remainingDemand.get(id) ?? 0) > 0);
-    let qi = 0;
-    while (capacity > 0 && queue.length > 0) {
-      const id = queue[qi % queue.length]!;
-      if ((remainingDemand.get(id) ?? 0) <= 0) {
-        queue = queue.filter((c) => c !== id);
-        continue;
-      }
-      perCampaign.set(id, (perCampaign.get(id) ?? 0) + 1);
-      remainingDemand.set(id, remainingDemand.get(id)! - 1);
-      capacity -= 1;
-      qi = (qi + 1) % queue.length;
+    if ((remainingDemand.get(campaignId) ?? 0) <= 0) {
+      campaignQueue = campaignQueue.filter((id) => id !== campaignId);
+      if (campaignQueue.length > 0) ci %= campaignQueue.length;
     }
   }
 
@@ -460,7 +486,7 @@ async function commitCampaignPlan(
   q: Querier, campaign: GrowCampaign, candidates: DueEnrollment[], budget: number,
   mailboxes: MailboxCapacity[], allocation: Map<string, number>, now: Date,
 ): Promise<PlanTickResult> {
-  const { caps, fallback } = await domainCapacity(q, campaign);
+  const { explicitCaps, fallbackCap, committedToday } = await domainCapacity(q, campaign);
   const steps = await q.rows<{
     step_no: number; delay_days: number; applies_to_rank: number | null;
     subject_tmpl: string; body_tmpl: string;
@@ -478,9 +504,10 @@ async function commitCampaignPlan(
     if (picked.length >= budget) break;
     if (usableMailboxIds.length === 0) break;
 
-    const cap = caps.has(c.recipient_domain) ? caps.get(c.recipient_domain)! : fallback;
+    const cap = explicitCaps.get(c.recipient_domain) ?? fallbackCap;
+    const already = committedToday.get(c.recipient_domain) ?? 0;
     const used = domainUsed.get(c.recipient_domain) ?? 0;
-    if (used >= cap) continue;
+    if (already + used >= cap) continue;
 
     const step = steps.find(
       (s) => s.step_no === c.current_step + 1

@@ -37,6 +37,7 @@ import {
   firstUnrenderedPlaceholder, renderUnsubscribeFooter, normalizeSmartPunctuation,
 } from '../lib/growTemplate.js';
 import { claimDue, planOrgCampaigns } from '../lib/growScheduler.js';
+import { runMailboxHealthGate } from '../lib/growMailboxHealth.js';
 import { pollMailbox, matchGrowMessage, type MailboxCreds } from '../lib/growPoller.js';
 import { promoteOnReply } from '../lib/growPromote.js';
 import { classifyReply } from '../lib/growClassify.js';
@@ -67,6 +68,11 @@ const PLANNER_INTERVAL_MS = Number(process.env.GROW_PLANNER_INTERVAL_MS ?? 5 * 6
 const SENDER_POLL_MS = Number(process.env.GROW_SENDER_POLL_MS ?? 20_000);
 const SENDER_BATCH_SIZE = Number(process.env.GROW_SENDER_BATCH_SIZE ?? 5);
 const POLLER_INTERVAL_MS = Number(process.env.GROW_POLLER_INTERVAL_MS ?? 2 * 60_000);
+// Bounce/complaint rates over a 7-day window don't meaningfully move
+// minute to minute — hourly is responsive enough for the protective
+// (immediate) side, and the recovery side only ever moves once a week
+// regardless of how often this runs.
+const HEALTH_GATE_INTERVAL_MS = Number(process.env.GROW_HEALTH_GATE_INTERVAL_MS ?? 60 * 60_000);
 const MAX_ATTEMPTS = 3;
 
 // (o.modules->>'grow')::boolean IS DISTINCT FROM false — lib/moduleAccess.ts's
@@ -584,9 +590,22 @@ async function runPollingPass(): Promise<void> {
   }
 }
 
+async function runHealthGatePass(): Promise<void> {
+  for (const orgId of await orgIdsWithMailboxes()) {
+    await withTenant({ orgId, userId: null, isStaff: false }, async (q) => {
+      try {
+        await runMailboxHealthGate(q, orgId);
+      } catch (err) {
+        log.error({ err, orgId }, 'runMailboxHealthGate failed');
+      }
+    });
+  }
+}
+
 let planning = false;
 let sending = false;
 let polling = false;
+let healthGating = false;
 
 async function tickPlanner(): Promise<void> {
   if (planning) return;
@@ -609,17 +628,28 @@ async function tickPoller(): Promise<void> {
   finally { polling = false; }
 }
 
+async function tickHealthGate(): Promise<void> {
+  if (healthGating) return;
+  healthGating = true;
+  try { await runHealthGatePass(); } catch (err) { log.error({ err }, 'health gate pass failed'); }
+  finally { healthGating = false; }
+}
+
 async function main(): Promise<void> {
-  log.info({ PLANNER_INTERVAL_MS, SENDER_POLL_MS, SENDER_BATCH_SIZE, POLLER_INTERVAL_MS, GROW_BASE_URL },
-    'grow-worker starting');
+  log.info(
+    { PLANNER_INTERVAL_MS, SENDER_POLL_MS, SENDER_BATCH_SIZE, POLLER_INTERVAL_MS, HEALTH_GATE_INTERVAL_MS, GROW_BASE_URL },
+    'grow-worker starting',
+  );
 
   await tickPlanner();
   await tickSender();
   await tickPoller();
+  await tickHealthGate();
 
   const plannerTimer = setInterval(tickPlanner, PLANNER_INTERVAL_MS);
   const senderTimer = setInterval(tickSender, SENDER_POLL_MS);
   const pollerTimer = setInterval(tickPoller, POLLER_INTERVAL_MS);
+  const healthGateTimer = setInterval(tickHealthGate, HEALTH_GATE_INTERVAL_MS);
 
   let stopping = false;
   const stop = () => {
@@ -629,6 +659,7 @@ async function main(): Promise<void> {
     clearInterval(plannerTimer);
     clearInterval(senderTimer);
     clearInterval(pollerTimer);
+    clearInterval(healthGateTimer);
     for (const t of transporters.values()) t.close();
     process.exit(0);
   };

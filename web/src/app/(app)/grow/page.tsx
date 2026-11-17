@@ -452,7 +452,22 @@ export default function GrowPage() {
                     <tr key={m.id}>
                       <td className="px-4 py-3">
                         <p className="truncate font-medium">{m.address}</p>
-                        <p className="text-xs text-muted-foreground">{m.status}</p>
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-xs text-muted-foreground">{m.status}</p>
+                          {m.health_steps_down > 0 && (
+                            <span
+                              className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase ${toneSoft.warning}`}
+                              title={m.health_reason ?? undefined}
+                            >
+                              held {m.health_steps_down} step{m.health_steps_down > 1 ? 's' : ''}
+                            </span>
+                          )}
+                        </div>
+                        {m.health_reason && (
+                          <p className="mt-0.5 max-w-[220px] text-[11px] text-muted-foreground" title={m.health_reason}>
+                            {m.health_reason}
+                          </p>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
