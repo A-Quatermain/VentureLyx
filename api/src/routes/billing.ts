@@ -344,8 +344,16 @@ export default async function billingRoutes(app: FastifyInstance) {
             }
             break;
           }
+          case 'customer.subscription.created':
           case 'customer.subscription.updated':
           case 'customer.subscription.deleted': {
+            // .created only ever fires for a subscription made directly via
+            // the Stripe API, never through Checkout — checkout.session.completed
+            // above already syncs those. Both land here safely: syncSubscriptionFromStripe
+            // re-fetches and re-derives from the subscription's own current
+            // state every time, so a .created immediately followed by the
+            // same subscription's own .updated (or a replayed webhook) is
+            // idempotent, not a double-apply.
             const subscription = event.data.object as Stripe.Subscription;
             await syncSubscriptionFromStripe(subscription.id);
             break;
