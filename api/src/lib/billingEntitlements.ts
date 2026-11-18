@@ -36,6 +36,12 @@ export const LOOKUP_KEY_MODULES: Record<string, BillableModule[]> = {
   growth_partner_monthly: ['operate', 'scaleseo', 'reviews'],
   launch_growth_monthly: ALL_MODULES,
   founding_monthly: ALL_MODULES,
+  // Internal/owned orgs only (stripeCatalogSpec.ts's 'internal' product) —
+  // same full set as launch_growth/founding, just at $0. Confirmed against
+  // the 4 pre-entitlements orgs before this was added: their
+  // organizations.modules already carries all 5 of these explicitly true,
+  // so subscribing them here is a no-op, never a silent revoke.
+  internal_monthly: ALL_MODULES,
 };
 
 export function modulesForLookupKeys(lookupKeys: string[]): Set<BillableModule> {

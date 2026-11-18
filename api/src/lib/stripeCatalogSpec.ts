@@ -57,4 +57,15 @@ export const CATALOG: ProductSpec[] = [
       { lookupKey: 'founding_monthly', unitAmountCents: 39_900, interval: 'month' },
     ],
   },
+  {
+    // Internal/owned orgs only — full module access, no charge. Exists so
+    // those orgs go through the exact same subscription -> webhook ->
+    // syncEntitlements() path as a paying customer, never a bypass that
+    // writes organizations.modules directly. $0 recurring: Stripe needs no
+    // payment method and auto-marks the invoice paid with no attempt.
+    productKey: 'internal',
+    productName: 'Venturelyx — Internal',
+    description: 'Internal/owned orgs — full module access, no charge.',
+    prices: [{ lookupKey: 'internal_monthly', unitAmountCents: 0, interval: 'month' }],
+  },
 ];
