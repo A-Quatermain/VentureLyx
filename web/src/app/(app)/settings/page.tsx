@@ -10,6 +10,7 @@ import { API_BASE } from '@/lib/config';
 import type {
   OrgProfile, AISettingsResponse, AIProviderPreference, AIFeature, AIModelOverride, AIProvider,
   ServiceArea, GscStatus, GrowSenderProfile, BillingStatus, GrowAlternateChannelSettings, GrowMailbox,
+  OperateIntakeKey, OperateIntakeKeyCreated,
 } from '@/lib/types';
 import type { MeResponse } from '@/lib/types';
 import { PageHeader } from '@/components/Primitives';
@@ -59,6 +60,7 @@ export default function SettingsPage() {
         <ServiceAreaCard canEdit={canEdit} />
         <GrowSenderProfileCard canEdit={canEdit} />
         <AlternateChannelSettingsCard canEdit={canEdit} />
+        <OperateIntakeKeysCard canEdit={canEdit} />
         <GscCard canEdit={canEdit} />
         <AICard canEdit={canEdit} />
       </div>
@@ -629,6 +631,135 @@ function AlternateChannelSettingsCard({ canEdit }: { canEdit: boolean }) {
             </div>
           )}
         </fieldset>
+      )}
+    </Card>
+  );
+}
+
+const INTAKE_KEYS_KEY = '/settings/operate/intake-keys';
+
+function OperateIntakeKeysCard({ canEdit }: { canEdit: boolean }) {
+  const { data, isLoading } = useApi<OperateIntakeKey[]>(INTAKE_KEYS_KEY);
+  const [label, setLabel] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [justCreated, setJustCreated] = useState<OperateIntakeKeyCreated | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+
+  async function onCreate() {
+    if (!label.trim()) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const result = await apiFetch<OperateIntakeKeyCreated>(INTAKE_KEYS_KEY, {
+        method: 'POST',
+        body: JSON.stringify({ label: label.trim() }),
+      });
+      setJustCreated(result);
+      setLabel('');
+      await mutate(INTAKE_KEYS_KEY);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not create this key.');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function onRevoke(id: string, keyLabel: string) {
+    if (!confirm(`Revoke "${keyLabel}"? Any site still sending leads with it will start getting 401s immediately.`)) return;
+    setRevokingId(id);
+    try {
+      await apiFetch(`${INTAKE_KEYS_KEY}/${id}/revoke`, { method: 'POST' });
+      await mutate(INTAKE_KEYS_KEY);
+    } finally {
+      setRevokingId(null);
+    }
+  }
+
+  const active = (data ?? []).filter((k) => !k.revoked_at);
+  const revoked = (data ?? []).filter((k) => k.revoked_at);
+
+  return (
+    <Card className="p-6">
+      <div className="mb-1 flex items-center gap-2">
+        <Key size={18} className="text-primary" />
+        <p className="font-display text-lg font-bold tracking-tight">Operate intake keys</p>
+      </div>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Lets an external website&rsquo;s own lead form post straight into Operate&rsquo;s pipeline —
+        <code className="mx-1 rounded bg-muted px-1 py-0.5 text-[11px]">POST /v1/operate/intake</code>
+        with <code className="rounded bg-muted px-1 py-0.5 text-[11px]">{'Authorization: Bearer <key>'}</code>.
+        The full key is shown once, right after you create it — Venturelyx never stores or displays it again.
+      </p>
+
+      {justCreated && (
+        <div className="mb-4 rounded-lg border border-warning/40 bg-warning/5 p-3">
+          <p className="text-xs font-semibold text-foreground">
+            Copy this now — it won&rsquo;t be shown again.
+          </p>
+          <code className="mt-1.5 block overflow-x-auto rounded bg-surface px-2 py-1.5 text-xs">{justCreated.key}</code>
+          <button
+            onClick={() => setJustCreated(null)}
+            className="mt-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {canEdit && (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Key label, e.g. ACSF website"
+            className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+          />
+          <Button onClick={onCreate} disabled={creating || !label.trim()} className="shrink-0">
+            {creating ? 'Creating…' : 'Create key'}
+          </Button>
+        </div>
+      )}
+      {error && <p className="mb-3 text-sm text-destructive">{error}</p>}
+
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : active.length === 0 && revoked.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No intake keys yet.</p>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {active.map((k) => (
+            <div key={k.id} className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+              <div>
+                <p className="text-sm font-medium">{k.label}</p>
+                <p className="text-xs text-muted-foreground">
+                  <code>{k.key_prefix}…</code> · created {new Date(k.created_at).toLocaleDateString()} ·{' '}
+                  {k.last_used_at ? `last used ${new Date(k.last_used_at).toLocaleString()}` : 'never used'}
+                </p>
+              </div>
+              {canEdit && (
+                <Button
+                  variant="ghost"
+                  onClick={() => onRevoke(k.id, k.label)}
+                  disabled={revokingId === k.id}
+                  className="min-h-0 px-2.5 py-1.5 text-xs text-destructive"
+                >
+                  Revoke
+                </Button>
+              )}
+            </div>
+          ))}
+          {revoked.map((k) => (
+            <div key={k.id} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 opacity-60">
+              <div>
+                <p className="text-sm font-medium line-through">{k.label}</p>
+                <p className="text-xs text-muted-foreground">
+                  <code>{k.key_prefix}…</code> · revoked {new Date(k.revoked_at!).toLocaleString()}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
     </Card>
   );

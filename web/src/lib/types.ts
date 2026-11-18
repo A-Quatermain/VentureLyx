@@ -1208,6 +1208,23 @@ export interface GrowAlternateChannelSettings {
   business_context: string | null;
 }
 
+// ---- Operate intake keys --------------------------------------------------
+export interface OperateIntakeKey {
+  id: string;
+  label: string;
+  key_prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface OperateIntakeKeyCreated {
+  id: string;
+  key: string; // full raw key — present only in the create response, shown once
+  key_prefix: string;
+  label: string;
+}
+
 export interface GrowFallbackDraft {
   id: string;
   contact_id: string;

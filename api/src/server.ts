@@ -24,6 +24,7 @@ import growthScanRoutes from './routes/growthScans.js';
 import setupRoutes from './routes/setup.js';
 import billingRoutes from './routes/billing.js';
 import adminBillingRoutes from './routes/adminBilling.js';
+import operateIntakeRoutes from './routes/operateIntake.js';
 import { healthy, shutdown } from './lib/db.js';
 import { processUnsubscribe } from './lib/growUnsubscribe.js';
 import { processClick } from './lib/growClickTracking.js';
@@ -139,6 +140,7 @@ app.get('/c/:token', async (req, reply) => {
 await app.register(authRoutes, { prefix: '/v1' });
 await app.register(dataRoutes, { prefix: '/v1' });
 await app.register(operateRoutes, { prefix: '/v1' });
+await app.register(operateIntakeRoutes, { prefix: '/v1' });
 await app.register(aiRoutes, { prefix: '/v1' });
 await app.register(reviewsRoutes, { prefix: '/v1' });
 await app.register(settingsRoutes, { prefix: '/v1' });

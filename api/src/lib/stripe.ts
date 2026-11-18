@@ -24,7 +24,7 @@ if (!secretKey) {
 export const IS_STRIPE_LIVE_MODE_HINT = stripeKeyMode(secretKey) === 'live';
 
 export const stripe = new Stripe(secretKey, {
-  apiVersion: '2026-09-30.endive', // whatever this stripe npm version was built against — see its own type error if this ever drifts
+  apiVersion: '2026-10-28.endive', // whatever this stripe npm version was built against — see its own type error if this ever drifts
 });
 
 /** The only authoritative answer to "is this key live" — Stripe's own

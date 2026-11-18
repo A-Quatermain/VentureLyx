@@ -7,11 +7,13 @@
  * these aren't day-to-day operational edits.
  */
 import type { FastifyInstance } from 'fastify';
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { audit, encryptSecret } from '../lib/auth.js';
 import { estimateCost, KNOWN_MODELS } from '../lib/ai.js';
 import { HttpError } from '../plugins/context.js';
 import { moduleWriteGate } from '../lib/moduleAccess.js';
+import { hashIntakeKey } from './operateIntake.js';
 
 const businessProfileInput = z.object({
   name: z.string().trim().min(1).max(200),
@@ -288,6 +290,64 @@ export default async function settingsRoutes(app: FastifyInstance) {
       if (!deleted) throw new HttpError(404, 'No key connected for this provider', 'not_found');
       await audit(q, {
         orgId: req.ctx.orgId, actorUser: sess.user_id, action: `settings.ai_key.${provider}.remove`, ip: req.ip,
+      });
+      return { ok: true };
+    });
+  });
+
+  // ---- Operate intake keys ---------------------------------------------
+  // The raw key is returned exactly once, in this response — never again,
+  // not even to the owner who created it. Admin-gated: this is a
+  // credential, same grade as an AI provider key above.
+  app.post('/settings/operate/intake-keys', async (req, reply) => {
+    req.requireRole('admin');
+    const sess = req.requireAuth();
+    const { label } = z.object({ label: z.string().trim().min(1).max(100) }).parse(req.body);
+
+    const rawKey = `vxik_${randomBytes(24).toString('base64url')}`;
+    const keyPrefix = rawKey.slice(0, 12);
+
+    return req.db(async (q) => {
+      const row = await q.one<{ id: string }>(
+        `INSERT INTO operate_intake_keys (org_id, key_hash, key_prefix, label, created_by)
+         VALUES (app.current_org(), $1, $2, $3, $4)
+         RETURNING id`,
+        [hashIntakeKey(rawKey), keyPrefix, label, sess.user_id],
+      );
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'settings.operate_intake_key.create',
+        entityType: 'operate_intake_keys', entityId: row!.id, ip: req.ip, diff: { label, key_prefix: keyPrefix },
+      });
+      reply.status(201);
+      return { id: row!.id, key: rawKey, key_prefix: keyPrefix, label };
+    });
+  });
+
+  app.get('/settings/operate/intake-keys', async (req) => {
+    req.requireRole('admin');
+    return req.db((q) =>
+      q.rows(
+        `SELECT id, label, key_prefix, created_at, last_used_at, revoked_at
+           FROM operate_intake_keys WHERE org_id = app.current_org() ORDER BY created_at DESC`,
+      ),
+    );
+  });
+
+  app.post('/settings/operate/intake-keys/:id/revoke', async (req) => {
+    req.requireRole('admin');
+    const sess = req.requireAuth();
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+
+    return req.db(async (q) => {
+      const key = await q.one<{ id: string; label: string }>(
+        `UPDATE operate_intake_keys SET revoked_at = now()
+          WHERE id = $1 AND revoked_at IS NULL RETURNING id, label`,
+        [id],
+      );
+      if (!key) throw new HttpError(404, 'Key not found or already revoked', 'not_found');
+      await audit(q, {
+        orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'settings.operate_intake_key.revoke',
+        entityType: 'operate_intake_keys', entityId: id, ip: req.ip, diff: { label: key.label },
       });
       return { ok: true };
     });

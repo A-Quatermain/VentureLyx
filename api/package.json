@@ -27,6 +27,7 @@
     "fastify": "^5.1.0",
     "fastify-plugin": "^5.0.1",
     "imapflow": "^2.0.2",
+    "ioredis": "^6.0.0",
     "nodemailer": "^10.0.3",
     "openai": "^7.5.0",
     "otpauth": "^9.3.4",
