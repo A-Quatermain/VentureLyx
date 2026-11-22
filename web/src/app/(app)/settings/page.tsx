@@ -3,14 +3,14 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { mutate } from 'swr';
-import { Cpu, Key, ChartBar, CaretDown, MapPin, MagnifyingGlass, TrendUp, UploadSimple, ArrowRight } from '@phosphor-icons/react';
+import { Cpu, Key, ChartBar, CaretDown, MapPin, MagnifyingGlass, TrendUp, UploadSimple, ArrowRight, UsersThree } from '@phosphor-icons/react';
 import { useApi, useRole, atLeast } from '@/lib/useApi';
 import { apiFetch, ApiError } from '@/lib/api';
 import { API_BASE } from '@/lib/config';
 import type {
   OrgProfile, AISettingsResponse, AIProviderPreference, AIFeature, AIModelOverride, AIProvider,
   ServiceArea, GscStatus, GrowSenderProfile, BillingStatus, GrowAlternateChannelSettings, GrowMailbox,
-  OperateIntakeKey, OperateIntakeKeyCreated,
+  OperateIntakeKey, OperateIntakeKeyCreated, LeadSourceSettings,
 } from '@/lib/types';
 import type { MeResponse } from '@/lib/types';
 import { PageHeader } from '@/components/Primitives';
@@ -60,6 +60,7 @@ export default function SettingsPage() {
         <ServiceAreaCard canEdit={canEdit} />
         <GrowSenderProfileCard canEdit={canEdit} />
         <AlternateChannelSettingsCard canEdit={canEdit} />
+        <LeadSourceSettingsCard canEdit={canEdit} />
         <OperateIntakeKeysCard canEdit={canEdit} />
         <GscCard canEdit={canEdit} />
         <AICard canEdit={canEdit} />
@@ -627,6 +628,138 @@ function AlternateChannelSettingsCard({ canEdit }: { canEdit: boolean }) {
               <Button onClick={onSave} disabled={saving}>
                 {saving ? 'Saving…' : 'Save'}
               </Button>
+              {saved && <span className="text-sm text-success">Saved.</span>}
+            </div>
+          )}
+        </fieldset>
+      )}
+    </Card>
+  );
+}
+
+const LEADSOURCE_SETTINGS_KEY = '/leadsource/settings';
+const ALL_COUNTIES = ['BROWARD', 'PALM BEACH'] as const; // Phase 1's draft zip list only covers these two today
+const ALL_FILING_TYPES = ['DOMP', 'FLAL', 'FORP', 'FORL', 'DOMNP', 'FORNP', 'FORLP', 'DOMLP'] as const;
+
+function LeadSourceSettingsCard({ canEdit }: { canEdit: boolean }) {
+  const { data, isLoading, error } = useApi<LeadSourceSettings>(LEADSOURCE_SETTINGS_KEY);
+  const [draft, setDraft] = useState<LeadSourceSettings | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => { if (data) setDraft(data); }, [data]);
+
+  function toggle(list: string[], value: string): string[] {
+    return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+  }
+
+  async function onSave() {
+    if (!draft) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await apiFetch(LEADSOURCE_SETTINGS_KEY, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          counties: draft.counties, filing_types: draft.filing_types,
+          file_date_window_days: draft.file_date_window_days, include_dba: draft.include_dba,
+        }),
+      });
+      await mutate(LEADSOURCE_SETTINGS_KEY);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : 'Could not save LeadSource settings.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // A 403 here means the module itself is off for this org — not a load
+  // failure, just "nothing to configure yet."
+  if (error instanceof ApiError && error.code === 'module_disabled') {
+    return (
+      <Card className="p-6">
+        <div className="mb-1 flex items-center gap-2">
+          <UsersThree size={18} className="text-primary" />
+          <p className="font-display text-lg font-bold tracking-tight">LeadSource</p>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Not enabled for this business yet — ask your account team to turn it on.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-6">
+      <div className="mb-1 flex items-center gap-2">
+        <UsersThree size={18} className="text-primary" />
+        <p className="font-display text-lg font-bold tracking-tight">LeadSource</p>
+      </div>
+      <p className="mb-4 text-xs text-muted-foreground">
+        New Florida business filings (Sunbiz), matched to the counties and filing types below and brought
+        into Source as leads once a day.
+      </p>
+      {isLoading || !draft ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : (
+        <fieldset disabled={!canEdit} className="contents">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Counties</p>
+          <div className="mt-1.5 flex flex-wrap gap-2">
+            {ALL_COUNTIES.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setDraft({ ...draft, counties: toggle(draft.counties, c) })}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium ${draft.counties.includes(c) ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+
+          <p className="mt-4 text-xs font-medium uppercase tracking-wide text-muted-foreground">Filing types</p>
+          <div className="mt-1.5 flex flex-wrap gap-2">
+            {ALL_FILING_TYPES.map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setDraft({ ...draft, filing_types: toggle(draft.filing_types, t) })}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium ${draft.filing_types.includes(t) ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+
+          <label className="mt-4 flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
+            <span className="text-sm font-medium">File date window (days)</span>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={draft.file_date_window_days}
+              onChange={(e) => setDraft({ ...draft, file_date_window_days: Number(e.target.value) || 7 })}
+              className="w-20 rounded-lg border border-border bg-surface px-2 py-1 text-right text-sm"
+            />
+          </label>
+
+          <label className="mt-2 flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
+            <span className="text-sm font-medium">Include fictitious name (DBA) filings</span>
+            <input
+              type="checkbox"
+              checked={draft.include_dba}
+              onChange={(e) => setDraft({ ...draft, include_dba: e.target.checked })}
+              className="h-5 w-5 rounded border-border accent-[hsl(var(--primary))]"
+            />
+          </label>
+
+          {canEdit && (
+            <div className="mt-4 flex items-center gap-3">
+              <Button onClick={onSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</Button>
+              {saveError && <span className="text-sm text-destructive">{saveError}</span>}
               {saved && <span className="text-sm text-success">Saved.</span>}
             </div>
           )}

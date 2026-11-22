@@ -1,9 +1,12 @@
 'use client';
 
 import Link from 'next/link';
+import { useState } from 'react';
 import { useApi } from '@/lib/useApi';
+import { apiFetch, ApiError } from '@/lib/api';
 import { PageHeader } from '@/components/Primitives';
 import { Card } from '@/components/ui/Card';
+import { Button } from '@/components/ui/Button';
 import { SkeletonCard } from '@/components/ui/Skeleton';
 import type { AdminOrganization } from '@/lib/types';
 
@@ -13,10 +16,35 @@ function fmt(d: string): string {
 
 export default function AdminOrganizationsPage() {
   const { data: orgs, isLoading, error } = useApi<AdminOrganization[]>('/admin/organizations');
+  const [granting, setGranting] = useState(false);
+  const [grantResult, setGrantResult] = useState<string | null>(null);
+
+  async function grantLeadSourceToAll() {
+    if (!confirm('Grant LeadSource to every ACTIVE organization? This cannot be bulk-undone — you\'d have to revoke each one individually.')) return;
+    setGranting(true);
+    setGrantResult(null);
+    try {
+      const result = await apiFetch<{ org_count: number; changed_count: number }>('/admin/organizations/grant-module', {
+        method: 'POST',
+        body: JSON.stringify({ module: 'leadsource' }),
+      });
+      setGrantResult(`Granted to ${result.changed_count} of ${result.org_count} active orgs (${result.org_count - result.changed_count} already had it).`);
+    } catch (err) {
+      setGrantResult(err instanceof ApiError ? err.message : 'Could not grant LeadSource.');
+    } finally {
+      setGranting(false);
+    }
+  }
 
   return (
     <div>
-      <PageHeader eyebrow="Staff only" title="Organizations" subtitle={orgs ? `${orgs.length} organizations` : undefined} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <PageHeader eyebrow="Staff only" title="Organizations" subtitle={orgs ? `${orgs.length} organizations` : undefined} />
+        <Button variant="ghost" onClick={grantLeadSourceToAll} disabled={granting} className="shrink-0">
+          {granting ? 'Granting…' : 'Grant LeadSource to all active orgs'}
+        </Button>
+      </div>
+      {grantResult && <p className="mb-3 text-sm text-muted-foreground">{grantResult}</p>}
       {isLoading && <SkeletonCard />}
       {error && <p className="text-sm text-destructive">Could not load organizations.</p>}
       {orgs && (

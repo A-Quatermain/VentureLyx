@@ -21,6 +21,7 @@ const MODULE_TOGGLES = [
   { key: 'grow', label: 'Grow' },
   { key: 'ai_team', label: 'AI Team' },
   { key: 'reviews', label: 'Reviews' },
+  { key: 'leadsource', label: 'LeadSource' },
 ] as const;
 
 function fmt(d: string): string {

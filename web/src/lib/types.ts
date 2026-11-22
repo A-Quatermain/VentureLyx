@@ -1208,6 +1208,37 @@ export interface GrowAlternateChannelSettings {
   business_context: string | null;
 }
 
+// ---- LeadSource ------------------------------------------------------------
+export interface LeadSourceSettings {
+  counties: string[];
+  filing_types: string[];
+  file_date_window_days: number;
+  include_dba: boolean;
+  updated_at: string | null;
+}
+
+export type LeadSourceEnrichmentStatus = 'new' | 'enriching' | 'enriched' | 'skipped';
+
+export interface LeadSourceLead {
+  id: string;
+  source: 'fl_sunbiz_cor' | 'fl_sunbiz_fic';
+  source_id: string;
+  enrichment_status: LeadSourceEnrichmentStatus;
+  business_name: string | null;
+  business_type: string | null;
+  principal_address: string | null;
+  principal_city: string | null;
+  principal_state: string | null;
+  principal_zip: string | null;
+  file_date: string | null;
+  registered_agent_name: string | null;
+  registered_agent_type: string | null;
+  phone: string | null;
+  email: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
 // ---- Operate intake keys --------------------------------------------------
 export interface OperateIntakeKey {
   id: string;

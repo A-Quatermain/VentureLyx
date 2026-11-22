@@ -10,6 +10,34 @@ networks:
     name: venturelyx
 
 services:
+  leadsource-worker:
+    build:
+      context: ../workers/leadsource
+    image: venturelyx/leadsource-worker:latest
+    container_name: vx-leadsource-worker
+    restart: unless-stopped
+    networks: [venturelyx]
+    environment:
+      # Normal app role — job-queue claim + per-org fan-out into
+      # leadsource_leads (RLS-scoped, same as every other worker).
+      DB_DSN: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # 040_leadsource.sql's restricted role — the ONLY thing with
+      # INSERT/UPDATE on leadsource_raw_records. Never used for anything else.
+      RAW_DB_DSN: postgresql://venturelyx_leadsource_worker:${LEADSOURCE_WORKER_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      SUNBIZ_SFTP_HOST: ${SUNBIZ_SFTP_HOST}
+      SUNBIZ_SFTP_USER: ${SUNBIZ_SFTP_USER}
+      SUNBIZ_SFTP_PASS: ${SUNBIZ_SFTP_PASS}
+      LOG_LEVEL: INFO
+      POLL_SECONDS: 30
+      WORKER_ID: leadsource-worker-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
   seo-worker:
     build:
       context: ../workers/seo

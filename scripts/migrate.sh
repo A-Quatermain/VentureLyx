@@ -120,6 +120,12 @@ if [ -n "${APP_DB_PASSWORD:-}" ] && [ "$APP_DB_PASSWORD" != "GENERATE_ME" ]; the
   psql_run -q -c "ALTER ROLE ${APP_DB_USER} PASSWORD '${APP_DB_PASSWORD}';"
   echo "  app role password synced from .env"
 fi
+# LeadSource ingest's own restricted role (040_leadsource.sql) — same
+# CHANGE_ME_AT_DEPLOY-then-sync pattern as the app role above.
+if [ -n "${LEADSOURCE_WORKER_DB_PASSWORD:-}" ]; then
+  psql_run -q -c "ALTER ROLE venturelyx_leadsource_worker PASSWORD '${LEADSOURCE_WORKER_DB_PASSWORD}';" 2>/dev/null \
+    && echo "  leadsource worker role password synced from .env"
+fi
 
 echo
 echo "$applied migration(s) applied. Run './scripts/migrate.sh --verify' next."

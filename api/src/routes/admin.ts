@@ -44,7 +44,7 @@ async function auditAdmin(
 // introduce a second one. Kept here rather than shared with
 // web/src/lib/modules.ts because that file's keys are hyphenated route
 // slugs ('ai-team'), a different, frontend-only concern.
-const MODULE_KEYS = ['build', 'source', 'operate', 'scaleseo', 'grow', 'ai_team', 'reviews'] as const;
+const MODULE_KEYS = ['build', 'source', 'operate', 'scaleseo', 'grow', 'ai_team', 'reviews', 'leadsource'] as const;
 
 const WAITLIST_STATUSES = ['new', 'contacted', 'converted'] as const;
 
@@ -192,6 +192,33 @@ export default async function adminRoutes(app: FastifyInstance) {
       });
 
       return updated;
+    });
+  });
+
+  // Bulk grant — LeadSource (and any future default-disabled module)
+  // needs a fast "turn it on for everyone already live" action, not just
+  // one-org-at-a-time. Same merge-not-replace semantics as the single-org
+  // route above, same audit trail, one row per org actually changed (an
+  // org that already had it on is skipped, not re-logged as a change).
+  app.post('/admin/organizations/grant-module', async (req, reply) => {
+    if (!requireStaffOrNotFound(req, reply)) return;
+    const { module: moduleKey } = z.object({ module: z.enum(MODULE_KEYS) }).parse(req.body);
+
+    return withPlatform(async (q) => {
+      const orgs = await q.rows<{ id: string; name: string; modules: Record<string, boolean> }>(
+        `SELECT id, name, modules FROM organizations WHERE status = 'active' AND deleted_at IS NULL`,
+      );
+      const changed: string[] = [];
+      for (const org of orgs) {
+        if (org.modules?.[moduleKey] === true) continue; // already on — not a change
+        const merged = { ...org.modules, [moduleKey]: true };
+        await q.exec(`UPDATE organizations SET modules = $2, updated_at = now() WHERE id = $1`, [org.id, JSON.stringify(merged)]);
+        changed.push(org.id);
+      }
+      await auditAdmin(q, req, 'admin.organization.modules_grant_all', {
+        module: moduleKey, org_count: orgs.length, changed_count: changed.length, changed_org_ids: changed,
+      });
+      return { ok: true, org_count: orgs.length, changed_count: changed.length };
     });
   });
 
