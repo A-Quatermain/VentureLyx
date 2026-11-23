@@ -25,13 +25,14 @@ export type Feature =
   | 'reply_classification'
   | 'followup_assistant'
   | 'seo_issue_fix'
-  | 'competitor_critique';
+  | 'competitor_critique'
+  | 'leadsource_search_assist';
 
 export const FEATURES: Feature[] = [
   'seo_recommendations', 'page_generation', 'review_response',
   'next_best_action', 'metric_explanation', 'business_blueprint', 'sequence_writing',
   'ai_visibility_check', 'reply_classification', 'followup_assistant', 'seo_issue_fix',
-  'competitor_critique',
+  'competitor_critique', 'leadsource_search_assist',
 ];
 
 export type Provider = 'anthropic' | 'openai';
@@ -64,6 +65,10 @@ export const FEATURE_TIER: Record<Feature, Tier> = {
   // Same shape as seo_recommendations (a ranked to-do list from crawl
   // data) — just fed two crawls (ours + a competitor's) instead of one.
   competitor_critique: 'primary',
+  // Plain English -> a handful of structured filter fields. Same shape
+  // as metric_explanation: short input, short deterministic-ish output,
+  // not a generation task.
+  leadsource_search_assist: 'cheap',
 };
 
 // claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5-20251001 are the current

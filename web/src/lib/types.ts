@@ -1237,6 +1237,42 @@ export interface LeadSourceLead {
   email: string | null;
   first_seen_at: string;
   last_seen_at: string;
+  business_type_guess: string | null;
+  business_type_guess_is_guess: true | null;
+}
+
+export interface LeadSourceFilters {
+  counties: string[];
+  zips: string[];
+  filing_types: string[];
+  file_date_window_days: number;
+  name_keywords: string[];
+  include_dba: boolean;
+}
+
+export interface LeadSourceSavedSearch extends LeadSourceFilters {
+  id: string;
+  name: string;
+  states: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LeadSourceSearchResult {
+  source: 'fl_sunbiz_cor' | 'fl_sunbiz_fic';
+  source_id: string;
+  business_name: string | null;
+  business_type: string | null;
+  principal_city: string | null;
+  principal_zip: string | null;
+  county: string | null;
+  file_date: string | null;
+  business_type_guess: string | null;
+  business_type_guess_is_guess: true | null;
+}
+
+export interface LeadSourceAssistedFilters extends LeadSourceFilters {
+  assist_failed: boolean;
 }
 
 // ---- Operate intake keys --------------------------------------------------
