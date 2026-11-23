@@ -27,6 +27,14 @@ services:
       SUNBIZ_SFTP_HOST: ${SUNBIZ_SFTP_HOST}
       SUNBIZ_SFTP_USER: ${SUNBIZ_SFTP_USER}
       SUNBIZ_SFTP_PASS: ${SUNBIZ_SFTP_PASS}
+      # Enrichment (Phase 3). Same ZeroBounce key the API container already
+      # uses for Grow's verify-on-import — one account, two processes.
+      ZEROBOUNCE_API_KEY: ${GROW_EMAIL_VERIFY_API_KEY:-}
+      # No platform-level Brave key: Brave is bring-your-own-key, per org,
+      # stored encrypted in leadsource_provider_keys (043_leadsource_provider_keys.sql)
+      # and decrypted here with VAULT_KEY — same vault every other
+      # third-party credential in this app already uses. See vault.py.
+      VAULT_KEY: ${VAULT_KEY}
       LOG_LEVEL: INFO
       POLL_SECONDS: 30
       WORKER_ID: leadsource-worker-1

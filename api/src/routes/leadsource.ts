@@ -23,6 +23,8 @@ import { isModuleEnabled } from '../lib/moduleAccess.js';
 import { guessBusinessType } from '../lib/businessTypeGuess.js';
 import { assistSearchFilters } from '../lib/leadSourceSearchAssist.js';
 import { zipMatchesCounties } from '../lib/flZipCounty.js';
+import { encryptSecret, decryptSecret } from '../lib/auth.js';
+import { testBraveKey } from '../lib/braveProviderKey.js';
 
 async function requireLeadSourceEnabled(req: FastifyRequest): Promise<void> {
   const row = await req.db((q) =>
@@ -398,6 +400,97 @@ export default async function leadSourceRoutes(app: FastifyInstance) {
         diff: { requested: items.length, imported },
       });
       return { requested: items.length, imported };
+    });
+  });
+
+  // --- Bring-your-own Brave Search key (Phase 3) --------------------------
+  // Owner-only throughout, per the v2 design — this is a billing-relevant
+  // credential (Brave charges the org directly) and a search-cost control
+  // (monthly_search_cap), not an operational setting a manager should
+  // change on their own. Never returns the plaintext key — same discipline
+  // settings.ts's AI bring-your-own-key routes already established.
+
+  app.get('/leadsource/provider-key', async (req) => {
+    req.requireRole('owner');
+    await requireLeadSourceEnabled(req);
+    return req.db((q) =>
+      q.one(
+        `SELECT key_last4, status, monthly_search_cap, searches_this_month, searches_month_reset_at,
+                last_tested_at, last_error, created_at
+           FROM leadsource_provider_keys
+          WHERE org_id = app.current_org() AND provider = 'brave' AND revoked_at IS NULL`,
+      ),
+    );
+  });
+
+  app.put('/leadsource/provider-key', async (req) => {
+    req.requireRole('owner');
+    const sess = req.requireAuth();
+    await requireLeadSourceEnabled(req);
+    const { key, monthly_search_cap } = z.object({
+      key: z.string().trim().min(20).max(300),
+      monthly_search_cap: z.number().int().min(1).max(100_000).default(500),
+    }).parse(req.body);
+
+    const { enc, iv, tag } = encryptSecret(key);
+    const last4 = key.slice(-4);
+
+    return req.db(async (q) => {
+      await q.exec(
+        `INSERT INTO leadsource_provider_keys
+           (org_id, provider, key_enc, key_iv, key_tag, key_last4, monthly_search_cap, created_by)
+         VALUES (app.current_org(), 'brave', $1, $2, $3, $4, $5, $6)
+         ON CONFLICT (org_id, provider) WHERE revoked_at IS NULL DO UPDATE SET
+           key_enc = $1, key_iv = $2, key_tag = $3, key_last4 = $4, monthly_search_cap = $5,
+           status = 'untested', last_tested_at = NULL, last_error = NULL, created_by = $6, created_at = now()`,
+        [enc, iv, tag, last4, monthly_search_cap, sess.user_id],
+      );
+      await audit(q, { orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'leadsource.provider_key.save', ip: req.ip, diff: { key_last4: last4, monthly_search_cap } });
+      return { ok: true };
+    });
+  });
+
+  app.post('/leadsource/provider-key/test', async (req) => {
+    req.requireRole('owner');
+    const sess = req.requireAuth();
+    await requireLeadSourceEnabled(req);
+
+    const row = await req.db((q) =>
+      q.one<{ key_enc: Buffer; key_iv: Buffer; key_tag: Buffer }>(
+        `SELECT key_enc, key_iv, key_tag FROM leadsource_provider_keys
+          WHERE org_id = app.current_org() AND provider = 'brave' AND revoked_at IS NULL`,
+      ),
+    );
+    if (!row) throw new HttpError(404, 'No Brave key saved yet', 'not_found');
+
+    const plain = decryptSecret(row.key_enc, row.key_iv, row.key_tag);
+    const { result, detail } = await testBraveKey(plain);
+
+    return req.db(async (q) => {
+      await q.exec(
+        `UPDATE leadsource_provider_keys SET status = $1, last_tested_at = now(), last_error = $2
+          WHERE org_id = app.current_org() AND provider = 'brave' AND revoked_at IS NULL`,
+        [result, detail],
+      );
+      await audit(q, { orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'leadsource.provider_key.test', ip: req.ip, diff: { result } });
+      return { result, detail };
+    });
+  });
+
+  app.delete('/leadsource/provider-key', async (req) => {
+    req.requireRole('owner');
+    const sess = req.requireAuth();
+    await requireLeadSourceEnabled(req);
+
+    return req.db(async (q) => {
+      const row = await q.one<{ id: string }>(
+        `UPDATE leadsource_provider_keys SET revoked_at = now()
+          WHERE org_id = app.current_org() AND provider = 'brave' AND revoked_at IS NULL
+        RETURNING id`,
+      );
+      if (!row) throw new HttpError(404, 'No Brave key saved yet', 'not_found');
+      await audit(q, { orgId: req.ctx.orgId, actorUser: sess.user_id, action: 'leadsource.provider_key.remove', ip: req.ip });
+      return { ok: true };
     });
   });
 }

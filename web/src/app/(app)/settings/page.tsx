@@ -10,7 +10,7 @@ import { API_BASE } from '@/lib/config';
 import type {
   OrgProfile, AISettingsResponse, AIProviderPreference, AIFeature, AIModelOverride, AIProvider,
   ServiceArea, GscStatus, GrowSenderProfile, BillingStatus, GrowAlternateChannelSettings, GrowMailbox,
-  OperateIntakeKey, OperateIntakeKeyCreated, LeadSourceSettings,
+  OperateIntakeKey, OperateIntakeKeyCreated, LeadSourceSettings, LeadSourceProviderKey,
 } from '@/lib/types';
 import type { MeResponse } from '@/lib/types';
 import { PageHeader } from '@/components/Primitives';
@@ -61,6 +61,7 @@ export default function SettingsPage() {
         <GrowSenderProfileCard canEdit={canEdit} />
         <AlternateChannelSettingsCard canEdit={canEdit} />
         <LeadSourceSettingsCard canEdit={canEdit} />
+        <LeadSourceProviderKeyCard />
         <OperateIntakeKeysCard canEdit={canEdit} />
         <GscCard canEdit={canEdit} />
         <AICard canEdit={canEdit} />
@@ -764,6 +765,147 @@ function LeadSourceSettingsCard({ canEdit }: { canEdit: boolean }) {
             </div>
           )}
         </fieldset>
+      )}
+    </Card>
+  );
+}
+
+const PROVIDER_KEY_KEY = '/leadsource/provider-key';
+
+function LeadSourceProviderKeyCard() {
+  const role = useRole();
+  const canEdit = atLeast(role, 'owner');
+  const { data, isLoading, error } = useApi<LeadSourceProviderKey | null>(PROVIDER_KEY_KEY);
+  const [keyDraft, setKeyDraft] = useState('');
+  const [capDraft, setCapDraft] = useState('500');
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // Not enabled for this org at all — same handling as LeadSourceSettingsCard.
+  if (error instanceof ApiError && error.code === 'module_disabled') return null;
+  if (!canEdit) return null; // owner-only, not shown to other roles at all
+
+  async function onSave() {
+    if (!keyDraft.trim()) return;
+    setSaving(true);
+    setActionError(null);
+    try {
+      await apiFetch(PROVIDER_KEY_KEY, {
+        method: 'PUT',
+        body: JSON.stringify({ key: keyDraft.trim(), monthly_search_cap: Number(capDraft) || 500 }),
+      });
+      setKeyDraft('');
+      setTestResult(null);
+      await mutate(PROVIDER_KEY_KEY);
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Could not save this key.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onTest() {
+    setTesting(true);
+    setActionError(null);
+    try {
+      const res = await apiFetch<{ result: string; detail: string | null }>(`${PROVIDER_KEY_KEY}/test`, { method: 'POST' });
+      setTestResult(res.result);
+      await mutate(PROVIDER_KEY_KEY);
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Could not test this key.');
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function onRemove() {
+    setRemoving(true);
+    setActionError(null);
+    try {
+      await apiFetch(PROVIDER_KEY_KEY, { method: 'DELETE' });
+      setTestResult(null);
+      await mutate(PROVIDER_KEY_KEY);
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Could not remove this key.');
+    } finally {
+      setRemoving(false);
+    }
+  }
+
+  return (
+    <Card className="p-6">
+      <div className="mb-1 flex items-center gap-2">
+        <MagnifyingGlass size={18} className="text-primary" />
+        <p className="font-display text-lg font-bold tracking-tight">Website search (optional)</p>
+      </div>
+      <p className="mb-4 text-xs text-muted-foreground">
+        LeadSource finds each new business&apos;s website by trying likely web addresses and checking that
+        the site really belongs to that business. Some businesses use a name that doesn&apos;t match their
+        web address, so we miss them. Add your own{' '}
+        <a href="https://api-dashboard.search.brave.com" target="_blank" rel="noreferrer" className="text-primary underline">
+          Brave Search API
+        </a>{' '}
+        key and we&apos;ll also search the web for those businesses. Brave bills you directly for searches —
+        Venturelyx doesn&apos;t add a fee. Brave&apos;s terms don&apos;t allow us to store search results, so a
+        website found this way is used to collect the business&apos;s published email and phone, but its link
+        isn&apos;t saved.
+      </p>
+
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : (
+        <>
+          {data && (
+            <div className="mb-4 rounded-lg border border-border p-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="font-medium">Key ending •••{data.key_last4}</span>
+                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                  data.status === 'ok' ? 'bg-success/10 text-success'
+                  : data.status === 'untested' ? 'bg-muted text-muted-foreground'
+                  : 'bg-destructive/10 text-destructive'
+                }`}>
+                  {data.status === 'ok' ? 'Working' : data.status === 'untested' ? 'Not tested yet' : data.status === 'invalid' ? 'Invalid key' : 'Quota exceeded'}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {data.searches_this_month} of {data.monthly_search_cap} searches used this month
+                {data.last_tested_at && ` · last tested ${new Date(data.last_tested_at).toLocaleDateString()}`}
+              </p>
+              {data.last_error && <p className="mt-1 text-xs text-destructive">{data.last_error}</p>}
+              <div className="mt-3 flex items-center gap-2">
+                <Button variant="ghost" onClick={onTest} disabled={testing}>{testing ? 'Testing…' : 'Test key'}</Button>
+                <Button variant="ghost" onClick={onRemove} disabled={removing}>{removing ? 'Removing…' : 'Remove'}</Button>
+                {testResult && <span className="text-xs text-muted-foreground">Result: {testResult}</span>}
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex-1">
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">{data ? 'Replace key' : 'Brave API key'}</label>
+              <input
+                type="password"
+                value={keyDraft}
+                onChange={(e) => setKeyDraft(e.target.value)}
+                placeholder="BSA..."
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Monthly search cap</label>
+              <input
+                type="number" min={1} max={100000} value={capDraft}
+                onChange={(e) => setCapDraft(e.target.value)}
+                className="w-28 rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+              />
+            </div>
+            <Button onClick={onSave} disabled={saving || !keyDraft.trim()}>{saving ? 'Saving…' : 'Save'}</Button>
+          </div>
+          {actionError && <p className="mt-2 text-sm text-destructive">{actionError}</p>}
+        </>
       )}
     </Card>
   );

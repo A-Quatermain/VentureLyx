@@ -1275,6 +1275,17 @@ export interface LeadSourceAssistedFilters extends LeadSourceFilters {
   assist_failed: boolean;
 }
 
+export interface LeadSourceProviderKey {
+  key_last4: string;
+  status: 'untested' | 'ok' | 'invalid' | 'quota_exceeded';
+  monthly_search_cap: number;
+  searches_this_month: number;
+  searches_month_reset_at: string;
+  last_tested_at: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
 // ---- Operate intake keys --------------------------------------------------
 export interface OperateIntakeKey {
   id: string;
