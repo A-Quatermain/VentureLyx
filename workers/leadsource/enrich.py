@@ -10,8 +10,13 @@ ever count as "enriched."
 Website discovery is two-tier, in this order:
   1. domain_guess — normalize the business name into a handful of likely
      domains, fetch each ourselves, accept the first one whose own page
-     text actually contains the business's name. Nothing from a third
-     party here, so the confirmed URL is ours to keep.
+     text actually contains the business's name AND a secondary signal:
+     the filing's zip/city/street, or a phone with a Florida area code
+     (fetch_confirm). Name match alone is not enough — a same-named
+     business somewhere else would pass that check (see OWLCOVE LLC in
+     the Phase 3 follow-up report: a real site, a real "Owlcove," wrong
+     state). Nothing from a third party here, so the confirmed URL is
+     ours to keep.
   2. search_transient — only if (1) found nothing AND the org has saved
      its own working Brave Search API key (leadsource_provider_keys).
      Brave's Search API Terms of Use (3(b)(i)) bar storing or caching
@@ -20,6 +25,12 @@ Website discovery is two-tier, in this order:
      and self-confirm a candidate the same way as (1), extract contact
      info from the confirmed page, then DISCARD the URL. website_found
      is recorded true; website_url is NOT.
+
+Once a site is confirmed, contact info is pulled from up to 4 pages of
+it — the home page plus /contact, /contact-us, /about — never from
+anywhere else: mailto: links, schema.org JSON-LD email/telephone, and a
+phone regex over each page's visible text (gather_site_pages,
+extract_contact_multi).
 
 A lead's status can only become 'enriched' through the logic in
 enrich_one() below — never by a caller setting the column directly to
@@ -34,6 +45,7 @@ thing that creates it.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -79,6 +91,24 @@ VIRTUAL_RA_KEYWORDS = [
 ]
 
 PHONE_RE = re.compile(r"(?:\+?1[-.\s]?)?\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})\b")
+
+# The 17 standard Florida area codes. A phone with one of these is treated
+# as a real corroborating signal for "this site is the Miramar/Broward
+# business the filing names," not just "this site has a phone number
+# somewhere" — a same-named business in another state (see OWLCOVE LLC's
+# 513/Ohio number against a Miramar, FL filing, the false match that
+# prompted this check) no longer passes on name alone.
+FL_AREA_CODES = {
+    "239", "305", "321", "352", "386", "407", "561", "727", "754", "772",
+    "786", "813", "850", "863", "904", "941", "954",
+}
+
+# Extra pages checked for contact info once a site is confirmed — home
+# page plus these, capped at 4 total. Never used to decide confirmation,
+# only to widen where email/phone are looked for on a site already
+# accepted as the business's own.
+CONTACT_PATHS = ["/contact", "/contact-us", "/about"]
+MAX_PAGES_PER_SITE = 4
 
 ZB_DEFINITIVE_BAD = {"invalid", "spamtrap", "abuse", "do_not_mail"}
 ZB_OK_MAP = {"valid": "valid", "catch-all": "unknown", "unknown": "unknown"}
@@ -147,32 +177,131 @@ def _blocked(url: str, rules: list[str]) -> bool:
     return any(path.startswith(r) for r in rules)
 
 
-async def fetch_confirm(client: httpx.AsyncClient, url: str, name: str) -> str | None:
-    """Fetches url, returns its HTML only if the business's own name
-    actually appears on the page — never accepts a candidate on domain
-    match alone. Returns None for anything blocked, broken, or
-    unconfirmed."""
+def _found_phones(text: str) -> list[str]:
+    return ["".join(g) for g in PHONE_RE.findall(text)]
+
+
+def address_signal_present(text_upper: str, raw: dict) -> bool:
+    """True if the filing's zip, city, or street-number-plus-name appears
+    on the page. Zip is the strongest signal (exact 5-digit match, rarely
+    a coincidence); city is a solid secondary; the street check requires
+    BOTH the number and the first real word of the street name, since the
+    number alone is far too common to mean anything on its own."""
+    zip5 = (raw.get("zip") or "").strip()[:5]
+    if zip5 and zip5 in text_upper:
+        return True
+    city = (raw.get("city") or "").strip().upper()
+    if city and len(city) >= 3 and city in text_upper:
+        return True
+    addr1 = (raw.get("addr1") or "").strip().upper()
+    m = re.match(r"(\d+)\s+([A-Z]{3,})", addr1) if addr1 else None
+    if m and m.group(1) in text_upper and m.group(2) in text_upper:
+        return True
+    return False
+
+
+def fl_phone_present(text: str) -> bool:
+    return any(p[:3] in FL_AREA_CODES for p in _found_phones(text))
+
+
+async def fetch_confirm(client: httpx.AsyncClient, url: str, name: str, raw: dict) -> tuple[str | None, list[str], str | None]:
+    """Fetches url. Returns (html, robots_rules, rejection_note).
+
+    html is non-None only if BOTH hold on this same page: the business's
+    own name appears, AND at least one secondary signal does too — the
+    filing's zip/city/street, or a phone with a Florida area code. A name
+    match alone is no longer enough (a same-named business in another
+    state was accepted before this check existed — see OWLCOVE LLC in the
+    Phase 3 follow-up report). robots_rules is returned so the caller can
+    reuse it for the extra contact-info pages without refetching
+    robots.txt. rejection_note is set only when the name matched but the
+    secondary check failed, so a near-miss stays visible in last_error
+    rather than looking identical to "nothing there at all."
+    """
     tokens = significant_tokens(name)
     if not tokens:
-        return None
+        return None, [], None
     parsed = urlparse(url)
     base = f"{parsed.scheme}://{parsed.netloc}"
     rules = await _fetch_robots_disallow(client, base)
     if _blocked(url, rules):
-        return None
+        return None, rules, None
     try:
         r = await client.get(url, timeout=FETCH_TIMEOUT_S, follow_redirects=True)
     except Exception:
-        return None
+        return None, rules, None
     if r.status_code != 200 or "html" not in r.headers.get("content-type", "").lower():
-        return None
+        return None, rules, None
     text_upper = r.text.upper()
-    if any(t.upper() in text_upper for t in tokens):
-        return r.text
-    return None
+    if not any(t.upper() in text_upper for t in tokens):
+        return None, rules, None
+    if address_signal_present(text_upper, raw) or fl_phone_present(r.text):
+        return r.text, rules, None
+    return None, rules, f"name matched but no address/FL-phone corroboration: {url}"
+
+
+async def gather_site_pages(client: httpx.AsyncClient, confirmed_url: str, home_html: str, robots_rules: list[str]) -> list[str]:
+    """Home page (already fetched) plus up to MAX_PAGES_PER_SITE-1 more —
+    /contact, /contact-us, /about — on the SAME confirmed site. Never
+    affects confirmation, only widens where contact info is looked for on
+    a site already accepted."""
+    pages = [home_html]
+    parsed = urlparse(confirmed_url)
+    root = f"{parsed.scheme}://{parsed.netloc}"
+    for path in CONTACT_PATHS:
+        if len(pages) >= MAX_PAGES_PER_SITE:
+            break
+        if _blocked(f"{root}{path}", robots_rules):
+            continue
+        await asyncio.sleep(REQUEST_DELAY_S)
+        try:
+            r = await client.get(f"{root}{path}", timeout=FETCH_TIMEOUT_S, follow_redirects=True)
+            if r.status_code == 200 and "html" in r.headers.get("content-type", "").lower():
+                pages.append(r.text)
+        except Exception:
+            continue
+    return pages
+
+
+def extract_jsonld_contact(tree) -> tuple[str | None, str | None]:
+    """schema.org LocalBusiness-style blocks sometimes carry email/telephone
+    directly — crawler.py's extract_schema_signals only checks for their
+    PRESENCE (a completeness boolean for SEO scoring); this walks the same
+    JSON-LD structure but returns the actual values."""
+    email = phone = None
+
+    def walk(node):
+        nonlocal email, phone
+        if isinstance(node, dict):
+            if email is None and isinstance(node.get("email"), str):
+                email = node["email"].strip()
+            if phone is None and isinstance(node.get("telephone"), str):
+                phone = node["telephone"].strip()
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    for s in tree.css('script[type="application/ld+json"]'):
+        raw_text = (s.text() or "").strip()
+        if not raw_text:
+            continue
+        try:
+            walk(json.loads(raw_text))
+        except (json.JSONDecodeError, ValueError, RecursionError):
+            continue
+    return email, phone
 
 
 def extract_contact(html: str) -> tuple[str | None, str | None]:
+    """mailto: links, then schema.org JSON-LD, then a phone regex over the
+    page's VISIBLE text only (footer included — footer markup is still
+    inside <body>, so no separate pass is needed to cover it). JSON-LD is
+    read before <script> tags are stripped — otherwise there'd be nothing
+    left to read — but the phone regex runs only after they're gone, so a
+    phone number sitting in a JSON-LD blob (or any other inline script)
+    isn't double-counted as "visible" text with different formatting."""
     tree = HTMLParser(html)
     email = None
     for a in tree.css("a[href]"):
@@ -182,10 +311,34 @@ def extract_contact(html: str) -> tuple[str | None, str | None]:
             if candidate:
                 email = candidate
                 break
+
+    jsonld_email, jsonld_phone = extract_jsonld_contact(tree)
+    if email is None:
+        email = jsonld_email
+
+    for node in tree.css("script, style"):
+        node.decompose()
     body = tree.css_first("body")
     text = " ".join(body.text(separator=" ", strip=True).split()) if body else ""
-    phones = PHONE_RE.findall(text)
-    phone = "".join(phones[0]) if phones else None
+    phones = _found_phones(text)
+    phone = phones[0] if phones else jsonld_phone
+    return email, phone
+
+
+def extract_contact_multi(pages: list[str]) -> tuple[str | None, str | None]:
+    """Merges extract_contact() across several pages of the SAME
+    confirmed site, in priority order (home, /contact, /contact-us,
+    /about) — first email found wins, first phone found wins, independently
+    (a site might list its email on /contact but its phone on /about)."""
+    email = phone = None
+    for html in pages:
+        e, p = extract_contact(html)
+        if email is None and e:
+            email = e
+        if phone is None and p:
+            phone = p
+        if email and phone:
+            break
     return email, phone
 
 
@@ -327,16 +480,20 @@ async def enrich_one(client: httpx.AsyncClient, lead: dict, provider_key: dict |
         "email_verify_status": None, "email_verified_at": None,
         "phone": None, "phone_source": None, "phone_found_at": None,
         "status": "no_website", "last_error": None,
-        "_tried_domains": [], "_brave_outcome": None,
+        "_tried_domains": [], "_brave_outcome": None, "_rejections": [],
     }
 
     confirmed_html = None
+    confirmed_url = None
+    confirmed_robots_rules: list[str] = []
     for candidate in candidate_domains(name):
         result["_tried_domains"].append(candidate)
         await asyncio.sleep(REQUEST_DELAY_S)
-        html = await fetch_confirm(client, candidate, name)
+        html, rules, rejection = await fetch_confirm(client, candidate, name, raw)
+        if rejection:
+            result["_rejections"].append(rejection)
         if html is not None:
-            confirmed_html = html
+            confirmed_html, confirmed_url, confirmed_robots_rules = html, candidate, rules
             result["website_source"] = "domain_guess"
             result["website_url"] = candidate
             break
@@ -349,9 +506,11 @@ async def enrich_one(client: httpx.AsyncClient, lead: dict, provider_key: dict |
         if outcome == "ok":
             for u in urls:
                 await asyncio.sleep(REQUEST_DELAY_S)
-                html = await fetch_confirm(client, u, name)
+                html, rules, rejection = await fetch_confirm(client, u, name, raw)
+                if rejection:
+                    result["_rejections"].append(rejection)
                 if html is not None:
-                    confirmed_html = html
+                    confirmed_html, confirmed_url, confirmed_robots_rules = html, u, rules
                     result["website_source"] = "search_transient"
                     # website_url deliberately left None — see module header.
                     break
@@ -361,7 +520,8 @@ async def enrich_one(client: httpx.AsyncClient, lead: dict, provider_key: dict |
         result["website_confidence"] = "confirmed"
         result["website_found_at"] = now
 
-        email, phone = extract_contact(confirmed_html)
+        pages = await gather_site_pages(client, confirmed_url, confirmed_html, confirmed_robots_rules)
+        email, phone = extract_contact_multi(pages)
         if phone:
             result["phone"], result["phone_source"], result["phone_found_at"] = phone, "own_site", now
 
@@ -386,7 +546,8 @@ async def enrich_one(client: httpx.AsyncClient, lead: dict, provider_key: dict |
         result["status"] = "no_website"
         tried = ", ".join(result["_tried_domains"]) or "(no candidates — name too short/generic)"
         brave_note = f"; brave:{result['_brave_outcome']}" if result["_brave_outcome"] else ""
-        result["last_error"] = f"tried: {tried}{brave_note}"
+        rejected_note = f"; rejected: {'; '.join(result['_rejections'])}" if result["_rejections"] else ""
+        result["last_error"] = f"tried: {tried}{brave_note}{rejected_note}"
 
     return result
 

@@ -60,6 +60,36 @@ def main() -> int:
     check("is_virtual_or_agent_address handles a missing RA name",
           not enrich.is_virtual_or_agent_address(None))
 
+    # Phase 3 follow-up: stricter confirmation (name match is no longer enough).
+    owlcove_raw = {"addr1": "1234 MAIN ST", "city": "MIRAMAR", "zip": "33025"}
+    check("a 513 (Ohio) phone is not treated as an FL corroborating signal",
+          not enrich.fl_phone_present("call us at 513-903-9355"))
+    check("a 954 (Broward) phone IS treated as an FL corroborating signal",
+          enrich.fl_phone_present("call us at 954-998-3136"))
+    check("the filing's own zip code on the page counts as an address signal",
+          enrich.address_signal_present("WELCOME TO OUR SITE. WE SERVE 33025 AND NEARBY.", owlcove_raw))
+    check("the filing's own city on the page counts as an address signal",
+          enrich.address_signal_present("LOCATED IN MIRAMAR, FLORIDA.", owlcove_raw))
+    check("a page with the business name but no FL phone and no matching address/city/zip has no signal",
+          not enrich.address_signal_present("WE ARE A GREAT COMPANY. CALL TODAY.", owlcove_raw))
+    check("a bare street number with no matching street name is not enough on its own",
+          not enrich.address_signal_present("ROOM 1234 AVAILABLE NOW.", owlcove_raw))
+
+    # Wider extraction: mailto, schema.org JSON-LD, and merging across pages.
+    html_mailto = '<html><body><a href="mailto:hello@acme.test">Email us</a></body></html>'
+    check("extract_contact finds a mailto: link", enrich.extract_contact(html_mailto)[0] == "hello@acme.test")
+    html_jsonld = (
+        '<html><body><script type="application/ld+json">'
+        '{"@type":"LocalBusiness","email":"ld@acme.test","telephone":"954-555-0100"}'
+        "</script></body></html>"
+    )
+    jsonld_email, jsonld_phone = enrich.extract_contact(html_jsonld)
+    check("extract_contact falls back to JSON-LD email when there's no mailto:", jsonld_email == "ld@acme.test")
+    check("extract_contact falls back to JSON-LD phone when regex finds none", jsonld_phone == "954-555-0100")
+    merged_email, merged_phone = enrich.extract_contact_multi(["<html><body>no contact here</body></html>", html_mailto, html_jsonld])
+    check("extract_contact_multi takes the email from whichever page has it", merged_email == "hello@acme.test")
+    check("extract_contact_multi takes the phone from a later page when the first page has none", merged_phone == "954-555-0100")
+
     conn = db.connect()
     org_id = create_test_org(conn, "LeadSource Enrich Test Org")
     try:
