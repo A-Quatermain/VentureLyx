@@ -80,7 +80,7 @@ def download_daily_file(directory: str, suffix: str, on_date: date) -> bytes | N
         client.close()
 
 
-def download_quarterly_file(dest_path: str, resume: bool = True, on_progress=None) -> int:
+def download_quarterly_file(dest_path: str, resume: bool = True) -> int:
     """Resumable download of the quarterly full-snapshot zip to dest_path.
     Returns the final size in bytes.
 
@@ -91,12 +91,11 @@ def download_quarterly_file(dest_path: str, resume: bool = True, on_progress=Non
     zero, and gives up loudly (raises) rather than looping forever if the
     server keeps dropping the connection at the same offset.
 
-    on_progress(got, total_size), if given, is called roughly once a
-    minute during the transfer — the download alone can take ~49 minutes
-    (confirmed live), which on its own exceeds job_queue's default
-    30-minute stale-job threshold; the caller uses this to keep the job's
-    heartbeat fresh so no worker's reaper reclaims a transfer that's
-    still genuinely in progress (see db.touch_heartbeat's own header)."""
+    The download alone can take ~49 minutes (confirmed live), well past
+    job_queue's default 30-minute stale-job threshold — but keeping the
+    job's heartbeat fresh during that is worker.py's job now (db.HeartbeatThread
+    wraps every job generically), not something this function needs to
+    know about."""
     path = f"{QUARTERLY_DIR}/{QUARTERLY_FILENAME}"
     sftp, client = _connect()
     try:
@@ -108,7 +107,6 @@ def download_quarterly_file(dest_path: str, resume: bool = True, on_progress=Non
     got = os.path.getsize(dest_path) if (resume and os.path.exists(dest_path)) else 0
     mode = "r+b" if got else "wb"
     attempts = 0
-    last_progress_call = time.time()
     with open(dest_path, mode) as f:
         f.seek(got)
         while got < total_size:
@@ -126,9 +124,6 @@ def download_quarterly_file(dest_path: str, resume: bool = True, on_progress=Non
                             break
                         f.write(data)
                         got += len(data)
-                        if on_progress and time.time() - last_progress_call > 60:
-                            on_progress(got, total_size)
-                            last_progress_call = time.time()
                 finally:
                     remote.close()
             except Exception as e:

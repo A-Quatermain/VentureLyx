@@ -74,7 +74,7 @@ def main() -> int:
 
     while not _stop:
         try:
-            db.reap_stalled(conn)
+            db.reap_stalled(conn, KINDS)
             job = db.claim_job(conn, KINDS)
             if not job:
                 if args.once:
@@ -87,7 +87,8 @@ def main() -> int:
             idle = 0
             log.info("claimed job %s kind=%s", job["id"], job["kind"])
             try:
-                run_job(conn, job)
+                with db.HeartbeatThread(db.connect, job["id"]):
+                    run_job(conn, job)
                 db.finish_job(conn, job["id"])
             except Exception:
                 err = traceback.format_exc()

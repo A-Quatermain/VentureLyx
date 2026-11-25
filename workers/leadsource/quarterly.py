@@ -128,7 +128,13 @@ def fan_out_backfill_matches(conn) -> dict:
     return per_org
 
 
-def run_quarterly_backfill(conn, raw_conn, job_id: int | None = None) -> dict:
+def run_quarterly_backfill(conn, raw_conn) -> dict:
+    # Heartbeating during this run is the worker loop's job now, not
+    # this function's — db.HeartbeatThread wraps every job generically
+    # (see worker.py), so this used to thread a job_id/callback through
+    # download_quarterly_file for exactly this reason and no longer needs
+    # to. One mechanism, used by every job kind, not one hand-wired here
+    # and a different one everywhere else.
     started = time.time()
     os.makedirs(WORK_DIR, exist_ok=True)
 
@@ -138,10 +144,6 @@ def run_quarterly_backfill(conn, raw_conn, job_id: int | None = None) -> dict:
         return {"status": "no_enabled_orgs"}
     log.info("quarterly backfill filters: filing_types=%s counties=%s", sorted(filters["filing_types"]), sorted(filters["counties"]))
 
-    def heartbeat(*_args):
-        if job_id is not None:
-            db.touch_heartbeat(conn, job_id)
-
     # The downloaded zip is deliberately NOT cleaned up on failure — a
     # download can take the better part of an hour (Phase 4: 48.7 minutes
     # for the full file), and sunbiz.download_quarterly_file resumes from
@@ -149,9 +151,8 @@ def run_quarterly_backfill(conn, raw_conn, job_id: int | None = None) -> dict:
     # exponential backoff) should pick up where a transient failure left
     # off, not restart a multi-gigabyte transfer from zero. Only a clean
     # run clears it, in the "ok" branch below.
-    size = sunbiz.download_quarterly_file(ZIP_PATH, on_progress=heartbeat)
+    size = sunbiz.download_quarterly_file(ZIP_PATH)
     log.info("quarterly zip ready: %d bytes", size)
-    heartbeat()
 
     members = sunbiz.list_quarterly_members(ZIP_PATH)
     log.info("quarterly members: %s", members)
@@ -185,7 +186,6 @@ def run_quarterly_backfill(conn, raw_conn, job_id: int | None = None) -> dict:
             log.info("quarterly member=%s scanned=%d matched=%d", member, scanned, matched)
         finally:
             os.remove(member_path)  # one member's disk at a time — never all 10 extracted together
-        heartbeat()  # each member takes a few minutes, well under the 30-min stale threshold, but cheap insurance
 
     # Every member processed without error — the zip's job is done; a
     # fresh run next quarter re-downloads from scratch anyway (it's a
@@ -208,6 +208,6 @@ def run_quarterly_backfill(conn, raw_conn, job_id: int | None = None) -> dict:
 def run_quarterly_backfill_job(conn, job: dict) -> dict:
     raw_conn = db.connect_raw()
     try:
-        return run_quarterly_backfill(conn, raw_conn, job_id=job["id"])
+        return run_quarterly_backfill(conn, raw_conn)
     finally:
         raw_conn.close()

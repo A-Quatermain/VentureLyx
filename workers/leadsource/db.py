@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import threading
 from typing import Iterator
 
 import psycopg
@@ -111,30 +112,95 @@ def finish_job(conn: psycopg.Connection, job_id: int, error: str | None = None) 
 
 
 def touch_heartbeat(conn: psycopg.Connection, job_id: int) -> None:
-    """Call periodically during a long-running job — reap_stalled() (in
-    THIS file and workers/seo/db.py) reclaims ANY 'running' row whose
-    heartbeat has gone stale, regardless of which worker owns it or what
-    kind it is (job_queue has no per-kind reaping). A job that runs for
-    tens of minutes without calling this looks dead to every worker's
-    reaper after stale_minutes, even though the process claiming it never
-    crashed — confirmed live in Phase 4: the quarterly backfill's own
-    ~72-minute run got reclaimed by the unrelated seo-worker's reaper at
-    the 30-minute mark while still genuinely in progress."""
+    """Refreshes one job's heartbeat_at — see HeartbeatThread below, which
+    is what actually calls this during a real job; nothing else should
+    need to call it directly."""
     with staff_tx(conn) as cur:
         cur.execute("UPDATE job_queue SET heartbeat_at = now() WHERE id = %s", (job_id,))
 
 
-def reap_stalled(conn: psycopg.Connection, stale_minutes: int = 30) -> int:
+class HeartbeatThread:
+    """Keeps one job's heartbeat_at fresh for as long as it's running,
+    on its own connection (psycopg connections aren't safe to share across
+    threads) — wrap the whole of run_job() in this, once, in the worker
+    loop, and every job kind gets heartbeating for free with no changes
+    to what the job itself does internally. This is the fix for a bug
+    confirmed live in Phase 4: a job with no heartbeat update for
+    stale_minutes looks dead to reap_stalled() even though the process
+    running it never crashed — the quarterly backfill's own ~72-minute
+    run got reclaimed by the (unrelated, differently-scoped-before-this-fix)
+    seo-worker's own reaper at the 30-minute mark while still genuinely
+    in progress.
+
+        with db.HeartbeatThread(conn_factory, job["id"]):
+            run_job(conn, job)
+
+    conn_factory is a zero-arg callable (e.g. db.connect) rather than an
+    existing connection, specifically so this can open its own."""
+
+    def __init__(self, conn_factory, job_id: int, interval_s: int = 60):
+        self._conn_factory = conn_factory
+        self._job_id = job_id
+        self._interval_s = interval_s
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True, name=f"heartbeat-{job_id}")
+
+    def _run(self) -> None:
+        conn = self._conn_factory()
+        try:
+            while not self._stop.wait(self._interval_s):
+                try:
+                    touch_heartbeat(conn, self._job_id)
+                except Exception as e:
+                    log.warning("heartbeat update failed for job %s, reconnecting: %s", self._job_id, e)
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = self._conn_factory()
+        finally:
+            conn.close()
+
+    def __enter__(self) -> "HeartbeatThread":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self._stop.set()
+        self._thread.join(timeout=self._interval_s + 5)
+
+
+def reap_stalled(conn: psycopg.Connection, kinds: list[str], stale_minutes: int = 30) -> int:
+    """Only reclaims 'running' jobs whose KIND this worker actually owns
+    (job_queue is shared across every worker type; without this, one
+    worker's reaper can reclaim a job that belongs to, and is still
+    genuinely being run by, a completely different worker — exactly what
+    happened to the quarterly backfill, see HeartbeatThread's own header)
+    and only when its heartbeat has actually gone stale (a job that's
+    heartbeating normally, however long it runs, is never touched here).
+
+    A job that keeps going stale anyway (its own heartbeat never
+    arriving — e.g. the process that claimed it was killed outright) is
+    requeued and retried like any other failure, respecting the same
+    max_attempts cap finish_job() already enforces on its own failure
+    path; once that cap is hit, it's marked 'dead' with a clear reason
+    instead of being reclaimed forever."""
     with staff_tx(conn) as cur:
         cur.execute(
             """UPDATE job_queue
-                  SET state='queued', locked_by=NULL, locked_at=NULL,
-                      last_error='reclaimed: worker heartbeat stopped'
-                WHERE state='running' AND heartbeat_at < now() - (interval '1 minute' * %s)
+                  SET state = CASE WHEN attempts >= max_attempts THEN 'dead'::app.job_state ELSE 'queued'::app.job_state END,
+                      locked_by = NULL, locked_at = NULL,
+                      finished_at = CASE WHEN attempts >= max_attempts THEN now() ELSE NULL END,
+                      last_error = CASE
+                        WHEN attempts >= max_attempts THEN 'dead: reclaimed too many times in a row (heartbeat kept going stale)'
+                        ELSE 'reclaimed: worker heartbeat stopped'
+                      END
+                WHERE state = 'running' AND kind = ANY(%(kinds)s)
+                  AND heartbeat_at < now() - (interval '1 minute' * %(stale_minutes)s)
              RETURNING id""",
-            (stale_minutes,),
+            {"kinds": kinds, "stale_minutes": stale_minutes},
         )
         rows = cur.fetchall()
     if rows:
-        log.warning("reaped %d stalled job(s)", len(rows))
+        log.warning("reaped %d stalled job(s) of kinds %s", len(rows), kinds)
     return len(rows)

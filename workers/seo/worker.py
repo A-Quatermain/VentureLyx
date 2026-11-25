@@ -207,13 +207,13 @@ def run_crawl_job(conn, job: dict) -> None:
     log.info("crawl start site=%s url=%s max_pages=%s", site["key"], cfg.url, cfg.max_pages)
     t0 = time.perf_counter()
 
-    last_beat = [time.time()]
-
+    # Heartbeating during this run is the worker loop's job now, not this
+    # function's (db.HeartbeatThread wraps every job generically — see
+    # main()) — this used to call db.heartbeat() from inside on_progress
+    # for exactly this reason and no longer needs to. on_progress still
+    # logs page-count progress; it just doesn't touch the DB anymore.
     def progress(n: int):
-        if time.time() - last_beat[0] > 20:
-            db.heartbeat(conn, job["id"])
-            last_beat[0] = time.time()
-            log.info("  ... %d pages", n)
+        log.info("  ... %d pages", n)
 
     out = asyncio.run(crawl_site(cfg, on_progress=progress))
     issues = detect_issues(out, cfg.url) + detect_visibility_issues(out)
@@ -243,7 +243,7 @@ def main() -> int:
 
     while not _stop:
         try:
-            db.reap_stalled(conn)
+            db.reap_stalled(conn, KINDS)
             job = db.claim_job(conn, KINDS)
             if not job:
                 if args.once:
@@ -258,7 +258,8 @@ def main() -> int:
             idle = 0
             log.info("claimed job %s kind=%s attempt=%s", job["id"], job["kind"], job["attempts"])
             try:
-                run_job(conn, job)
+                with db.HeartbeatThread(db.connect, job["id"]):
+                    run_job(conn, job)
                 db.finish_job(conn, job["id"])
             except Exception:
                 err = traceback.format_exc()
