@@ -22,11 +22,11 @@ import { HttpError, requireProvisioned } from '../plugins/context.js';
 import { isModuleEnabled } from '../lib/moduleAccess.js';
 import { guessBusinessType } from '../lib/businessTypeGuess.js';
 import { assistSearchFilters } from '../lib/leadSourceSearchAssist.js';
-import { zipMatchesCounties } from '../lib/flZipCounty.js';
+import { zipsForCounties } from '../lib/flZipCounty.js';
 import { encryptSecret, decryptSecret } from '../lib/auth.js';
 import { testBraveKey } from '../lib/braveProviderKey.js';
 import { buildDefaultFilters, orgServiceAreaStates } from '../lib/leadSourceDefaults.js';
-import { STATE_CATALOG, SUPPORTED_STATES } from '../lib/leadSourceStateCatalog.js';
+import { getStateCatalog, getSupportedStates } from '../lib/leadSourceStateCatalog.js';
 
 async function requireLeadSourceEnabled(req: FastifyRequest): Promise<void> {
   const row = await req.db((q) =>
@@ -54,24 +54,44 @@ export type Filters = z.infer<typeof filtersInput>;
 
 interface RawRecordRow { source: string; source_id: string; raw: Record<string, unknown> }
 
-/** Runs a filter set against leadsource_raw_records directly — read-only
- *  (the app role only has SELECT on this table by design, 040_leadsource.sql),
- *  in-memory rather than pushed into SQL: at this data volume (low
- *  thousands of rows) that's simpler and exactly as correct as a bigger
- *  query, and county-matching for corporate records has to happen in code
- *  either way (no County column on that source — see flZipCounty.ts). */
+// A search with no geographic scope at all would otherwise pull every
+// row in leadsource_raw_records into this process — fine at the low
+// thousands of rows this was first built against, not at the 680k+ the
+// quarterly backfill (Phase 4) actually put there; a wide-open Node
+// query at that size crashed the API process outright (confirmed live).
+// Every realistic search has SOME geographic scope (an org searching its
+// own service area), so this is a safety net, not the normal path.
+const NO_GEO_SCOPE_ROW_CAP = 20_000;
+
+/** Runs a filter set against leadsource_raw_records — the app role only
+ *  has SELECT on this table by design (040_leadsource.sql). status,
+ *  filing_type, and zip are pushed down into the SQL WHERE clause
+ *  (counties are converted to their member zips in JS first via
+ *  zipsForCounties, since there's no County column on this source to
+ *  filter by in SQL directly — see flZipCounty.ts); only file_date
+ *  recency and name-keyword matching happen in application code, against
+ *  whatever small candidate set the SQL filter already narrowed to. */
 export async function runFilters(q: import('../lib/db.js').Querier, filters: Filters) {
+  let allowedZips: string[] | null = null;
+  if (filters.counties.length > 0) allowedZips = zipsForCounties(filters.counties);
+  if (filters.zips.length > 0) {
+    const explicit = filters.zips.map((z) => z.slice(0, 5));
+    allowedZips = allowedZips ? allowedZips.filter((z) => explicit.includes(z)) : explicit;
+  }
+
   const rows = await q.rows<RawRecordRow>(
-    `SELECT source, source_id, raw FROM leadsource_raw_records WHERE source = 'fl_sunbiz_cor'`,
+    `SELECT source, source_id, raw FROM leadsource_raw_records
+      WHERE source = 'fl_sunbiz_cor'
+        AND raw->>'status' = 'A'
+        AND ($1::text[] IS NULL OR raw->>'filing_type' = ANY($1))
+        AND ($2::text[] IS NULL OR substr(raw->>'zip', 1, 5) = ANY($2))
+      LIMIT $3`,
+    [filters.filing_types.length > 0 ? filters.filing_types : null, allowedZips, allowedZips ? 20_000 : NO_GEO_SCOPE_ROW_CAP],
   );
   const today = new Date();
-  const wantedFilingTypes = filters.filing_types.length > 0 ? new Set(filters.filing_types) : null;
-  const wantedZips = filters.zips.length > 0 ? new Set(filters.zips.map((z) => z.slice(0, 5))) : null;
   const keywords = filters.name_keywords.map((k) => k.toUpperCase());
 
   const matchesCor = (raw: Record<string, unknown>): boolean => {
-    if (raw.status !== 'A') return false;
-    if (wantedFilingTypes && !wantedFilingTypes.has(raw.filing_type as string)) return false;
     const fileDate = typeof raw.file_date === 'string' ? raw.file_date : '';
     if (fileDate.length === 8) {
       const mm = Number(fileDate.slice(0, 2)), dd = Number(fileDate.slice(2, 4)), yyyy = Number(fileDate.slice(4, 8));
@@ -79,9 +99,6 @@ export async function runFilters(q: import('../lib/db.js').Querier, filters: Fil
       const ageDays = Math.round((today.getTime() - d.getTime()) / 86_400_000);
       if (ageDays > filters.file_date_window_days) return false;
     }
-    const zip = typeof raw.zip === 'string' ? raw.zip : '';
-    if (filters.counties.length > 0 && !zipMatchesCounties(zip, filters.counties)) return false;
-    if (wantedZips && !wantedZips.has(zip.slice(0, 5))) return false;
     if (keywords.length > 0) {
       const name = ((raw.corp_name as string) || '').toUpperCase();
       if (!keywords.some((k) => name.includes(k))) return false;
@@ -302,9 +319,15 @@ export default async function leadSourceRoutes(app: FastifyInstance) {
   app.get('/leadsource/state-support', async (req) => {
     req.requireRole('viewer');
     await requireLeadSourceEnabled(req);
-    const states = await req.db((q) => orgServiceAreaStates(q, req.ctx.orgId!));
-    const supported = states.some((s) => SUPPORTED_STATES.has(s));
-    return { org_in_supported_state: supported, org_states: states, catalog: STATE_CATALOG };
+    return req.db(async (q) => {
+      const [states, supportedStates, catalog] = await Promise.all([
+        orgServiceAreaStates(q, req.ctx.orgId!),
+        getSupportedStates(q),
+        getStateCatalog(q),
+      ]);
+      const supported = states.some((s) => supportedStates.has(s));
+      return { org_in_supported_state: supported, org_states: states, catalog };
+    });
   });
 
   app.post('/leadsource/saved-searches', async (req) => {

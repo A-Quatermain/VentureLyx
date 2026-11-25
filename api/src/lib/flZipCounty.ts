@@ -1030,3 +1030,16 @@ export function zipMatchesCounties(zip: string, wanted: string[]): boolean {
   const wantedUpper = new Set(wanted.map((w) => w.toUpperCase()));
   return countiesForZip(zip).some((c) => wantedUpper.has(c));
 }
+
+/** The reverse of countiesForZip — every zip touching any of the given
+ *  counties. Lets a caller push a county filter down into SQL (a plain
+ *  zip = ANY(...) check) instead of pulling every candidate row into
+ *  application code just to run zipMatchesCounties() on each one. */
+export function zipsForCounties(counties: string[]): string[] {
+  const wantedUpper = new Set(counties.map((c) => c.toUpperCase()));
+  const zips: string[] = [];
+  for (const [zip, zCounties] of Object.entries(FL_ZIP_COUNTY)) {
+    if (zCounties.some((c) => wantedUpper.has(c))) zips.push(zip);
+  }
+  return zips;
+}

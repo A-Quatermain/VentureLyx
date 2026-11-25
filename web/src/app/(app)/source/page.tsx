@@ -219,7 +219,14 @@ function LeadSourceSearchPanel() {
                     {s.access === 'available' ? 'Available' : 'Not yet available'}
                   </span>
                 </td>
-                <td className="py-1.5 text-muted-foreground">{s.note}</td>
+                <td className="py-1.5 text-muted-foreground">
+                  {s.cost_notes || '—'}
+                  {!s.confirmed && (
+                    <span className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground" title={s.source_note}>
+                      unconfirmed
+                    </span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

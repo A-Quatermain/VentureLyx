@@ -24,11 +24,12 @@ import traceback
 import db
 import enrich
 import ingest
+import quarterly
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)-7s %(name)s %(message)s")
 log = logging.getLogger("vx.leadsource.worker")
 
-KINDS = ["leadsource.ingest", "leadsource.enrich"]
+KINDS = ["leadsource.ingest", "leadsource.enrich", "leadsource.quarterly_backfill"]
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
 _stop = False
 
@@ -44,6 +45,11 @@ def run_job(conn, job: dict) -> None:
         result = enrich.run_enrichment_job(conn, job)
         log.info("enrich result: %s", json.dumps({"org_id": result["org_id"], "counts": result["counts"],
                                                     "total_elapsed_s": result["total_elapsed_s"]}))
+        return
+
+    if job["kind"] == "leadsource.quarterly_backfill":
+        result = quarterly.run_quarterly_backfill_job(conn, job)
+        log.info("quarterly backfill result: %s", json.dumps(result))
         return
 
     raw_conn = db.connect_raw()

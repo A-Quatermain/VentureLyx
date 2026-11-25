@@ -1279,7 +1279,14 @@ export interface LeadSourceStateCatalogEntry {
   state: string;
   name: string;
   access: 'available' | 'planned';
-  note: string;
+  access_type: string | null;
+  cadence: string | null;
+  format: string | null;
+  has_county_field: boolean | null;
+  cost_notes: string | null;
+  terms_url: string | null;
+  confirmed: boolean;
+  source_note: string;
 }
 
 export interface LeadSourceStateSupport {

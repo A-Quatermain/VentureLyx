@@ -110,6 +110,20 @@ def finish_job(conn: psycopg.Connection, job_id: int, error: str | None = None) 
             )
 
 
+def touch_heartbeat(conn: psycopg.Connection, job_id: int) -> None:
+    """Call periodically during a long-running job — reap_stalled() (in
+    THIS file and workers/seo/db.py) reclaims ANY 'running' row whose
+    heartbeat has gone stale, regardless of which worker owns it or what
+    kind it is (job_queue has no per-kind reaping). A job that runs for
+    tens of minutes without calling this looks dead to every worker's
+    reaper after stale_minutes, even though the process claiming it never
+    crashed — confirmed live in Phase 4: the quarterly backfill's own
+    ~72-minute run got reclaimed by the unrelated seo-worker's reaper at
+    the 30-minute mark while still genuinely in progress."""
+    with staff_tx(conn) as cur:
+        cur.execute("UPDATE job_queue SET heartbeat_at = now() WHERE id = %s", (job_id,))
+
+
 def reap_stalled(conn: psycopg.Connection, stale_minutes: int = 30) -> int:
     with staff_tx(conn) as cur:
         cur.execute(

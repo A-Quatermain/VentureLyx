@@ -11,6 +11,7 @@ start positions below, exactly as given; converted to 0-based slices here.
 from __future__ import annotations
 
 from datetime import date
+from typing import BinaryIO, Iterator
 
 COR_RECORD_LEN = 1440
 
@@ -92,8 +93,35 @@ def parse_file_date(raw: str) -> date | None:
 
 
 def parse_cor_lines(raw_bytes: bytes) -> list[dict]:
-    lines = [l for l in raw_bytes.split(b"\n") if l]
+    # rstrip a trailing \r unconditionally: the daily file is LF-only (a
+    # no-op here) but the quarterly snapshot is CRLF (confirmed in Phase
+    # 4) — without this, every quarterly line would be 1441 bytes and
+    # silently fail the length check below, dropping every record.
+    lines = [l.rstrip(b"\r") for l in raw_bytes.split(b"\n") if l]
     return [parse_cor_record(l.decode("ascii", errors="replace")) for l in lines if len(l) == COR_RECORD_LEN]
+
+
+def iter_cor_records(fileobj: BinaryIO, chunk_size: int = 8 * 1024 * 1024) -> Iterator[dict]:
+    """Streaming counterpart to parse_cor_lines, for the quarterly
+    snapshot's ~1.87GB member files — never holds more than one read
+    chunk plus the current line buffer in memory (the worker container's
+    own memory limit is real; loading a whole member file the way the
+    daily file's few-hundred-KB files do would blow well past it)."""
+    buf = b""
+    while True:
+        chunk = fileobj.read(chunk_size)
+        if not chunk:
+            break
+        buf += chunk
+        parts = buf.split(b"\n")
+        buf = parts.pop()  # last part may be incomplete — carried to the next read
+        for line in parts:
+            line = line.rstrip(b"\r")
+            if len(line) == COR_RECORD_LEN:
+                yield parse_cor_record(line.decode("ascii", errors="replace"))
+    tail = buf.rstrip(b"\r")
+    if len(tail) == COR_RECORD_LEN:
+        yield parse_cor_record(tail.decode("ascii", errors="replace"))
 
 
 def parse_fic_lines(raw_bytes: bytes) -> list[dict]:

@@ -41,7 +41,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    mem_limit: 256m
+    # Bumped from 256m for the quarterly backfill (Phase 4): streaming
+    # keeps Python's own footprint flat regardless of file size, but the
+    # unzip subprocess and general overhead need some real headroom when
+    # a ~1.87GB member is being extracted.
+    mem_limit: 512m
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }
