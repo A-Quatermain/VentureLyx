@@ -25,6 +25,8 @@ import { assistSearchFilters } from '../lib/leadSourceSearchAssist.js';
 import { zipMatchesCounties } from '../lib/flZipCounty.js';
 import { encryptSecret, decryptSecret } from '../lib/auth.js';
 import { testBraveKey } from '../lib/braveProviderKey.js';
+import { buildDefaultFilters, orgServiceAreaStates } from '../lib/leadSourceDefaults.js';
+import { STATE_CATALOG, SUPPORTED_STATES } from '../lib/leadSourceStateCatalog.js';
 
 async function requireLeadSourceEnabled(req: FastifyRequest): Promise<void> {
   const row = await req.db((q) =>
@@ -266,13 +268,43 @@ export default async function leadSourceRoutes(app: FastifyInstance) {
   app.get('/leadsource/saved-searches', async (req) => {
     req.requireRole('viewer');
     await requireLeadSourceEnabled(req);
-    return req.db((q) =>
-      q.rows(
+    return req.db(async (q) => {
+      const existing = await q.rows(
         `SELECT id, name, states, counties, zips, filing_types, file_date_window_days,
                 name_keywords, include_dba, created_at, updated_at
            FROM leadsource_saved_searches WHERE org_id = app.current_org() ORDER BY created_at DESC`,
-      ),
-    );
+      );
+      // First time this org looks at Search since turning LeadSource on
+      // (no saved search exists yet): pre-fill one from its own service
+      // area rather than showing a blank slate. Lazy, not hooked to
+      // whichever admin action flipped the module flag, so it works no
+      // matter how the module got turned on.
+      if (existing.length === 0) {
+        const defaults = await buildDefaultFilters(q, req.ctx.orgId!);
+        if (defaults) {
+          const created = await q.one(
+            `INSERT INTO leadsource_saved_searches (org_id, name, counties, zips, filing_types, file_date_window_days, name_keywords, include_dba)
+             VALUES (app.current_org(), 'Your service area', $1, $2, $3, $4, $5, $6)
+             RETURNING id, name, states, counties, zips, filing_types, file_date_window_days, name_keywords, include_dba, created_at, updated_at`,
+            [defaults.counties, defaults.zips, defaults.filing_types, defaults.file_date_window_days, defaults.name_keywords, defaults.include_dba],
+          );
+          return created ? [created] : existing;
+        }
+      }
+      return existing;
+    });
+  });
+
+  // Separate from the search UI itself: lets the Search tab decide, before
+  // rendering anything, whether to show the normal search experience or
+  // "LeadSource isn't in your state yet" with the real state catalog —
+  // never an empty list with no explanation.
+  app.get('/leadsource/state-support', async (req) => {
+    req.requireRole('viewer');
+    await requireLeadSourceEnabled(req);
+    const states = await req.db((q) => orgServiceAreaStates(q, req.ctx.orgId!));
+    const supported = states.some((s) => SUPPORTED_STATES.has(s));
+    return { org_in_supported_state: supported, org_states: states, catalog: STATE_CATALOG };
   });
 
   app.post('/leadsource/saved-searches', async (req) => {

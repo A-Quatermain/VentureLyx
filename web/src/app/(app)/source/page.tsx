@@ -11,7 +11,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import type {
   SummaryResponse, LeadSourceLead, LeadSourceEnrichmentStatus,
-  LeadSourceFilters, LeadSourceSavedSearch, LeadSourceSearchResult,
+  LeadSourceFilters, LeadSourceSavedSearch, LeadSourceSearchResult, LeadSourceStateSupport,
 } from '@/lib/types';
 
 // Same "missing key = enabled" vs "missing key = disabled" split
@@ -112,6 +112,7 @@ function LeadSourceSearchPanel() {
   const role = useRole();
   const canEdit = atLeast(role, 'manager');
 
+  const { data: stateSupport, isLoading: loadingStateSupport } = useApi<LeadSourceStateSupport>('/leadsource/state-support');
   const { data: savedSearches, isLoading: loadingSaved } = useApi<LeadSourceSavedSearch[]>(canEdit ? '/leadsource/saved-searches' : null);
 
   function patch<K extends keyof LeadSourceFilters>(key: K, value: LeadSourceFilters[K]) {
@@ -189,6 +190,42 @@ function LeadSourceSearchPanel() {
       if (next.has(key)) next.delete(key); else next.add(key);
       return next;
     });
+  }
+
+  if (loadingStateSupport) return <p className="p-4 text-sm text-muted-foreground">Loading…</p>;
+
+  if (stateSupport && !stateSupport.org_in_supported_state) {
+    return (
+      <Card className="flex flex-col gap-3 p-6">
+        <p className="font-display text-base font-bold tracking-tight">Not yet available in your area</p>
+        <p className="text-sm text-muted-foreground">
+          LeadSource only covers the states below today. Your business&apos;s service area
+          {stateSupport.org_states.length > 0 ? ` (${stateSupport.org_states.join(', ')})` : ''} isn&apos;t one of them yet.
+        </p>
+        <table className="mt-2 w-full text-left text-sm">
+          <thead>
+            <tr className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <th className="py-1.5 pr-4">State</th>
+              <th className="py-1.5 pr-4">Status</th>
+              <th className="py-1.5">Notes</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {stateSupport.catalog.map((s) => (
+              <tr key={s.state}>
+                <td className="py-1.5 pr-4 font-medium">{s.name} ({s.state})</td>
+                <td className="py-1.5 pr-4">
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${s.access === 'available' ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}>
+                    {s.access === 'available' ? 'Available' : 'Not yet available'}
+                  </span>
+                </td>
+                <td className="py-1.5 text-muted-foreground">{s.note}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    );
   }
 
   return (

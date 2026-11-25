@@ -1275,6 +1275,19 @@ export interface LeadSourceAssistedFilters extends LeadSourceFilters {
   assist_failed: boolean;
 }
 
+export interface LeadSourceStateCatalogEntry {
+  state: string;
+  name: string;
+  access: 'available' | 'planned';
+  note: string;
+}
+
+export interface LeadSourceStateSupport {
+  org_in_supported_state: boolean;
+  org_states: string[];
+  catalog: LeadSourceStateCatalogEntry[];
+}
+
 export interface LeadSourceProviderKey {
   key_last4: string;
   status: 'untested' | 'ok' | 'invalid' | 'quota_exceeded';
